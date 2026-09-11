@@ -1,0 +1,14 @@
+fn while_memory() -> u64 {
+    let memory = alloc<u64>(1);
+    *memory = 0;
+    let mut counter = 0;
+
+    while counter < 3 {
+        *memory = *memory + 1;
+        counter = counter + 1;
+    }
+
+    let final_value = *memory;
+    free(memory);
+    return final_value;
+}

@@ -1,0 +1,13 @@
+fn loop_resource_mismatch() -> u64 {
+    let memory = alloc<u64>(1);
+    let mut iteration = 0;
+
+    while iteration < 2 {
+        if iteration == 0 {
+            free(memory);
+        }
+        iteration = iteration + 1;
+    }
+
+    return iteration;
+}

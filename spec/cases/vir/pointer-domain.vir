@@ -1,0 +1,207 @@
+vir-unit-v18
+memory {
+target little pointer 8/8 usize 8/8
+type type0 = u64 layout layout0 capabilities copy/trivial-drop/resource-free/sized
+type type1 = own mutable pointer<type0> layout layout1 capabilities move-only/builtin-drop/resource/sized
+type type2 = raw mutable pointer<type0> layout layout2 capabilities copy/trivial-drop/resource/sized
+type type3 = usize layout layout3 capabilities copy/trivial-drop/resource-free/sized
+type type4 = struct<field0, field1> layout layout4 capabilities copy/trivial-drop/resource-free/sized
+type type5 = array<type0; 2> layout layout5 capabilities copy/trivial-drop/resource-free/sized
+type type6 = raw const pointer<type0> layout layout6 capabilities copy/trivial-drop/resource/sized
+type type7 = slice<const type0> layout layout7 capabilities copy/trivial-drop/resource/sized
+type type8 = slice<const type0> layout layout8 capabilities copy/trivial-drop/resource/sized
+field field0 owner type4 type type0
+field field1 owner type4 type type0
+layout layout0 type type0 size 8 align 8 abi scalar fields []
+layout layout1 type type1 size 8 align 8 abi scalar fields []
+layout layout2 type type2 size 8 align 8 abi scalar fields []
+layout layout3 type type3 size 8 align 8 abi scalar fields []
+layout layout4 type type4 size 16 align 8 abi aggregate fields [field0@0, field1@8]
+layout layout5 type type5 size 16 align 8 abi aggregate fields []
+layout layout6 type type6 size 8 align 8 abi scalar fields []
+layout layout7 type type7 size 16 align 8 abi scalar-pair fields []
+layout layout8 type type8 size 16 align 8 abi scalar-pair fields []
+}
+borrow-regions {
+region bregion0 owner fn0 origin inferred scope blocks[bb0] source origin39
+}
+runtime {
+entry fn0
+
+abi fn0 params [] results [scalar<type0/layout0> effect copy/direct p[] r[0]]
+fn fn0 "main" () -> (u64) contract contract0 entry bb0 @40..625 {
+  bb0() @40..625:
+    %0: ptr<type5/layout5>, %1: permission = local-storage access type5/layout5 @63..85
+    %2: ptr<type4/layout4>, %3: permission = local-storage access type4/layout4 @356..375
+    %4: ptr<type5/layout5>, %5: permission = local-storage access type5/layout5 @76..84
+    %6: u64 = const.u64 0 @77..79
+    %7: ptr<type0/layout0> = index.address %4, %6 source type5/layout5 element type0/layout0 stride 8 bounds array(2) @77..79
+    %8: u64 = const.u64 20 @77..79
+    init %7, %8 using %5 access type0/layout0 @77..79
+    %9: u64 = const.u64 1 @81..83
+    %10: ptr<type0/layout0> = index.address %4, %9 source type5/layout5 element type0/layout0 stride 8 bounds array(2) @81..83
+    %11: u64 = const.u64 22 @81..83
+    init %10, %11 using %5 access type0/layout0 @81..83
+    object.init.move %0, %4 using %1, %5 access type5/layout5 @63..85
+    %12: u64 = const.u64 0 @115..118
+    %13: ptr<type0/layout0> = index.address %0, %12 source type5/layout5 element type0/layout0 stride 8 bounds array(2) @115..118
+    %14 = raw_address %13 using %1 as type6/layout6 @104..118
+    %15: u64 = const.u64 8 @137..148
+    %16: ptr<type0/layout0> = offset %14, %15 @137..148
+    %17: u64 = const.u64 8 @169..179
+    %18: ptr<type0/layout0> = offset %16, %17 @169..179
+    %19: u64 = const.u64 0 @205..217
+    %20: ptr<type0/layout0> = offset %18, %19 @205..217
+    %21: u64 = const.u64 1 @239..250
+    %22: ptr<type0/layout0> = offset %14, %21 @239..250
+    %23: u64 = const.u64 1 @275..276
+    %24: u64 = const.u64 2 @278..279
+    %25: ptr<type0/layout0>, %26: u64 = slice.address %0 start %23 end %24 source type5/layout5 slice type8/layout8 element type0/layout0 stride 8 bounds array(2) @274..280
+    %27: ptr<type0/layout0>, %28: permission = loan.begin loan0 shared region bregion0 parent none from %25 using %1 reference type8/layout8 range [8,16) origin origin39 @267..280
+    %29: u64 = const.u64 0 @310..313
+    %30: ptr<type0/layout0> = index.address %27, %29 source type8/layout8 element type0/layout0 stride 8 bounds slice(%26) @310..313
+    %31 = raw_address %30 using %28 as type6/layout6 @301..313
+    loan.end loan0 shared region bregion0 parent none from %27 using %28 reference type8/layout8 range [8,16) origin origin42 @594..623
+    %32: u64 = const.u64 8 @338..350
+    %33: ptr<type0/layout0> = offset %31, %32 @338..350
+    storage.reset %2 using %3 access type4/layout4 @356..375
+    %34: ptr<type0/layout0> = field.address %2 field0 owner type4/layout4 result type0/layout0 offset 0 @405..410
+    %35 = raw_address %34 using %3 as type2/layout2 @392..410
+    %36: u64 = const.u64 8 @432..441
+    %37: ptr<type0/layout0> = offset %35, %36 @432..441
+    %38: ptr<type0/layout0> = field.address %2 field0 owner type4/layout4 result type0/layout0 offset 0 @451..456
+    %39: u64 = const.u64 20 @459..461
+    init %38, %39 using %3 access type0/layout0 @447..462
+    %40: ptr<type0/layout0> = field.address %2 field1 owner type4/layout4 result type0/layout0 offset 8 @471..477
+    %41: u64 = const.u64 22 @480..482
+    init %40, %41 using %3 access type0/layout0 @467..483
+    %42: u64 = const.u64 16 @500..513
+    %43: ptr<type0/layout0>, %44: permission = alloc %42 align 8 region0 access type0/layout0 @500..513
+    %45: bool = const.bool true @500..513
+    %46 = raw_address %43 using %44 as type6/layout6 @530..541
+    %47: u64 = const.u64 16 @562..571
+    %48: ptr<type0/layout0> = offset %46, %47 @562..571
+    free %43 using %44 @577..589
+    %49: bool = const.bool false @577..589
+    %50: ptr<type0/layout0> = field.address %2 field0 owner type4/layout4 result type0/layout0 offset 0 @605..610
+    %51: u64 = load %50 using %3 access type0/layout0 @601..610
+    %52: u64 = const.u64 1 @619..622
+    %53: ptr<type0/layout0> = index.address %0, %52 source type5/layout5 element type0/layout0 stride 8 bounds array(2) @619..622
+    %54: u64 = load %53 using %1 access type0/layout0 @613..622
+    %55: u64 = add %51, %54 @601..622
+    return (%55) @594..623
+}
+}
+specs {
+contract contract0 function fn0 () -> (u64) {
+  binder binder0 ensures slot0: u64
+  clauses []
+}
+}
+source-map {
+source source0 "spec/cases/verify/pointer-domain.nera" bytes 626
+origin origin0 = user source0 @40..625
+origin origin1 = user source0 @63..85
+origin origin2 = user source0 @76..84
+origin origin3 = user source0 @77..79
+origin origin4 = user source0 @81..83
+origin origin5 = user source0 @104..118
+origin origin6 = user source0 @115..118
+origin origin7 = user source0 @137..148
+origin origin8 = user source0 @169..179
+origin origin9 = user source0 @205..217
+origin origin10 = user source0 @239..250
+origin origin11 = user source0 @267..280
+origin origin12 = user source0 @274..280
+origin origin13 = user source0 @275..276
+origin origin14 = user source0 @278..279
+origin origin15 = user source0 @301..313
+origin origin16 = user source0 @310..313
+origin origin17 = user source0 @338..350
+origin origin18 = user source0 @356..375
+origin origin19 = user source0 @392..410
+origin origin20 = user source0 @405..410
+origin origin21 = user source0 @432..441
+origin origin22 = user source0 @447..462
+origin origin23 = user source0 @451..456
+origin origin24 = user source0 @459..461
+origin origin25 = user source0 @467..483
+origin origin26 = user source0 @471..477
+origin origin27 = user source0 @480..482
+origin origin28 = user source0 @500..513
+origin origin29 = user source0 @530..541
+origin origin30 = user source0 @562..571
+origin origin31 = user source0 @577..589
+origin origin32 = user source0 @594..623
+origin origin33 = user source0 @601..610
+origin origin34 = user source0 @601..622
+origin origin35 = user source0 @605..610
+origin origin36 = user source0 @613..622
+origin origin37 = user source0 @619..622
+origin origin38 = generated origin2 reason temporary-storage
+origin origin39 = generated origin11 reason loan-effect
+origin origin40 = generated origin28 reason implicit-drop
+origin origin41 = generated origin31 reason implicit-drop
+origin origin42 = generated origin32 reason loan-effect
+location fn0:entry -> origin0
+location fn0/bb0:entry -> origin0
+location fn0/bb0:instruction0 -> origin1
+location fn0/bb0:instruction1 -> origin18
+location fn0/bb0:instruction2 -> origin38
+location fn0/bb0:instruction3 -> origin3
+location fn0/bb0:instruction4 -> origin3
+location fn0/bb0:instruction5 -> origin3
+location fn0/bb0:instruction6 -> origin3
+location fn0/bb0:instruction7 -> origin4
+location fn0/bb0:instruction8 -> origin4
+location fn0/bb0:instruction9 -> origin4
+location fn0/bb0:instruction10 -> origin4
+location fn0/bb0:instruction11 -> origin1
+location fn0/bb0:instruction12 -> origin6
+location fn0/bb0:instruction13 -> origin6
+location fn0/bb0:instruction14 -> origin5
+location fn0/bb0:instruction15 -> origin7
+location fn0/bb0:instruction16 -> origin7
+location fn0/bb0:instruction17 -> origin8
+location fn0/bb0:instruction18 -> origin8
+location fn0/bb0:instruction19 -> origin9
+location fn0/bb0:instruction20 -> origin9
+location fn0/bb0:instruction21 -> origin10
+location fn0/bb0:instruction22 -> origin10
+location fn0/bb0:instruction23 -> origin13
+location fn0/bb0:instruction24 -> origin14
+location fn0/bb0:instruction25 -> origin12
+location fn0/bb0:instruction26 -> origin39
+location fn0/bb0:instruction27 -> origin16
+location fn0/bb0:instruction28 -> origin16
+location fn0/bb0:instruction29 -> origin15
+location fn0/bb0:instruction30 -> origin42
+location fn0/bb0:instruction31 -> origin17
+location fn0/bb0:instruction32 -> origin17
+location fn0/bb0:instruction33 -> origin18
+location fn0/bb0:instruction34 -> origin20
+location fn0/bb0:instruction35 -> origin19
+location fn0/bb0:instruction36 -> origin21
+location fn0/bb0:instruction37 -> origin21
+location fn0/bb0:instruction38 -> origin23
+location fn0/bb0:instruction39 -> origin24
+location fn0/bb0:instruction40 -> origin22
+location fn0/bb0:instruction41 -> origin26
+location fn0/bb0:instruction42 -> origin27
+location fn0/bb0:instruction43 -> origin25
+location fn0/bb0:instruction44 -> origin28
+location fn0/bb0:instruction45 -> origin28
+location fn0/bb0:instruction46 -> origin40
+location fn0/bb0:instruction47 -> origin29
+location fn0/bb0:instruction48 -> origin30
+location fn0/bb0:instruction49 -> origin30
+location fn0/bb0:instruction50 -> origin31
+location fn0/bb0:instruction51 -> origin41
+location fn0/bb0:instruction52 -> origin35
+location fn0/bb0:instruction53 -> origin33
+location fn0/bb0:instruction54 -> origin37
+location fn0/bb0:instruction55 -> origin37
+location fn0/bb0:instruction56 -> origin36
+location fn0/bb0:instruction57 -> origin34
+location fn0/bb0:terminator -> origin32
+}

@@ -1,0 +1,28 @@
+fn main() -> u64 {
+    let values = [10, 20, 30, 40];
+    let begin = &raw values[0];
+    let mut cursor = begin;
+    if choose() { cursor = begin + 8; } else { cursor = &raw values[1]; }
+    let expected = &raw values[1];
+    let mut count = 0;
+    while count < 3 { cursor = cursor + 0; count = count + 1; }
+    let view = identity(&values[1..3]);
+    let returned = &raw view[0];
+    let tail = &raw view[1];
+    if cursor == expected {
+        if ptr_byte_distance(returned, tail) == 8usize {
+            return inspect(view);
+        }
+    }
+    return 0;
+}
+
+fn choose() -> bool { return true; }
+fn identity(view: &[u64]) -> &[u64] { return view; }
+fn inspect(view: &[u64]) -> u64 {
+    if len(view) > 0usize {
+        let start = &raw view[0];
+        if ptr_byte_distance(start, start + 8) == 8usize { return 42; }
+    }
+    return 0;
+}

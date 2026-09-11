@@ -1,0 +1,22 @@
+fn main() -> u64 { return run(true); }
+
+fn run(flag: bool) -> u64 {
+    let p = alloc<u64>(1);
+    *p = 42;
+    let old = &raw *p;
+    let returned = outer(p, flag);
+    if flag {
+        if old != &raw *returned { return 0; }
+    }
+    return *returned;
+}
+
+fn outer(p: Own<u64>, flag: bool) -> Own<u64> { return choose(p, flag); }
+
+fn choose(p: Own<u64>, flag: bool) -> Own<u64> {
+    if flag { return p; }
+    free(p);
+    let q = alloc<u64>(1);
+    *q = 42;
+    return q;
+}

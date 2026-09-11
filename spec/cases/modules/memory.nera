@@ -1,0 +1,13 @@
+module memory;
+
+fn helper() -> u64 {
+    return 40;
+}
+
+pub fn compute() -> u64 {
+    let p = alloc<u64>(1);
+    *p = helper();
+    let value = *p;
+    free(p);
+    return value;
+}

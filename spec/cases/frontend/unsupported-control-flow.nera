@@ -1,0 +1,5 @@
+fn deferred_match() {
+    match true {
+        value => { return; },
+    }
+}

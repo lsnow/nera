@@ -1,0 +1,49 @@
+fn main() -> u64 {
+    let original = alloc<u64>(1);
+    *original = 10;
+    let p = identity(original, 0);
+    let q = make(21, 0);
+    let r = make(11, 0);
+    let mut value = 0;
+    fill(&mut value, 0);
+    let view = borrowed(&value, 0);
+    if *view != 42 { return 0; }
+    let values = [0, 42];
+    if values[even(0)] != 42 { return 0; }
+    return *p + *q + *r;
+}
+
+fn identity(p: Own<u64>, n: u64) -> Own<u64> {
+    if n == 3 { return p; }
+    return identity(p, n + 1);
+}
+
+fn make(value: u64, n: u64) -> Own<u64> {
+    if n == 3 {
+        let p = alloc<u64>(1);
+        *p = value;
+        return p;
+    }
+    return make(value, n + 1);
+}
+
+fn fill(p: &mut u64, n: u64) {
+    if n == 3 { *p = 42; return; }
+    fill(p, n + 1);
+    return;
+}
+
+fn borrowed(p: &u64, n: u64) -> &u64 {
+    if n == 3 { return p; }
+    return borrowed(p, n + 1);
+}
+
+fn even(n: u64) -> usize {
+    if n == 4 { return 1usize; }
+    return odd(n + 1);
+}
+
+fn odd(n: u64) -> usize {
+    if n == 3 { return 1usize; }
+    return even(n + 1);
+}

@@ -1,0 +1,87 @@
+vir-unit-v18
+memory {
+target little pointer 8/8 usize 8/8
+type type0 = u64 layout layout0 capabilities copy/trivial-drop/resource-free/sized
+type type1 = own mutable pointer<type0> layout layout1 capabilities move-only/builtin-drop/resource/sized
+type type2 = raw mutable pointer<type0> layout layout2 capabilities copy/trivial-drop/resource/sized
+layout layout0 type type0 size 8 align 8 abi scalar fields []
+layout layout1 type type1 size 8 align 8 abi scalar fields []
+layout layout2 type type2 size 8 align 8 abi scalar fields []
+}
+borrow-regions {
+}
+runtime {
+entry fn0
+
+abi fn0 params [] results [scalar<type0/layout0> effect copy/direct p[] r[0]]
+fn fn0 "memory" () -> (u64) contract contract0 entry bb0 @0..298 {
+  bb0() @0..298:
+    %0: u64 = const.u64 20 @36..38
+    %1: u64 = const.u64 22 @56..58
+    %2: u64 = add %0, %1 @74..86
+    %3: u64 = const.u64 16 @103..116
+    %4: ptr<type0/layout0>, %5: permission = alloc %3 align 8 region0 access type0/layout0 @103..116
+    %6: bool = const.bool true @103..116
+    init %4, %2 using %5 access type0/layout0 @122..134
+    %7: u64 = const.u64 8 @150..158
+    %8: ptr<type0/layout0> = offset %4, %7 @150..158
+    %9: u64 = const.u64 1 @172..173
+    init %8, %9 using %5 access type0/layout0 @164..174
+    %10: u64 = const.u64 2 @187..188
+    store %8, %10 using %5 access type0/layout0 @179..189
+    %11: u64 = load %4 using %5 access type0/layout0 @205..210
+    %12: u64 = load %8 using %5 access type0/layout0 @227..232
+    %13: u64 = add %11, %12 @250..261
+    free %4 using %5 @267..278
+    %14: bool = const.bool false @267..278
+    return (%13) @283..296
+}
+}
+specs {
+contract contract0 function fn0 () -> (u64) {
+  binder binder0 ensures slot0: u64
+  clauses []
+}
+}
+source-map {
+source source0 "spec/cases/vir/memory.nera" bytes 299
+origin origin0 = user source0 @0..298
+origin origin1 = user source0 @36..38
+origin origin2 = user source0 @56..58
+origin origin3 = user source0 @74..86
+origin origin4 = user source0 @103..116
+origin origin5 = user source0 @122..134
+origin origin6 = user source0 @150..158
+origin origin7 = user source0 @164..174
+origin origin8 = user source0 @172..173
+origin origin9 = user source0 @179..189
+origin origin10 = user source0 @187..188
+origin origin11 = user source0 @205..210
+origin origin12 = user source0 @227..232
+origin origin13 = user source0 @250..261
+origin origin14 = user source0 @267..278
+origin origin15 = user source0 @283..296
+origin origin16 = generated origin4 reason implicit-drop
+origin origin17 = generated origin14 reason implicit-drop
+location fn0:entry -> origin0
+location fn0/bb0:entry -> origin0
+location fn0/bb0:instruction0 -> origin1
+location fn0/bb0:instruction1 -> origin2
+location fn0/bb0:instruction2 -> origin3
+location fn0/bb0:instruction3 -> origin4
+location fn0/bb0:instruction4 -> origin4
+location fn0/bb0:instruction5 -> origin16
+location fn0/bb0:instruction6 -> origin5
+location fn0/bb0:instruction7 -> origin6
+location fn0/bb0:instruction8 -> origin6
+location fn0/bb0:instruction9 -> origin8
+location fn0/bb0:instruction10 -> origin7
+location fn0/bb0:instruction11 -> origin10
+location fn0/bb0:instruction12 -> origin9
+location fn0/bb0:instruction13 -> origin11
+location fn0/bb0:instruction14 -> origin12
+location fn0/bb0:instruction15 -> origin13
+location fn0/bb0:instruction16 -> origin14
+location fn0/bb0:instruction17 -> origin17
+location fn0/bb0:terminator -> origin15
+}

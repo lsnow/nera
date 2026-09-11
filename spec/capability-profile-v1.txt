@@ -1,0 +1,24 @@
+# Fixed capability-profile records. This is data, not a feature-selection DSL.
+nera-capability-profile-v1
+profile|system-v1
+language|0.3-draft
+runtime|system-v2
+hir-schema|12
+vir-schema|18
+verifier|automatic-memory-v1
+interpreter|system-v2-interpreter-v1
+target|x86_64-unknown-linux-gnu
+backend|direct-x86_64-system-tools-v1
+formal-checker|none
+columns|feature|surface|runtime|hir|vir|verifier|interpreter|backend|formal|limit|check
+feature|borrowed-results|supported|supported|supported|supported|supported|supported|erased-after-validation|unsupported|anonymous single-source borrow relations; no user lifetime names|cargo run -p xtask -- check-phase7-implicit-borrow-inference
+feature|conditional-borrowed-results|supported|supported|supported|supported|supported|supported|erased-after-validation|unsupported|finite complete boolean result worlds only|cargo run -p xtask -- check-phase7-conditional-borrow-inference
+feature|fixed-field-borrow-projection|supported|supported|supported|supported|supported|supported|erased-after-validation|unsupported|fixed fields only; no dynamic aggregate path|cargo run -p xtask -- check-phase7-borrow-projection
+feature|local-reference-aggregates|supported|supported|supported|supported|supported|supported|supported|unsupported|local direct-layout aggregates; indirect returned reference payload remains gated|cargo run -p xtask -- check-phase7-reference-aggregate
+feature|module-interface-artifact|not-applicable|not-applicable|supported|not-applicable|not-applicable|not-applicable|not-applicable|unsupported|source-bound projection only; no summary import or cache authorization|cargo run -p xtask -- check-phase7-interface-artifact
+feature|modules|supported|erased-after-validation|supported|supported|supported|erased-after-validation|erased-after-validation|unsupported|closed explicit source set; no discovery or independent linking|cargo run -p xtask -- check-phase7-module-program
+feature|named-lifetime-syntax|rejected-with-diagnostic|not-applicable|not-applicable|not-applicable|not-applicable|not-applicable|not-applicable|unsupported|ordinary source uses anonymous inferred borrow relations|cargo run -p xtask -- check-phase7-implicit-lifetime-syntax
+feature|recursive-borrow-sources|supported|supported|supported|supported|supported|supported|erased-after-validation|unsupported|bounded SCC and alternative limits; imprecision rejects|cargo run -p xtask -- check-phase7-borrow-source-scc
+feature|returned-reference-aggregates|unsupported|unsupported|schema-only|schema-only|unsupported|unsupported|unsupported|unsupported|HIR/VIR schemas are constructible but the source ABI and consumers are not open|cargo run -p xtask -- check-phase7-borrow-summary
+feature|slice-borrow-projection|supported|supported|supported|supported|supported|supported|erased-after-validation|unsupported|bounded half-open slice views with caller-proved bounds|cargo run -p xtask -- check-phase7-borrow-projection
+feature|type-const-generics|supported|erased-after-validation|supported|erased-after-validation|supported|erased-after-validation|erased-after-validation|unsupported|closed concrete instances only; no traits or separate compilation|cargo run -p xtask -- check-phase7-generic-instances

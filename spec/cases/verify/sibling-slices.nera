@@ -1,0 +1,18 @@
+fn main() -> u64 { return split(2usize); }
+
+fn split(mid: usize) -> u64 {
+    let mut values = [10, 20, 30, 40];
+    if mid > 0usize {
+        if mid < len(values) {
+            let parent = &mut values[..];
+            let left = &mut parent[..mid];
+            let right = &mut parent[mid..];
+            left[0] = 12;
+            right[0] = 30;
+            let sum = left[0] + right[0];
+            parent[0] = sum;
+            return parent[0];
+        }
+    }
+    return 0;
+}

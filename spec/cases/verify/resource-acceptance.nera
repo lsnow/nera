@@ -1,0 +1,86 @@
+enum Slot {
+    Empty,
+    Full(Own<u64>),
+}
+
+fn main() -> u64 {
+    let guarded_false = guarded_reuse(false);
+    let guarded_true = guarded_reuse(true);
+    let nested_false = nested_guard(false, true);
+    let nested_inner_false = nested_guard(true, false);
+    let nested_true = nested_guard(true, true);
+    let enum_false = enum_guard(false);
+    let enum_true = enum_guard(true);
+    let loop_value = loop_carried_owner(3);
+    return guarded_false + guarded_true + nested_false + nested_inner_false
+        + nested_true + enum_false + enum_true + loop_value;
+}
+
+fn guarded_reuse(release: bool) -> u64 {
+    let owner = alloc<u64>(1);
+    *owner = 11;
+    if release {
+        free(owner);
+    }
+    if release {
+        return 1;
+    }
+    let value = *owner;
+    free(owner);
+    return value;
+}
+
+fn nested_guard(outer: bool, inner: bool) -> u64 {
+    let owner = alloc<u64>(1);
+    *owner = 13;
+    if outer {
+        if inner {
+            free(owner);
+        }
+    }
+    if outer {
+        if inner {
+            return 2;
+        }
+    }
+    let value = *owner;
+    free(owner);
+    return value;
+}
+
+fn enum_guard(empty: bool) -> u64 {
+    let owner = alloc<u64>(1);
+    *owner = 17;
+    let mut slot = Slot::Full(owner);
+    if empty {
+        slot = Slot::Empty;
+    }
+    match slot {
+        Slot::Empty => {
+            return 3;
+        },
+        Slot::Full(extracted) => {
+            let value = *extracted;
+            free(extracted);
+            return value;
+        },
+    }
+}
+
+fn loop_carried_owner(limit: u64) -> u64 {
+    let owner = alloc<u64>(1);
+    *owner = 19;
+    let mut index = 0;
+    while index < limit {
+        index = index + 1;
+        if index == 1 {
+            continue;
+        }
+        if index == 2 {
+            break;
+        }
+    }
+    let value = *owner;
+    free(owner);
+    return value;
+}

@@ -1,0 +1,16 @@
+fn match_control_flow() -> u64 {
+    let value = choose();
+    match value {
+        0 => { return 10; },
+        2 if allow(true) => { return 20; },
+        _ => { return 30; },
+    }
+}
+
+fn choose() -> u64 {
+    return 2;
+}
+
+fn allow(value: bool) -> bool {
+    return value;
+}

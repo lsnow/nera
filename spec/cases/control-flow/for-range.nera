@@ -1,0 +1,7 @@
+fn for_range() -> u64 {
+    let mut sum = 0;
+    for item in 2..6 {
+        sum = sum + item;
+    }
+    return sum;
+}

@@ -1,0 +1,29 @@
+fn main() -> u64 { return build(6usize, 1usize, 4usize); }
+
+fn build(n: usize, i: usize, j: usize) -> u64 {
+    let a = alloc<[u64; 8]>(1);
+    if n <= 8usize {
+        for k in 0usize..n { a[k] = 0; }
+        if i > 0usize {
+            if i < j {
+                if j < n {
+                    let parent = &mut *a[..n];
+                    set(parent, 0);
+                    let left = &mut parent[..i];
+                    let middle = &mut parent[i..j];
+                    let right = &mut parent[j..];
+                    left[0] = 10;
+                    middle[0] = 12;
+                    right[0] = 20;
+                    return left[0] + middle[0] + right[0];
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+fn set(view: &mut [u64], value: u64) {
+    if len(view) > 0usize { view[0] = value; }
+    return;
+}

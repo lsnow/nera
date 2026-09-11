@@ -1,0 +1,29 @@
+fn main() -> u64 {
+    return run(true);
+}
+
+fn run(flag: bool) -> u64 {
+    let mut values = [10, 20, 30];
+    let parent = &mut values[1..];
+    {
+        let child = &mut parent[..];
+        let view = outer(child, flag);
+        if len(view) > 0usize {
+            view[0] = view[0] + 1;
+        }
+    }
+    return parent[0];
+}
+
+fn outer(v: &mut [u64], flag: bool) -> &mut [u64] {
+    return inner(v, flag);
+}
+
+fn inner(v: &mut [u64], flag: bool) -> &mut [u64] {
+    if flag {
+        if len(v) > 0usize {
+            v[0] = 41;
+        }
+    }
+    return v;
+}

@@ -1,0 +1,6 @@
+fn pointer_offset_out_of_bounds() {
+    let memory = alloc<u64>(1);
+    let outside = memory + 16;
+    free(memory);
+    return;
+}

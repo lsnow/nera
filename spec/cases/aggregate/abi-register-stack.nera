@@ -1,0 +1,14 @@
+struct Pair {
+    left: u64,
+    right: u64,
+}
+
+fn main() -> u64 {
+    let pair = preserve_pair(1, 2, 3, 4, 5, 6, Pair { left: 20, right: 22 });
+    return pair.left + pair.right;
+}
+
+fn preserve_pair(a: u64, b: u64, c: u64, d: u64, e: u64, f: u64, pair: Pair) -> Pair {
+    let ignored = a + b + c + d + e + f;
+    return pair;
+}

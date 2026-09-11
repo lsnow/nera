@@ -1,0 +1,20 @@
+struct Inner {
+    values: [u64; 4],
+    tail: u64,
+}
+
+struct Outer {
+    inner: Inner,
+    other: u64,
+}
+
+fn main() -> u64 {
+    let owner = alloc<Outer>(1);
+    owner.inner.values = [1, 20, 22, 4];
+    owner.inner.tail = 0;
+    owner.other = 0;
+    let view = &owner.inner.values[1..3];
+    let answer = view[0] + view[1];
+    free(owner);
+    return answer;
+}

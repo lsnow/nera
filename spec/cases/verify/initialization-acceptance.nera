@@ -1,0 +1,55 @@
+struct Data { flag: bool, words: [u64; 4], }
+struct Package { owner: Own<u64>, data: Data, }
+struct Partial { left: Own<u64>, right: Own<u64>, }
+enum Item { Empty, Full(Own<u64>), }
+
+fn main() -> u64 {
+    partial(true);
+    partial(false);
+    let storage = alloc<Data>(1);
+    for i in 0usize..4usize { storage.words[i] = 40; }
+    storage.flag = true;
+    repair(&mut *storage);
+    let data = pass(*storage, false);
+    free(storage);
+    let owner = alloc<u64>(1);
+    *owner = 2;
+    let mut value: Package;
+    value.owner = owner;
+    value.data = data;
+    let moved = value.owner;
+    value.owner = moved;
+    let whole = value;
+    let result_owner = whole.owner;
+    let answer = *result_owner + whole.data.words[3];
+    let tagged = alloc<Item>(1);
+    let payload = alloc<u64>(1);
+    *payload = 1;
+    *tagged = Item::Full(payload);
+    *tagged = Item::Empty;
+    free(tagged);
+    return answer;
+}
+
+fn partial(early: bool) {
+    let mut value: Partial;
+    let owner = alloc<u64>(1);
+    *owner = 1;
+    value.left = owner;
+    if early { return; }
+    for i in 0..3 {
+        let mut item: Partial;
+        let child = alloc<u64>(1);
+        *child = i;
+        item.right = child;
+        if i == 0 { continue; }
+        break;
+    }
+    return;
+}
+
+fn repair(data: &mut Data) { data.words[0] = 40; return; }
+fn pass(data: Data, stop: bool) -> Data {
+    if stop { return data; }
+    return pass(data, true);
+}

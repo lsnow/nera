@@ -1,0 +1,13 @@
+fn main() -> u64 {
+    let values = make_values(20);
+    let total = sum_values(values);
+    return total + values[0];
+}
+
+fn make_values(base: u64) -> [u64; 3] {
+    return [base, 1, 1];
+}
+
+fn sum_values(values: [u64; 3]) -> u64 {
+    return values[0] + values[1] + values[2];
+}

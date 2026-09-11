@@ -1,0 +1,27 @@
+fn nested_loop() -> u64 {
+    let mut outer = 0;
+    let mut total = 0;
+
+    while outer < 3 {
+        outer = outer + 1;
+        let mut inner = 0;
+
+        while inner < 4 {
+            inner = inner + 1;
+            if inner == 2 {
+                continue;
+            }
+            if outer == 2 {
+                break;
+            }
+            total = total + 1;
+        }
+
+        if outer == 2 {
+            continue;
+        }
+        total = total + 10;
+    }
+
+    return total;
+}

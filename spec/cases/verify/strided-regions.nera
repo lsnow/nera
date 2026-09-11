@@ -1,0 +1,25 @@
+fn main() -> u64 { return edit(0usize, 1usize, 1usize, 2usize); }
+
+fn edit(row: usize, other: usize, col: usize, next: usize) -> u64 {
+    let mut a = [[10, 20, 30, 40], [11, 21, 31, 41], [12, 22, 32, 42]];
+    if row < len(a) {
+        if other < len(a) {
+            if col < 4usize {
+                if next < 4usize {
+                    if row != other {
+                        if col != next {
+                            let left = &mut a[row][col];
+                            let right = &mut a[row][next];
+                            let bottom = &mut a[other][col];
+                            *left = 10;
+                            *right = 12;
+                            *bottom = 20;
+                            return *left + *right + *bottom;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return 0;
+}

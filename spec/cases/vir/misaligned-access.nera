@@ -1,0 +1,7 @@
+fn misaligned_access() {
+    let memory = alloc<u64>(1);
+    let misaligned = memory + 1;
+    *misaligned = 1;
+    free(memory);
+    return;
+}

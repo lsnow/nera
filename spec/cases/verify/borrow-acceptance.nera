@@ -1,0 +1,49 @@
+struct Holder {
+    value: &u64,
+}
+
+enum MaybeRef {
+    None,
+    Some(&u64),
+}
+
+fn main() -> u64 {
+    let mut values = [1, 2, 3];
+    {
+        let parent = &mut values[1];
+        for index in 0..3 {
+            let child = &mut *parent;
+            bump(child, index == 1);
+            *parent = *parent + 1;
+        }
+    }
+    let view = &values[..];
+    let tail = &view[1..];
+    let returned = slice_identity(tail);
+    let selected = returned[0];
+    let holder = Holder { value: &selected };
+    let copied = holder;
+    let first = holder.value;
+    let second = copied.value;
+    let sum = read(first) + read(second);
+    let maybe = MaybeRef::Some(identity(&values[2], 0));
+    match maybe {
+        MaybeRef::Some(reference) => { return sum + *reference; },
+        MaybeRef::None => { return 0; },
+    }
+}
+
+fn bump(value: &mut u64, early: bool) {
+    *value = *value + 1;
+    if early { return; }
+    return;
+}
+
+fn read(value: &u64) -> u64 { return *value; }
+
+fn identity(value: &u64, depth: u64) -> &u64 {
+    if depth == 3 { return value; }
+    return identity(value, depth + 1);
+}
+
+fn slice_identity(value: &[u64]) -> &[u64] { return value; }

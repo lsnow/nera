@@ -1,0 +1,15 @@
+struct Pair { left: Own<u64>, right: Own<u64>, }
+
+fn main() -> u64 {
+    let mut count = 0;
+    while count < 3 {
+        let mut value: Pair;
+        let owner = alloc<u64>(1);
+        *owner = count;
+        value.left = owner;
+        count = count + 1;
+        if count == 1 { continue; }
+        if count == 2 { break; }
+    }
+    return count;
+}

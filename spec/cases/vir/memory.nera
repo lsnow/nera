@@ -1,0 +1,15 @@
+fn memory() -> u64 {
+    let left = 20;
+    let right = 22;
+    let sum = left + right;
+    let base = alloc<u64>(2);
+    *base = sum;
+    let tail = base + 8;
+    *tail = 1;
+    *tail = 2;
+    let head = *base;
+    let last = *tail;
+    let total = head + last;
+    free(base);
+    return total;
+}

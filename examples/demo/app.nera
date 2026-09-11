@@ -1,0 +1,16 @@
+module app;
+
+use values::repeat;
+use borrow::hold;
+use ownership::relay;
+
+fn main() -> u64 {
+    let buffer = repeat<u64, 2>(10);
+    let view = hold<[u64; 2]>(&buffer.values);
+    let p = alloc<u64>(1);
+    *p = 22;
+    let q = relay<Own<u64>>(p);
+    let owned = *q;
+    free(q);
+    return view[0] + view[1] + owned;
+}

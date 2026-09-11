@@ -1,0 +1,6 @@
+fn double_free() {
+    let memory = alloc<u64>(1);
+    free(memory);
+    free(memory);
+    return;
+}

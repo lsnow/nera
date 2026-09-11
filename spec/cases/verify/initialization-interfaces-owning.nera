@@ -1,0 +1,20 @@
+struct Package { owner: Own<u64>, word: u64, }
+
+fn main() -> u64 {
+    let a = alloc<u64>(1);
+    *a = 40;
+    let mut p: Package;
+    p.owner = a;
+    p.word = 2;
+    let returned = repair(p, true);
+    let owner = returned.owner;
+    return *owner + returned.word;
+}
+
+fn repair(p: Package, branch: bool) -> Package {
+    let mut v = p;
+    let moved = v.owner;
+    if branch { v.owner = moved; return v; }
+    v.owner = moved;
+    return v;
+}

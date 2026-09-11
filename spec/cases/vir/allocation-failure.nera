@@ -1,0 +1,5 @@
+fn allocation_failure() {
+    let memory = alloc<u64>(0);
+    free(memory);
+    return;
+}

@@ -1,0 +1,17 @@
+fn main() -> u64 { return edit(0usize, 2usize); }
+
+fn edit(i: usize, j: usize) -> u64 {
+    let mut a = [10, 20, 30, 40, 50, 60];
+    if i <= 4usize {
+        if j <= 4usize {
+            if i + 2usize <= j {
+                let left = &mut a[i..i + 2usize];
+                let right = &mut a[j..j + 2usize];
+                left[1] = 12;
+                right[1] = 30;
+                return left[1] + right[1];
+            }
+        }
+    }
+    return 0;
+}

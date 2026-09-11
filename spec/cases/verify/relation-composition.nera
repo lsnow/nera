@@ -1,0 +1,29 @@
+fn main() -> u64 {
+    return build(3usize, 1usize);
+}
+
+fn build(n: usize, j: usize) -> u64 {
+    let mut a: [u64; 4];
+    if n <= 4usize {
+        for i in 0usize..n {
+            a[i] = 42;
+        }
+        if j < n {
+            let view = &mut a[..n];
+            edit(view, j, false);
+            return view[j];
+        }
+    }
+    return 0;
+}
+
+fn edit(view: &mut [u64], j: usize, stop: bool) {
+    if stop {
+        if j < len(view) {
+            view[j] = 42;
+        }
+        return;
+    }
+    edit(view, j, true);
+    return;
+}

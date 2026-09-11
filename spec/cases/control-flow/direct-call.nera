@@ -1,0 +1,11 @@
+fn main() -> u64 {
+    return add(20, 22);
+}
+
+fn add(left: u64, right: u64) -> u64 {
+    return left + right;
+}
+
+fn unused(value: u64) -> u64 {
+    return value + 1;
+}

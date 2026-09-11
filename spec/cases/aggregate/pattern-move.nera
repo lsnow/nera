@@ -1,0 +1,16 @@
+enum Package {
+    Empty,
+    Full(Own<u64>),
+}
+
+fn main() -> u64 {
+    let owner = alloc<u64>(1);
+    let package = Package::Full(owner);
+    match package {
+        Package::Empty => { return 0; },
+        Package::Full(extracted) => {
+            free(extracted);
+            return 1;
+        },
+    }
+}

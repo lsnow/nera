@@ -1,0 +1,10 @@
+fn resource_mismatch() {
+    let memory = alloc<u64>(1);
+    *memory = 0;
+    let selector = *memory;
+    if selector == 0 {
+        free(memory);
+    }
+    free(memory);
+    return;
+}

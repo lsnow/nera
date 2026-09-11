@@ -1,0 +1,12 @@
+fn main() -> u64 { return select(1usize, true); }
+
+fn select(i: usize, flag: bool) -> u64 {
+    let values = [42, 42, 42, 42, 42];
+    if i < 3usize {
+        let mut end = i + 1usize;
+        if flag { end = i + 2usize; }
+        let view = &values[i..end];
+        return values[i];
+    }
+    return 0;
+}

@@ -1,0 +1,15 @@
+fn main() -> u64 {
+    let memory = alloc<u64>(1);
+    *memory = 42;
+    let returned = recurse(memory, 0);
+    let value = *returned;
+    free(returned);
+    return value;
+}
+
+fn recurse(memory: Own<u64>, depth: u64) -> Own<u64> {
+    if depth == 3 {
+        return memory;
+    }
+    return recurse(memory, depth + 1);
+}

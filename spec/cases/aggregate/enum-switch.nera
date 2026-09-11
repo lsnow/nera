@@ -1,0 +1,15 @@
+enum State {
+    Idle,
+    Count(u64),
+    Pair(u64, u64),
+}
+
+fn main() -> u64 {
+    let mut state = State::Count(2);
+    state = State::Pair(7, 6);
+    match state {
+        State::Idle => { return 0; },
+        State::Count(value) => { return value; },
+        State::Pair(left, right) => { return left + right; },
+    }
+}

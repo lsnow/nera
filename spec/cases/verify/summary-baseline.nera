@@ -1,0 +1,32 @@
+struct Package { owner: Own<u64>, }
+
+fn main() -> u64 {
+    let package = wrap(make());
+    let owner = package.owner;
+    let mut value = 1;
+    write_outer(&mut value);
+    let selected = choose(true);
+    if selected { return read_outer(&value) + recurse(owner, false); }
+    return 0;
+}
+
+fn make() -> Package {
+    let owner = alloc<u64>(1);
+    *owner = 20;
+    return Package { owner: owner };
+}
+
+fn wrap(package: Package) -> Package { return package; }
+fn choose(first: bool) -> bool { return first; }
+fn write_outer(value: &mut u64) { write_inner(value); return; }
+fn write_inner(value: &mut u64) { *value = 22; return; }
+fn read_outer(value: &u64) -> u64 { return read_inner(value); }
+fn read_inner(value: &u64) -> u64 { return *value; }
+fn recurse(owner: Own<u64>, stop: bool) -> u64 {
+    if stop { return *owner; }
+    return recurse_other(owner, true);
+}
+fn recurse_other(owner: Own<u64>, stop: bool) -> u64 {
+    if stop { return *owner; }
+    return recurse(owner, true);
+}

@@ -1,0 +1,21 @@
+fn main() -> u64 {
+    let values = [22];
+    let first = make();
+    let before = &raw *first;
+    let returned = outer(first);
+    let second = make();
+    if before == &raw *returned {
+        return *returned + values[index_outer()];
+    }
+    return 0;
+}
+
+fn make() -> Own<u64> {
+    let p = alloc<u64>(1);
+    *p = 20;
+    return p;
+}
+fn outer(p: Own<u64>) -> Own<u64> { return inner(p); }
+fn inner(p: Own<u64>) -> Own<u64> { return p; }
+fn index_outer() -> usize { return index_inner(); }
+fn index_inner() -> usize { return 0usize; }

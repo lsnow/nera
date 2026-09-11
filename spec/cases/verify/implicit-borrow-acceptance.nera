@@ -1,0 +1,31 @@
+struct Pair { left:u64, right:u64, }
+struct Holder { value:&u64, }
+
+fn main()->u64 {
+    let owner=alloc<u64>(1);
+    *owner=20;
+    let forwarded=identity<&u64>(&*owner);
+    let copied=*forwarded;
+    let pair=Pair { left:2, right:copied };
+    let selected=choose(true,&pair.right,&pair.left);
+    let chosen=*selected;
+    let projected=right(&pair);
+    let projected_value=*projected;
+    let stored=Holder { value:&chosen };
+    let extracted=stored.value;
+    let answer=*extracted+projected_value;
+    free(owner);
+    let mut scratch=0;
+    let loan=&mut scratch;
+    *loan=answer;
+    scratch=scratch+2;
+    return scratch;
+}
+
+fn identity<T>(value:T)->T { return value; }
+
+fn right(value:&Pair)->&u64 { return &value.right; }
+
+fn choose(flag:bool,a:&u64,b:&u64)->&u64 {
+    if flag { return a; } else { return b; }
+}

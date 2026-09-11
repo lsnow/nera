@@ -1,0 +1,7 @@
+# Each non-comment line is one raw byte corpus input encoded as hexadecimal.
+ff
+e282
+00666e
+efbbbf666e20efbbbf
+222f2a00ff2a2f22
+2f2a206f75746572202f2a20696e6e6572202a2f

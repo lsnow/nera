@@ -1,0 +1,5 @@
+module ownership;
+
+pub fn relay<T>(value: T) -> T {
+    return value;
+}

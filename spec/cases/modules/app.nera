@@ -1,0 +1,10 @@
+module app;
+use memory::compute;
+
+fn helper() -> u64 {
+    return 2;
+}
+
+fn main() -> u64 {
+    return compute() + helper();
+}

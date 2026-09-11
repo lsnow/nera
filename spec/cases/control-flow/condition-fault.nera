@@ -1,0 +1,9 @@
+fn condition_fault() -> u64 {
+    let memory = alloc<u64>(1);
+    if *memory == 0 {
+        free(memory);
+        return 1;
+    }
+    free(memory);
+    return 0;
+}

@@ -1,0 +1,42 @@
+struct Boxed {
+    owner: Own<u64>,
+}
+
+fn main() -> u64 {
+    for i in 0usize..4usize {
+        let direct = alloc<u64>(1);
+        *direct = 7;
+        free(direct);
+        let p = make();
+        free(p);
+        boxed_round();
+    }
+    let p = recurse(make(), 0);
+    let answer = *p;
+    free(p);
+    return answer;
+}
+
+fn make() -> Own<u64> {
+    let p = alloc<u64>(1);
+    *p = 7;
+    return p;
+}
+
+fn make_box() -> Boxed {
+    return Boxed { owner: make() };
+}
+
+fn boxed_round() {
+    let boxed = make_box();
+    return;
+}
+
+fn recurse(p: Own<u64>, depth: u64) -> Own<u64> {
+    let scratch: [u64; 2] = [20, 22];
+    if depth == 2 {
+        *p = scratch[0] + scratch[1];
+        return p;
+    }
+    return recurse(p, depth + 1);
+}

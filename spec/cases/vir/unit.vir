@@ -1,0 +1,30 @@
+vir-unit-v18
+memory {
+target little pointer 8/8 usize 8/8
+type type0 = unit layout layout0 capabilities copy/trivial-drop/resource-free/sized
+layout layout0 type type0 size 0 align 1 abi ignore fields []
+}
+borrow-regions {
+}
+runtime {
+entry fn0
+
+abi fn0 params [] results [unit<type0/layout0> effect ignore/none p[] r[]]
+fn fn0 "unit" () -> () contract contract0 entry bb0 @0..25 {
+  bb0() @0..25:
+    return () @16..23
+}
+}
+specs {
+contract contract0 function fn0 () -> () {
+  clauses []
+}
+}
+source-map {
+source source0 "spec/cases/vir/unit.nera" bytes 26
+origin origin0 = user source0 @0..25
+origin origin1 = user source0 @16..23
+location fn0:entry -> origin0
+location fn0/bb0:entry -> origin0
+location fn0/bb0:terminator -> origin1
+}

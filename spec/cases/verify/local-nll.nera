@@ -1,0 +1,13 @@
+fn main() -> u64 {
+    let mut value = 1;
+    let borrowed = &value;
+    let alias = borrowed;
+    let first = *borrowed;
+    let second = *alias;
+    value = 40;
+    let parent = &mut value;
+    let child = &mut *parent;
+    *child = 41;
+    *parent = 42;
+    return first + second + *parent;
+}

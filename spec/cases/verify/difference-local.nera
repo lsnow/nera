@@ -1,0 +1,11 @@
+fn main() -> u64 { return select(1usize); }
+
+fn select(i: usize) -> u64 {
+    let values = [42, 42, 42, 42];
+    if i < 3usize {
+        let end = i + 1usize;
+        let view = &values[i..end];
+        return values[i];
+    }
+    return 0;
+}

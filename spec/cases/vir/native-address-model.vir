@@ -1,0 +1,978 @@
+vir-unit-v18
+memory {
+target little pointer 8/8 usize 8/8
+type type0 = bool layout layout0 capabilities copy/trivial-drop/resource-free/sized
+type type1 = u64 layout layout1 capabilities copy/trivial-drop/resource-free/sized
+type type2 = own mutable pointer<type1> layout layout2 capabilities move-only/builtin-drop/resource/sized
+type type3 = usize layout layout3 capabilities copy/trivial-drop/resource-free/sized
+type type4 = slice<const type1> layout layout4 capabilities copy/trivial-drop/resource/sized
+type type5 = slice<const type1> layout layout5 capabilities copy/trivial-drop/resource/sized
+type type6 = reference const pointer<type1> layout layout6 capabilities copy/trivial-drop/resource/sized
+type type7 = reference const pointer<type1> layout layout7 capabilities copy/trivial-drop/resource/sized
+type type8 = reference const pointer<type1> layout layout8 capabilities copy/trivial-drop/resource/sized
+type type9 = reference const pointer<type1> layout layout9 capabilities copy/trivial-drop/resource/sized
+type type10 = reference const pointer<type1> layout layout10 capabilities copy/trivial-drop/resource/sized
+type type11 = reference const pointer<type1> layout layout11 capabilities copy/trivial-drop/resource/sized
+type type12 = reference const pointer<type1> layout layout12 capabilities copy/trivial-drop/resource/sized
+type type13 = reference const pointer<type1> layout layout13 capabilities copy/trivial-drop/resource/sized
+type type14 = raw const pointer<type1> layout layout14 capabilities copy/trivial-drop/resource/sized
+type type15 = array<type1; 8> layout layout15 capabilities copy/trivial-drop/resource-free/sized
+type type16 = slice<const type1> layout layout16 capabilities copy/trivial-drop/resource/sized
+type type17 = reference const pointer<type1> layout layout17 capabilities copy/trivial-drop/resource/sized
+type type18 = reference const pointer<type1> layout layout18 capabilities copy/trivial-drop/resource/sized
+type type19 = reference const pointer<type1> layout layout19 capabilities copy/trivial-drop/resource/sized
+type type20 = reference const pointer<type1> layout layout20 capabilities copy/trivial-drop/resource/sized
+type type21 = reference const pointer<type1> layout layout21 capabilities copy/trivial-drop/resource/sized
+type type22 = reference const pointer<type1> layout layout22 capabilities copy/trivial-drop/resource/sized
+type type23 = reference const pointer<type1> layout layout23 capabilities copy/trivial-drop/resource/sized
+type type24 = reference const pointer<type1> layout layout24 capabilities copy/trivial-drop/resource/sized
+layout layout0 type type0 size 1 align 1 abi scalar fields []
+layout layout1 type type1 size 8 align 8 abi scalar fields []
+layout layout2 type type2 size 8 align 8 abi scalar fields []
+layout layout3 type type3 size 8 align 8 abi scalar fields []
+layout layout4 type type4 size 16 align 8 abi scalar-pair fields []
+layout layout5 type type5 size 16 align 8 abi scalar-pair fields []
+layout layout6 type type6 size 8 align 8 abi scalar fields []
+layout layout7 type type7 size 8 align 8 abi scalar fields []
+layout layout8 type type8 size 8 align 8 abi scalar fields []
+layout layout9 type type9 size 8 align 8 abi scalar fields []
+layout layout10 type type10 size 8 align 8 abi scalar fields []
+layout layout11 type type11 size 8 align 8 abi scalar fields []
+layout layout12 type type12 size 8 align 8 abi scalar fields []
+layout layout13 type type13 size 8 align 8 abi scalar fields []
+layout layout14 type type14 size 8 align 8 abi scalar fields []
+layout layout15 type type15 size 64 align 8 abi aggregate fields []
+layout layout16 type type16 size 16 align 8 abi scalar-pair fields []
+layout layout17 type type17 size 8 align 8 abi scalar fields []
+layout layout18 type type18 size 8 align 8 abi scalar fields []
+layout layout19 type type19 size 8 align 8 abi scalar fields []
+layout layout20 type type20 size 8 align 8 abi scalar fields []
+layout layout21 type type21 size 8 align 8 abi scalar fields []
+layout layout22 type type22 size 8 align 8 abi scalar fields []
+layout layout23 type type23 size 8 align 8 abi scalar fields []
+layout layout24 type type24 size 8 align 8 abi scalar fields []
+}
+borrow-regions {
+region bregion0 owner fn2 origin parameter(0) scope function source origin80
+region bregion1 owner fn3 origin parameter(0) scope function source origin83
+region bregion2 owner fn3 origin parameter(1) scope function source origin83
+region bregion3 owner fn3 origin parameter(2) scope function source origin83
+region bregion4 owner fn3 origin parameter(3) scope function source origin83
+region bregion5 owner fn3 origin parameter(4) scope function source origin83
+region bregion6 owner fn3 origin parameter(5) scope function source origin83
+region bregion7 owner fn3 origin parameter(6) scope function source origin83
+region bregion8 owner fn3 origin parameter(7) scope function source origin83
+region bregion9 owner fn0 origin inferred scope blocks[bb17,bb18,bb20] source origin146
+region bregion10 owner fn0 origin inferred scope blocks[bb20] source origin155
+region bregion11 owner fn0 origin inferred scope blocks[bb20] source origin156
+region bregion12 owner fn0 origin inferred scope blocks[bb20] source origin157
+region bregion13 owner fn0 origin inferred scope blocks[bb20] source origin158
+region bregion14 owner fn0 origin inferred scope blocks[bb20] source origin159
+region bregion15 owner fn0 origin inferred scope blocks[bb20] source origin160
+region bregion16 owner fn0 origin inferred scope blocks[bb20] source origin161
+region bregion17 owner fn0 origin inferred scope blocks[bb20] source origin162
+}
+runtime {
+entry fn0
+
+abi fn0 params [] results [scalar<type1/layout1> effect copy/direct p[] r[0]]
+fn fn0 "main" () -> (u64) contract contract0 entry bb0 @76..786 {
+  bb0() @76..786:
+    %0: ptr<type15/layout15>, %1: permission = local-storage access type15/layout15 @358..397
+    %2: ptr<type15/layout15>, %3: permission = local-storage access type15/layout15 @371..396
+    %4: u64 = const.u64 0 @108..114
+    %5: u64 = const.u64 3 @116..122
+    jump bb1(%0, %1, %2, %3, %4, %4, %5) @99..353
+  bb1(%6: ptr<type15/layout15>, %7: permission, %8: ptr<type15/layout15>, %9: permission, %10: u64, %11: u64, %12: u64) @99..353:
+    %13: bool = cmp.ult %11, %12 @99..353
+    branch %13 then bb2(%6, %7, %8, %9, %10, %11, %12, %13) else bb5(%6, %7, %8, %9) @99..353
+  bb2(%14: ptr<type15/layout15>, %15: permission, %16: ptr<type15/layout15>, %17: permission, %18: u64, %19: u64, %20: u64, %21: bool) @123..353:
+    %37: u64 = const.u64 16 @145..158
+    %38: ptr<type1/layout1>, %39: permission = alloc %37 align 8 region0 access type1/layout1 @145..158
+    %40: bool = const.bool true @145..158
+    %41 = raw_address %38 using %39 as type14/layout14 @180..191
+    %42: u64 = const.u64 16 @211..221
+    %43: ptr<type1/layout1> = offset %41, %42 @211..221
+    %44: u64 = ptr.byte_distance %41, %43 @234..263
+    %45: u64 = const.u64 16 @267..274
+    %46: bool = cmp.ne %44, %45 @264..266
+    branch %46 then bb6(%38, %39, %40, %41, %43, %14, %15, %16, %17, %18, %19, %20, %21, %44, %45, %46) else bb7(%38, %39, %40, %41, %43, %14, %15, %16, %17, %18, %19, %20, %21, %44, %45, %46) @231..288
+  bb3(%22: ptr<type15/layout15>, %23: permission, %24: ptr<type15/layout15>, %25: permission, %26: u64, %27: u64, %28: u64) @99..353:
+    %146: u64 = const.u64 1 @99..353
+    %147: u64 = add %27, %146 @99..353
+    jump bb1(%22, %23, %24, %25, %26, %147, %28) @99..353
+  bb4(%29: ptr<type15/layout15>, %30: permission, %31: ptr<type15/layout15>, %32: permission) @93..786:
+    %148: u64 = const.u64 0 @372..373
+    %149: ptr<type1/layout1> = index.address %31, %148 source type15/layout15 element type1/layout1 stride 8 bounds array(8) @372..373
+    %150: u64 = const.u64 0 @372..373
+    init %149, %150 using %32 access type1/layout1 @372..373
+    %151: u64 = const.u64 1 @375..376
+    %152: ptr<type1/layout1> = index.address %31, %151 source type15/layout15 element type1/layout1 stride 8 bounds array(8) @375..376
+    %153: u64 = const.u64 0 @375..376
+    init %152, %153 using %32 access type1/layout1 @375..376
+    %154: u64 = const.u64 2 @378..379
+    %155: ptr<type1/layout1> = index.address %31, %154 source type15/layout15 element type1/layout1 stride 8 bounds array(8) @378..379
+    %156: u64 = const.u64 0 @378..379
+    init %155, %156 using %32 access type1/layout1 @378..379
+    %157: u64 = const.u64 3 @381..382
+    %158: ptr<type1/layout1> = index.address %31, %157 source type15/layout15 element type1/layout1 stride 8 bounds array(8) @381..382
+    %159: u64 = const.u64 0 @381..382
+    init %158, %159 using %32 access type1/layout1 @381..382
+    %160: u64 = const.u64 4 @384..385
+    %161: ptr<type1/layout1> = index.address %31, %160 source type15/layout15 element type1/layout1 stride 8 bounds array(8) @384..385
+    %162: u64 = const.u64 0 @384..385
+    init %161, %162 using %32 access type1/layout1 @384..385
+    %163: u64 = const.u64 5 @387..388
+    %164: ptr<type1/layout1> = index.address %31, %163 source type15/layout15 element type1/layout1 stride 8 bounds array(8) @387..388
+    %165: u64 = const.u64 0 @387..388
+    init %164, %165 using %32 access type1/layout1 @387..388
+    %166: u64 = const.u64 6 @390..391
+    %167: ptr<type1/layout1> = index.address %31, %166 source type15/layout15 element type1/layout1 stride 8 bounds array(8) @390..391
+    %168: u64 = const.u64 0 @390..391
+    init %167, %168 using %32 access type1/layout1 @390..391
+    %169: u64 = const.u64 7 @393..395
+    %170: ptr<type1/layout1> = index.address %31, %169 source type15/layout15 element type1/layout1 stride 8 bounds array(8) @393..395
+    %171: u64 = const.u64 42 @393..395
+    init %170, %171 using %32 access type1/layout1 @393..395
+    object.init.move %29, %31 using %30, %32 access type15/layout15 @358..397
+    %172: u64 = const.u64 0 @425..428
+    %173: ptr<type1/layout1> = index.address %29, %172 source type15/layout15 element type1/layout1 stride 8 bounds array(8) @425..428
+    %174 = raw_address %173 using %30 as type14/layout14 @414..428
+    %175: bool = call "choose" contract contract1 () : () -> (bool) abi canonical @463..471
+    branch %175 then bb12(%29, %30, %174, %174, %31, %32, %175) else bb13(%29, %30, %174, %174, %31, %32, %175) @460..526
+  bb5(%33: ptr<type15/layout15>, %34: permission, %35: ptr<type15/layout15>, %36: permission) @99..353:
+    jump bb4(%33, %34, %35, %36) @99..353
+  bb6(%47: ptr<type1/layout1>, %48: permission, %49: bool, %50: ptr<type1/layout1>, %51: ptr<type1/layout1>, %52: ptr<type15/layout15>, %53: permission, %54: ptr<type15/layout15>, %55: permission, %56: u64, %57: u64, %58: u64, %59: bool, %60: u64, %61: u64, %62: bool) @275..288:
+    %95: u64 = const.u64 0 @284..285
+    drop.own %47 using %48 if %49 @277..286
+    %96: bool = const.bool false @277..286
+    return (%95) @277..286
+  bb7(%63: ptr<type1/layout1>, %64: permission, %65: bool, %66: ptr<type1/layout1>, %67: ptr<type1/layout1>, %68: ptr<type15/layout15>, %69: permission, %70: ptr<type15/layout15>, %71: permission, %72: u64, %73: u64, %74: u64, %75: bool, %76: u64, %77: u64, %78: bool) @231..288:
+    jump bb8(%63, %64, %65, %66, %67, %68, %69, %70, %71, %72, %73, %74, %75, %76, %77, %78) @231..288
+  bb8(%79: ptr<type1/layout1>, %80: permission, %81: bool, %82: ptr<type1/layout1>, %83: ptr<type1/layout1>, %84: ptr<type15/layout15>, %85: permission, %86: ptr<type15/layout15>, %87: permission, %88: u64, %89: u64, %90: u64, %91: bool, %92: u64, %93: u64, %94: bool) @123..353:
+    %97: bool = ptr.cmp.uge %82, %83 @306..308
+    branch %97 then bb9(%79, %80, %81, %84, %85, %86, %87, %88, %89, %90, %91, %92, %93, %94, %97) else bb10(%79, %80, %81, %84, %85, %86, %87, %88, %89, %90, %91, %92, %93, %94, %97) @297..326
+  bb9(%98: ptr<type1/layout1>, %99: permission, %100: bool, %101: ptr<type15/layout15>, %102: permission, %103: ptr<type15/layout15>, %104: permission, %105: u64, %106: u64, %107: u64, %108: bool, %109: u64, %110: u64, %111: bool, %112: bool) @313..326:
+    %143: u64 = const.u64 0 @322..323
+    drop.own %98 using %99 if %100 @315..324
+    %144: bool = const.bool false @315..324
+    return (%143) @315..324
+  bb10(%113: ptr<type1/layout1>, %114: permission, %115: bool, %116: ptr<type15/layout15>, %117: permission, %118: ptr<type15/layout15>, %119: permission, %120: u64, %121: u64, %122: u64, %123: bool, %124: u64, %125: u64, %126: bool, %127: bool) @297..326:
+    jump bb11(%113, %114, %115, %116, %117, %118, %119, %120, %121, %122, %123, %124, %125, %126, %127) @297..326
+  bb11(%128: ptr<type1/layout1>, %129: permission, %130: bool, %131: ptr<type15/layout15>, %132: permission, %133: ptr<type15/layout15>, %134: permission, %135: u64, %136: u64, %137: u64, %138: bool, %139: u64, %140: u64, %141: bool, %142: bool) @123..353:
+    free %128 using %129 @335..347
+    %145: bool = const.bool false @335..347
+    jump bb3(%131, %132, %133, %134, %135, %136, %137) @123..353
+  bb12(%176: ptr<type15/layout15>, %177: permission, %178: ptr<type1/layout1>, %179: ptr<type1/layout1>, %180: ptr<type15/layout15>, %181: permission, %182: bool) @472..494:
+    %195: u64 = const.u64 56 @481..491
+    %196: ptr<type1/layout1> = offset %178, %195 @481..491
+    jump bb14(%176, %177, %196, %180, %181) @472..494
+  bb13(%183: ptr<type15/layout15>, %184: permission, %185: ptr<type1/layout1>, %186: ptr<type1/layout1>, %187: ptr<type15/layout15>, %188: permission, %189: bool) @500..526:
+    %197: u64 = const.u64 7 @520..523
+    %198: ptr<type1/layout1> = index.address %183, %197 source type15/layout15 element type1/layout1 stride 8 bounds array(8) @520..523
+    %199 = raw_address %198 using %184 as type14/layout14 @509..523
+    jump bb14(%183, %184, %199, %187, %188) @500..526
+  bb14(%190: ptr<type15/layout15>, %191: permission, %192: ptr<type1/layout1>, %193: ptr<type15/layout15>, %194: permission) @93..786:
+    %200: u64 = const.u64 7 @553..556
+    %201: ptr<type1/layout1> = index.address %190, %200 source type15/layout15 element type1/layout1 stride 8 bounds array(8) @553..556
+    %202 = raw_address %201 using %191 as type14/layout14 @542..556
+    %203: bool = ptr.cmp.ne %192, %202 @539..541
+    branch %203 then bb15(%190, %191, %193, %194, %203) else bb16(%190, %191, %193, %194, %203) @531..570
+  bb15(%204: ptr<type15/layout15>, %205: permission, %206: ptr<type15/layout15>, %207: permission, %208: bool) @557..570:
+    %219: u64 = const.u64 0 @566..567
+    return (%219) @559..568
+  bb16(%209: ptr<type15/layout15>, %210: permission, %211: ptr<type15/layout15>, %212: permission, %213: bool) @531..570:
+    jump bb17(%209, %210, %211, %212, %213) @531..570
+  bb17(%214: ptr<type15/layout15>, %215: permission, %216: ptr<type15/layout15>, %217: permission, %218: bool) @93..786:
+    %220: u64 = const.u64 8 @604..605
+    %221: u64 = const.u64 8 @607..608
+    %222: ptr<type1/layout1>, %223: u64 = slice.address %214 start %220 end %221 source type15/layout15 slice type16/layout16 element type1/layout1 stride 8 bounds array(8) @603..609
+    %224: ptr<type1/layout1>, %225: permission = loan.begin loan0 shared region bregion9 parent none from %222 using %215 reference type16/layout16 range [64,64) origin origin146 @596..609
+    %226: ptr<type1/layout1>, %227: u64, %228: permission, %229: permission = call "identity" contract contract2 (%224, %223, %225) : (ptr<type1/layout1>, u64, permission) -> (ptr<type1/layout1>, u64, permission, permission) abi canonical @587..610
+    loan.end loan0 shared region bregion9 parent none from %224 using %229 reference type16/layout16 range [64,64) origin origin145 @587..610
+    %230: u64 = const.u64 0 @633..639
+    %231: bool = cmp.ne %227, %230 @630..632
+    branch %231 then bb18(%214, %215, %226, %227, %228, %216, %217, %218, %227, %230, %231) else bb19(%214, %215, %226, %227, %228, %216, %217, %218, %227, %230, %231) @616..653
+  bb18(%232: ptr<type15/layout15>, %233: permission, %234: ptr<type1/layout1>, %235: u64, %236: permission, %237: ptr<type15/layout15>, %238: permission, %239: bool, %240: u64, %241: u64, %242: bool) @640..653:
+    %265: u64 = const.u64 0 @649..650
+    loan.end loan0 shared region bregion9 parent none from %234 using %236 reference type16/layout16 range [64,64) origin origin152 @642..651
+    return (%265) @642..651
+  bb19(%243: ptr<type15/layout15>, %244: permission, %245: ptr<type1/layout1>, %246: u64, %247: permission, %248: ptr<type15/layout15>, %249: permission, %250: bool, %251: u64, %252: u64, %253: bool) @616..653:
+    jump bb20(%243, %244, %245, %246, %247, %248, %249, %250, %251, %252, %253) @616..653
+  bb20(%254: ptr<type15/layout15>, %255: permission, %256: ptr<type1/layout1>, %257: u64, %258: permission, %259: ptr<type15/layout15>, %260: permission, %261: bool, %262: u64, %263: u64, %264: bool) @93..786:
+    %266: u64 = const.u64 0 @678..681
+    %267: ptr<type1/layout1> = index.address %254, %266 source type15/layout15 element type1/layout1 stride 8 bounds array(8) @678..681
+    %268: ptr<type1/layout1>, %269: permission = loan.begin loan1 shared region bregion10 parent none from %267 using %255 reference type17/layout17 range [0,8) origin origin155 @671..681
+    %270: u64 = const.u64 1 @690..693
+    %271: ptr<type1/layout1> = index.address %254, %270 source type15/layout15 element type1/layout1 stride 8 bounds array(8) @690..693
+    %272: ptr<type1/layout1>, %273: permission = loan.begin loan2 shared region bregion11 parent none from %271 using %255 reference type18/layout18 range [8,16) origin origin156 @683..693
+    %274: u64 = const.u64 2 @702..705
+    %275: ptr<type1/layout1> = index.address %254, %274 source type15/layout15 element type1/layout1 stride 8 bounds array(8) @702..705
+    %276: ptr<type1/layout1>, %277: permission = loan.begin loan3 shared region bregion12 parent none from %275 using %255 reference type19/layout19 range [16,24) origin origin157 @695..705
+    %278: u64 = const.u64 3 @714..717
+    %279: ptr<type1/layout1> = index.address %254, %278 source type15/layout15 element type1/layout1 stride 8 bounds array(8) @714..717
+    %280: ptr<type1/layout1>, %281: permission = loan.begin loan4 shared region bregion13 parent none from %279 using %255 reference type20/layout20 range [24,32) origin origin158 @707..717
+    %282: u64 = const.u64 4 @743..746
+    %283: ptr<type1/layout1> = index.address %254, %282 source type15/layout15 element type1/layout1 stride 8 bounds array(8) @743..746
+    %284: ptr<type1/layout1>, %285: permission = loan.begin loan5 shared region bregion14 parent none from %283 using %255 reference type21/layout21 range [32,40) origin origin159 @736..746
+    %286: u64 = const.u64 5 @755..758
+    %287: ptr<type1/layout1> = index.address %254, %286 source type15/layout15 element type1/layout1 stride 8 bounds array(8) @755..758
+    %288: ptr<type1/layout1>, %289: permission = loan.begin loan6 shared region bregion15 parent none from %287 using %255 reference type22/layout22 range [40,48) origin origin160 @748..758
+    %290: u64 = const.u64 6 @767..770
+    %291: ptr<type1/layout1> = index.address %254, %290 source type15/layout15 element type1/layout1 stride 8 bounds array(8) @767..770
+    %292: ptr<type1/layout1>, %293: permission = loan.begin loan7 shared region bregion16 parent none from %291 using %255 reference type23/layout23 range [48,56) origin origin161 @760..770
+    %294: u64 = const.u64 7 @779..782
+    %295: ptr<type1/layout1> = index.address %254, %294 source type15/layout15 element type1/layout1 stride 8 bounds array(8) @779..782
+    %296: ptr<type1/layout1>, %297: permission = loan.begin loan8 shared region bregion17 parent none from %295 using %255 reference type24/layout24 range [56,64) origin origin162 @772..782
+    %298: u64, %299: permission, %300: permission, %301: permission, %302: permission, %303: permission, %304: permission, %305: permission, %306: permission = call "probe" contract contract3 (%268, %269, %272, %273, %276, %277, %280, %281, %284, %285, %288, %289, %292, %293, %296, %297) : (ptr<type1/layout1>, permission, ptr<type1/layout1>, permission, ptr<type1/layout1>, permission, ptr<type1/layout1>, permission, ptr<type1/layout1>, permission, ptr<type1/layout1>, permission, ptr<type1/layout1>, permission, ptr<type1/layout1>, permission) -> (u64, permission, permission, permission, permission, permission, permission, permission, permission) abi canonical @665..783
+    loan.end loan1 shared region bregion10 parent none from %268 using %299 reference type17/layout17 range [0,8) origin origin154 @665..783
+    loan.end loan2 shared region bregion11 parent none from %272 using %300 reference type18/layout18 range [8,16) origin origin154 @665..783
+    loan.end loan3 shared region bregion12 parent none from %276 using %301 reference type19/layout19 range [16,24) origin origin154 @665..783
+    loan.end loan4 shared region bregion13 parent none from %280 using %302 reference type20/layout20 range [24,32) origin origin154 @665..783
+    loan.end loan5 shared region bregion14 parent none from %284 using %303 reference type21/layout21 range [32,40) origin origin154 @665..783
+    loan.end loan6 shared region bregion15 parent none from %288 using %304 reference type22/layout22 range [40,48) origin origin154 @665..783
+    loan.end loan7 shared region bregion16 parent none from %292 using %305 reference type23/layout23 range [48,56) origin origin154 @665..783
+    loan.end loan8 shared region bregion17 parent none from %296 using %306 reference type24/layout24 range [56,64) origin origin154 @665..783
+    loan.end loan0 shared region bregion9 parent none from %256 using %258 reference type16/layout16 range [64,64) origin origin153 @658..784
+    return (%298) @658..784
+}
+
+abi fn1 params [] results [scalar<type0/layout0> effect copy/direct p[] r[0]]
+fn fn1 "choose" () -> (bool) contract contract1 entry bb0 @788..824 {
+  bb0() @788..824:
+    %0: bool = const.bool true @817..821
+    return (%0) @810..822
+}
+
+abi fn2 params [slice<type5/layout5> effect borrow-shared/direct p[0, 1, 2] r[3]] results [slice<type5/layout5> effect borrow-shared/direct p[] r[0, 1, 2]] borrow-result0=param0/Whole/Shared
+fn fn2 "identity" (ptr<type1/layout1>, u64, permission) -> (ptr<type1/layout1>, u64, permission, permission) contract contract2 entry bb0 @825..881 {
+  bb0(%0: ptr<type1/layout1>, %1: u64, %2: permission) @825..881:
+    %3: ptr<type1/layout1>, %4: permission = loan.alias-authority source %0 permission %2 reference type5/layout5 origin origin164 @872..878
+    return (%3, %1, %4, %2) @865..879
+}
+
+abi fn3 params [pointer<type6/layout6> effect borrow-shared/direct p[0, 1] r[1], pointer<type7/layout7> effect borrow-shared/direct p[2, 3] r[2], pointer<type8/layout8> effect borrow-shared/direct p[4, 5] r[3], pointer<type9/layout9> effect borrow-shared/direct p[6, 7] r[4], pointer<type10/layout10> effect borrow-shared/direct p[8, 9] r[5], pointer<type11/layout11> effect borrow-shared/direct p[10, 11] r[6], pointer<type12/layout12> effect borrow-shared/direct p[12, 13] r[7], pointer<type13/layout13> effect borrow-shared/direct p[14, 15] r[8]] results [scalar<type1/layout1> effect copy/direct p[] r[0]]
+fn fn3 "probe" (ptr<type1/layout1>, permission, ptr<type1/layout1>, permission, ptr<type1/layout1>, permission, ptr<type1/layout1>, permission, ptr<type1/layout1>, permission, ptr<type1/layout1>, permission, ptr<type1/layout1>, permission, ptr<type1/layout1>, permission) -> (u64, permission, permission, permission, permission, permission, permission, permission, permission) contract contract3 entry bb0 @882..1121 {
+  bb0(%0: ptr<type1/layout1>, %1: permission, %2: ptr<type1/layout1>, %3: permission, %4: ptr<type1/layout1>, %5: permission, %6: ptr<type1/layout1>, %7: permission, %8: ptr<type1/layout1>, %9: permission, %10: ptr<type1/layout1>, %11: permission, %12: ptr<type1/layout1>, %13: permission, %14: ptr<type1/layout1>, %15: permission) @882..1121:
+    %16 = raw_address %14 using %15 as type14/layout14 @996..1003
+    %17: u64 = const.u64 8 @1036..1044
+    %18: ptr<type1/layout1> = offset %16, %17 @1036..1044
+    %19: u64 = ptr.byte_distance %16, %18 @1012..1045
+    %20: u64 = const.u64 8 @1049..1055
+    %21: bool = cmp.ne %19, %20 @1046..1048
+    branch %21 then bb1(%0, %1, %2, %3, %4, %5, %6, %7, %8, %9, %10, %11, %12, %13, %14, %15, %19, %20, %21) else bb2(%0, %1, %2, %3, %4, %5, %6, %7, %8, %9, %10, %11, %12, %13, %14, %15, %19, %20, %21) @1009..1069
+  bb1(%22: ptr<type1/layout1>, %23: permission, %24: ptr<type1/layout1>, %25: permission, %26: ptr<type1/layout1>, %27: permission, %28: ptr<type1/layout1>, %29: permission, %30: ptr<type1/layout1>, %31: permission, %32: ptr<type1/layout1>, %33: permission, %34: ptr<type1/layout1>, %35: permission, %36: ptr<type1/layout1>, %37: permission, %38: u64, %39: u64, %40: bool) @1056..1069:
+    %79: u64 = const.u64 0 @1065..1066
+    return (%79, %23, %25, %27, %29, %31, %33, %35, %37) @1058..1067
+  bb2(%41: ptr<type1/layout1>, %42: permission, %43: ptr<type1/layout1>, %44: permission, %45: ptr<type1/layout1>, %46: permission, %47: ptr<type1/layout1>, %48: permission, %49: ptr<type1/layout1>, %50: permission, %51: ptr<type1/layout1>, %52: permission, %53: ptr<type1/layout1>, %54: permission, %55: ptr<type1/layout1>, %56: permission, %57: u64, %58: u64, %59: bool) @1009..1069:
+    jump bb3(%41, %42, %43, %44, %45, %46, %47, %48, %49, %50, %51, %52, %53, %54, %55, %56, %57, %58, %59) @1009..1069
+  bb3(%60: ptr<type1/layout1>, %61: permission, %62: ptr<type1/layout1>, %63: permission, %64: ptr<type1/layout1>, %65: permission, %66: ptr<type1/layout1>, %67: permission, %68: ptr<type1/layout1>, %69: permission, %70: ptr<type1/layout1>, %71: permission, %72: ptr<type1/layout1>, %73: permission, %74: ptr<type1/layout1>, %75: permission, %76: u64, %77: u64, %78: bool) @979..1121:
+    %80: u64 = load %60 using %61 access type1/layout1 @1081..1083
+    %81: u64 = load %62 using %63 access type1/layout1 @1086..1088
+    %82: u64 = add %80, %81 @1081..1088
+    %83: u64 = load %64 using %65 access type1/layout1 @1091..1093
+    %84: u64 = add %82, %83 @1081..1093
+    %85: u64 = load %66 using %67 access type1/layout1 @1096..1098
+    %86: u64 = add %84, %85 @1081..1098
+    %87: u64 = load %68 using %69 access type1/layout1 @1101..1103
+    %88: u64 = add %86, %87 @1081..1103
+    %89: u64 = load %70 using %71 access type1/layout1 @1106..1108
+    %90: u64 = add %88, %89 @1081..1108
+    %91: u64 = load %72 using %73 access type1/layout1 @1111..1113
+    %92: u64 = add %90, %91 @1081..1113
+    %93: u64 = load %74 using %75 access type1/layout1 @1116..1118
+    %94: u64 = add %92, %93 @1081..1118
+    return (%94, %61, %63, %65, %67, %69, %71, %73, %75) @1074..1119
+}
+}
+specs {
+contract contract0 function fn0 () -> (u64) {
+  binder binder0 ensures slot0: u64
+  clauses []
+}
+contract contract1 function fn1 () -> (bool) {
+  binder binder0 ensures slot0: bool
+  clauses []
+}
+contract contract2 function fn2 (ptr<type1/layout1>, u64, permission) -> (ptr<type1/layout1>, u64, permission, permission) {
+  binder binder0 requires slot0: ptr<type1/layout1>
+  binder binder1 requires slot1: u64
+  binder binder2 requires slot2: permission
+  binder binder3 ensures slot0: ptr<type1/layout1>
+  binder binder4 ensures slot1: u64
+  binder binder5 ensures slot2: permission
+  binder binder6 ensures slot3: permission
+  clauses []
+}
+contract contract3 function fn3 (ptr<type1/layout1>, permission, ptr<type1/layout1>, permission, ptr<type1/layout1>, permission, ptr<type1/layout1>, permission, ptr<type1/layout1>, permission, ptr<type1/layout1>, permission, ptr<type1/layout1>, permission, ptr<type1/layout1>, permission) -> (u64, permission, permission, permission, permission, permission, permission, permission, permission) {
+  binder binder0 requires slot0: ptr<type1/layout1>
+  binder binder1 requires slot1: permission
+  binder binder2 requires slot2: ptr<type1/layout1>
+  binder binder3 requires slot3: permission
+  binder binder4 requires slot4: ptr<type1/layout1>
+  binder binder5 requires slot5: permission
+  binder binder6 requires slot6: ptr<type1/layout1>
+  binder binder7 requires slot7: permission
+  binder binder8 requires slot8: ptr<type1/layout1>
+  binder binder9 requires slot9: permission
+  binder binder10 requires slot10: ptr<type1/layout1>
+  binder binder11 requires slot11: permission
+  binder binder12 requires slot12: ptr<type1/layout1>
+  binder binder13 requires slot13: permission
+  binder binder14 requires slot14: ptr<type1/layout1>
+  binder binder15 requires slot15: permission
+  binder binder16 ensures slot0: u64
+  binder binder17 ensures slot1: permission
+  binder binder18 ensures slot2: permission
+  binder binder19 ensures slot3: permission
+  binder binder20 ensures slot4: permission
+  binder binder21 ensures slot5: permission
+  binder binder22 ensures slot6: permission
+  binder binder23 ensures slot7: permission
+  binder binder24 ensures slot8: permission
+  clauses []
+}
+}
+source-map {
+source source0 "spec/cases/verify/native-address-model.nera" bytes 1122
+origin origin0 = user source0 @76..786
+origin origin1 = user source0 @93..786
+origin origin2 = user source0 @99..353
+origin origin3 = user source0 @108..114
+origin origin4 = user source0 @116..122
+origin origin5 = user source0 @123..353
+origin origin6 = user source0 @145..158
+origin origin7 = user source0 @180..191
+origin origin8 = user source0 @211..221
+origin origin9 = user source0 @231..288
+origin origin10 = user source0 @234..263
+origin origin11 = user source0 @264..266
+origin origin12 = user source0 @267..274
+origin origin13 = user source0 @275..288
+origin origin14 = user source0 @277..286
+origin origin15 = user source0 @284..285
+origin origin16 = user source0 @297..326
+origin origin17 = user source0 @306..308
+origin origin18 = user source0 @313..326
+origin origin19 = user source0 @315..324
+origin origin20 = user source0 @322..323
+origin origin21 = user source0 @335..347
+origin origin22 = user source0 @358..397
+origin origin23 = user source0 @371..396
+origin origin24 = user source0 @372..373
+origin origin25 = user source0 @375..376
+origin origin26 = user source0 @378..379
+origin origin27 = user source0 @381..382
+origin origin28 = user source0 @384..385
+origin origin29 = user source0 @387..388
+origin origin30 = user source0 @390..391
+origin origin31 = user source0 @393..395
+origin origin32 = user source0 @414..428
+origin origin33 = user source0 @425..428
+origin origin34 = user source0 @460..526
+origin origin35 = user source0 @463..471
+origin origin36 = user source0 @472..494
+origin origin37 = user source0 @481..491
+origin origin38 = user source0 @500..526
+origin origin39 = user source0 @509..523
+origin origin40 = user source0 @520..523
+origin origin41 = user source0 @531..570
+origin origin42 = user source0 @539..541
+origin origin43 = user source0 @542..556
+origin origin44 = user source0 @553..556
+origin origin45 = user source0 @557..570
+origin origin46 = user source0 @559..568
+origin origin47 = user source0 @566..567
+origin origin48 = user source0 @587..610
+origin origin49 = user source0 @596..609
+origin origin50 = user source0 @603..609
+origin origin51 = user source0 @604..605
+origin origin52 = user source0 @607..608
+origin origin53 = user source0 @616..653
+origin origin54 = user source0 @630..632
+origin origin55 = user source0 @633..639
+origin origin56 = user source0 @640..653
+origin origin57 = user source0 @642..651
+origin origin58 = user source0 @649..650
+origin origin59 = user source0 @658..784
+origin origin60 = user source0 @665..783
+origin origin61 = user source0 @671..681
+origin origin62 = user source0 @678..681
+origin origin63 = user source0 @683..693
+origin origin64 = user source0 @690..693
+origin origin65 = user source0 @695..705
+origin origin66 = user source0 @702..705
+origin origin67 = user source0 @707..717
+origin origin68 = user source0 @714..717
+origin origin69 = user source0 @736..746
+origin origin70 = user source0 @743..746
+origin origin71 = user source0 @748..758
+origin origin72 = user source0 @755..758
+origin origin73 = user source0 @760..770
+origin origin74 = user source0 @767..770
+origin origin75 = user source0 @772..782
+origin origin76 = user source0 @779..782
+origin origin77 = user source0 @788..824
+origin origin78 = user source0 @810..822
+origin origin79 = user source0 @817..821
+origin origin80 = user source0 @825..881
+origin origin81 = user source0 @865..879
+origin origin82 = user source0 @872..878
+origin origin83 = user source0 @882..1121
+origin origin84 = user source0 @979..1121
+origin origin85 = user source0 @996..1003
+origin origin86 = user source0 @1009..1069
+origin origin87 = user source0 @1012..1045
+origin origin88 = user source0 @1036..1044
+origin origin89 = user source0 @1046..1048
+origin origin90 = user source0 @1049..1055
+origin origin91 = user source0 @1056..1069
+origin origin92 = user source0 @1058..1067
+origin origin93 = user source0 @1065..1066
+origin origin94 = user source0 @1074..1119
+origin origin95 = user source0 @1081..1083
+origin origin96 = user source0 @1081..1088
+origin origin97 = user source0 @1081..1093
+origin origin98 = user source0 @1081..1098
+origin origin99 = user source0 @1081..1103
+origin origin100 = user source0 @1081..1108
+origin origin101 = user source0 @1081..1113
+origin origin102 = user source0 @1081..1118
+origin origin103 = user source0 @1086..1088
+origin origin104 = user source0 @1091..1093
+origin origin105 = user source0 @1096..1098
+origin origin106 = user source0 @1101..1103
+origin origin107 = user source0 @1106..1108
+origin origin108 = user source0 @1111..1113
+origin origin109 = user source0 @1116..1118
+origin origin110 = generated origin1 reason control-flow-block
+origin origin111 = generated origin1 reason block-parameter
+origin origin112 = generated origin2 reason control-flow-block
+origin origin113 = generated origin2 reason block-parameter
+origin origin114 = generated origin2 reason control-flow-edge
+origin origin115 = generated origin2 reason loop-increment
+origin origin116 = generated origin5 reason control-flow-block
+origin origin117 = generated origin5 reason block-parameter
+origin origin118 = generated origin5 reason control-flow-edge
+origin origin119 = generated origin6 reason implicit-drop
+origin origin120 = generated origin9 reason control-flow-block
+origin origin121 = generated origin9 reason block-parameter
+origin origin122 = generated origin9 reason control-flow-edge
+origin origin123 = generated origin13 reason control-flow-block
+origin origin124 = generated origin13 reason block-parameter
+origin origin125 = generated origin14 reason implicit-drop
+origin origin126 = generated origin16 reason control-flow-block
+origin origin127 = generated origin16 reason block-parameter
+origin origin128 = generated origin16 reason control-flow-edge
+origin origin129 = generated origin18 reason control-flow-block
+origin origin130 = generated origin18 reason block-parameter
+origin origin131 = generated origin19 reason implicit-drop
+origin origin132 = generated origin21 reason implicit-drop
+origin origin133 = generated origin23 reason temporary-storage
+origin origin134 = generated origin36 reason control-flow-block
+origin origin135 = generated origin36 reason block-parameter
+origin origin136 = generated origin36 reason control-flow-edge
+origin origin137 = generated origin38 reason control-flow-block
+origin origin138 = generated origin38 reason block-parameter
+origin origin139 = generated origin38 reason control-flow-edge
+origin origin140 = generated origin41 reason control-flow-block
+origin origin141 = generated origin41 reason block-parameter
+origin origin142 = generated origin41 reason control-flow-edge
+origin origin143 = generated origin45 reason control-flow-block
+origin origin144 = generated origin45 reason block-parameter
+origin origin145 = generated origin48 reason loan-effect
+origin origin146 = generated origin49 reason loan-effect
+origin origin147 = generated origin53 reason control-flow-block
+origin origin148 = generated origin53 reason block-parameter
+origin origin149 = generated origin53 reason control-flow-edge
+origin origin150 = generated origin56 reason control-flow-block
+origin origin151 = generated origin56 reason block-parameter
+origin origin152 = generated origin57 reason loan-effect
+origin origin153 = generated origin59 reason loan-effect
+origin origin154 = generated origin60 reason loan-effect
+origin origin155 = generated origin61 reason loan-effect
+origin origin156 = generated origin63 reason loan-effect
+origin origin157 = generated origin65 reason loan-effect
+origin origin158 = generated origin67 reason loan-effect
+origin origin159 = generated origin69 reason loan-effect
+origin origin160 = generated origin71 reason loan-effect
+origin origin161 = generated origin73 reason loan-effect
+origin origin162 = generated origin75 reason loan-effect
+origin origin163 = generated origin80 reason permission-parameter
+origin origin164 = generated origin82 reason loan-effect
+origin origin165 = generated origin83 reason permission-parameter
+origin origin166 = generated origin84 reason control-flow-block
+origin origin167 = generated origin84 reason block-parameter
+origin origin168 = generated origin86 reason control-flow-block
+origin origin169 = generated origin86 reason block-parameter
+origin origin170 = generated origin86 reason control-flow-edge
+origin origin171 = generated origin91 reason control-flow-block
+origin origin172 = generated origin91 reason block-parameter
+location fn0:entry -> origin0
+location fn1:entry -> origin77
+location fn2:entry -> origin80
+location fn3:entry -> origin83
+location fn0/bb0:entry -> origin0
+location fn0/bb1:entry -> origin112
+location fn0/bb2:entry -> origin116
+location fn0/bb3:entry -> origin112
+location fn0/bb4:entry -> origin110
+location fn0/bb5:entry -> origin112
+location fn0/bb6:entry -> origin123
+location fn0/bb7:entry -> origin120
+location fn0/bb8:entry -> origin116
+location fn0/bb9:entry -> origin129
+location fn0/bb10:entry -> origin126
+location fn0/bb11:entry -> origin116
+location fn0/bb12:entry -> origin134
+location fn0/bb13:entry -> origin137
+location fn0/bb14:entry -> origin110
+location fn0/bb15:entry -> origin143
+location fn0/bb16:entry -> origin140
+location fn0/bb17:entry -> origin110
+location fn0/bb18:entry -> origin150
+location fn0/bb19:entry -> origin147
+location fn0/bb20:entry -> origin110
+location fn1/bb0:entry -> origin77
+location fn2/bb0:entry -> origin80
+location fn3/bb0:entry -> origin83
+location fn3/bb1:entry -> origin171
+location fn3/bb2:entry -> origin168
+location fn3/bb3:entry -> origin166
+location fn0/bb1:parameter0 -> origin113
+location fn0/bb1:parameter1 -> origin113
+location fn0/bb1:parameter2 -> origin113
+location fn0/bb1:parameter3 -> origin113
+location fn0/bb1:parameter4 -> origin113
+location fn0/bb1:parameter5 -> origin113
+location fn0/bb1:parameter6 -> origin113
+location fn0/bb2:parameter0 -> origin117
+location fn0/bb2:parameter1 -> origin117
+location fn0/bb2:parameter2 -> origin117
+location fn0/bb2:parameter3 -> origin117
+location fn0/bb2:parameter4 -> origin117
+location fn0/bb2:parameter5 -> origin117
+location fn0/bb2:parameter6 -> origin117
+location fn0/bb2:parameter7 -> origin117
+location fn0/bb3:parameter0 -> origin113
+location fn0/bb3:parameter1 -> origin113
+location fn0/bb3:parameter2 -> origin113
+location fn0/bb3:parameter3 -> origin113
+location fn0/bb3:parameter4 -> origin113
+location fn0/bb3:parameter5 -> origin113
+location fn0/bb3:parameter6 -> origin113
+location fn0/bb4:parameter0 -> origin111
+location fn0/bb4:parameter1 -> origin111
+location fn0/bb4:parameter2 -> origin111
+location fn0/bb4:parameter3 -> origin111
+location fn0/bb5:parameter0 -> origin113
+location fn0/bb5:parameter1 -> origin113
+location fn0/bb5:parameter2 -> origin113
+location fn0/bb5:parameter3 -> origin113
+location fn0/bb6:parameter0 -> origin124
+location fn0/bb6:parameter1 -> origin124
+location fn0/bb6:parameter2 -> origin124
+location fn0/bb6:parameter3 -> origin124
+location fn0/bb6:parameter4 -> origin124
+location fn0/bb6:parameter5 -> origin124
+location fn0/bb6:parameter6 -> origin124
+location fn0/bb6:parameter7 -> origin124
+location fn0/bb6:parameter8 -> origin124
+location fn0/bb6:parameter9 -> origin124
+location fn0/bb6:parameter10 -> origin124
+location fn0/bb6:parameter11 -> origin124
+location fn0/bb6:parameter12 -> origin124
+location fn0/bb6:parameter13 -> origin124
+location fn0/bb6:parameter14 -> origin124
+location fn0/bb6:parameter15 -> origin124
+location fn0/bb7:parameter0 -> origin121
+location fn0/bb7:parameter1 -> origin121
+location fn0/bb7:parameter2 -> origin121
+location fn0/bb7:parameter3 -> origin121
+location fn0/bb7:parameter4 -> origin121
+location fn0/bb7:parameter5 -> origin121
+location fn0/bb7:parameter6 -> origin121
+location fn0/bb7:parameter7 -> origin121
+location fn0/bb7:parameter8 -> origin121
+location fn0/bb7:parameter9 -> origin121
+location fn0/bb7:parameter10 -> origin121
+location fn0/bb7:parameter11 -> origin121
+location fn0/bb7:parameter12 -> origin121
+location fn0/bb7:parameter13 -> origin121
+location fn0/bb7:parameter14 -> origin121
+location fn0/bb7:parameter15 -> origin121
+location fn0/bb8:parameter0 -> origin117
+location fn0/bb8:parameter1 -> origin117
+location fn0/bb8:parameter2 -> origin117
+location fn0/bb8:parameter3 -> origin117
+location fn0/bb8:parameter4 -> origin117
+location fn0/bb8:parameter5 -> origin117
+location fn0/bb8:parameter6 -> origin117
+location fn0/bb8:parameter7 -> origin117
+location fn0/bb8:parameter8 -> origin117
+location fn0/bb8:parameter9 -> origin117
+location fn0/bb8:parameter10 -> origin117
+location fn0/bb8:parameter11 -> origin117
+location fn0/bb8:parameter12 -> origin117
+location fn0/bb8:parameter13 -> origin117
+location fn0/bb8:parameter14 -> origin117
+location fn0/bb8:parameter15 -> origin117
+location fn0/bb9:parameter0 -> origin130
+location fn0/bb9:parameter1 -> origin130
+location fn0/bb9:parameter2 -> origin130
+location fn0/bb9:parameter3 -> origin130
+location fn0/bb9:parameter4 -> origin130
+location fn0/bb9:parameter5 -> origin130
+location fn0/bb9:parameter6 -> origin130
+location fn0/bb9:parameter7 -> origin130
+location fn0/bb9:parameter8 -> origin130
+location fn0/bb9:parameter9 -> origin130
+location fn0/bb9:parameter10 -> origin130
+location fn0/bb9:parameter11 -> origin130
+location fn0/bb9:parameter12 -> origin130
+location fn0/bb9:parameter13 -> origin130
+location fn0/bb9:parameter14 -> origin130
+location fn0/bb10:parameter0 -> origin127
+location fn0/bb10:parameter1 -> origin127
+location fn0/bb10:parameter2 -> origin127
+location fn0/bb10:parameter3 -> origin127
+location fn0/bb10:parameter4 -> origin127
+location fn0/bb10:parameter5 -> origin127
+location fn0/bb10:parameter6 -> origin127
+location fn0/bb10:parameter7 -> origin127
+location fn0/bb10:parameter8 -> origin127
+location fn0/bb10:parameter9 -> origin127
+location fn0/bb10:parameter10 -> origin127
+location fn0/bb10:parameter11 -> origin127
+location fn0/bb10:parameter12 -> origin127
+location fn0/bb10:parameter13 -> origin127
+location fn0/bb10:parameter14 -> origin127
+location fn0/bb11:parameter0 -> origin117
+location fn0/bb11:parameter1 -> origin117
+location fn0/bb11:parameter2 -> origin117
+location fn0/bb11:parameter3 -> origin117
+location fn0/bb11:parameter4 -> origin117
+location fn0/bb11:parameter5 -> origin117
+location fn0/bb11:parameter6 -> origin117
+location fn0/bb11:parameter7 -> origin117
+location fn0/bb11:parameter8 -> origin117
+location fn0/bb11:parameter9 -> origin117
+location fn0/bb11:parameter10 -> origin117
+location fn0/bb11:parameter11 -> origin117
+location fn0/bb11:parameter12 -> origin117
+location fn0/bb11:parameter13 -> origin117
+location fn0/bb11:parameter14 -> origin117
+location fn0/bb12:parameter0 -> origin135
+location fn0/bb12:parameter1 -> origin135
+location fn0/bb12:parameter2 -> origin135
+location fn0/bb12:parameter3 -> origin135
+location fn0/bb12:parameter4 -> origin135
+location fn0/bb12:parameter5 -> origin135
+location fn0/bb12:parameter6 -> origin135
+location fn0/bb13:parameter0 -> origin138
+location fn0/bb13:parameter1 -> origin138
+location fn0/bb13:parameter2 -> origin138
+location fn0/bb13:parameter3 -> origin138
+location fn0/bb13:parameter4 -> origin138
+location fn0/bb13:parameter5 -> origin138
+location fn0/bb13:parameter6 -> origin138
+location fn0/bb14:parameter0 -> origin111
+location fn0/bb14:parameter1 -> origin111
+location fn0/bb14:parameter2 -> origin111
+location fn0/bb14:parameter3 -> origin111
+location fn0/bb14:parameter4 -> origin111
+location fn0/bb15:parameter0 -> origin144
+location fn0/bb15:parameter1 -> origin144
+location fn0/bb15:parameter2 -> origin144
+location fn0/bb15:parameter3 -> origin144
+location fn0/bb15:parameter4 -> origin144
+location fn0/bb16:parameter0 -> origin141
+location fn0/bb16:parameter1 -> origin141
+location fn0/bb16:parameter2 -> origin141
+location fn0/bb16:parameter3 -> origin141
+location fn0/bb16:parameter4 -> origin141
+location fn0/bb17:parameter0 -> origin111
+location fn0/bb17:parameter1 -> origin111
+location fn0/bb17:parameter2 -> origin111
+location fn0/bb17:parameter3 -> origin111
+location fn0/bb17:parameter4 -> origin111
+location fn0/bb18:parameter0 -> origin151
+location fn0/bb18:parameter1 -> origin151
+location fn0/bb18:parameter2 -> origin151
+location fn0/bb18:parameter3 -> origin151
+location fn0/bb18:parameter4 -> origin151
+location fn0/bb18:parameter5 -> origin151
+location fn0/bb18:parameter6 -> origin151
+location fn0/bb18:parameter7 -> origin151
+location fn0/bb18:parameter8 -> origin151
+location fn0/bb18:parameter9 -> origin151
+location fn0/bb18:parameter10 -> origin151
+location fn0/bb19:parameter0 -> origin148
+location fn0/bb19:parameter1 -> origin148
+location fn0/bb19:parameter2 -> origin148
+location fn0/bb19:parameter3 -> origin148
+location fn0/bb19:parameter4 -> origin148
+location fn0/bb19:parameter5 -> origin148
+location fn0/bb19:parameter6 -> origin148
+location fn0/bb19:parameter7 -> origin148
+location fn0/bb19:parameter8 -> origin148
+location fn0/bb19:parameter9 -> origin148
+location fn0/bb19:parameter10 -> origin148
+location fn0/bb20:parameter0 -> origin111
+location fn0/bb20:parameter1 -> origin111
+location fn0/bb20:parameter2 -> origin111
+location fn0/bb20:parameter3 -> origin111
+location fn0/bb20:parameter4 -> origin111
+location fn0/bb20:parameter5 -> origin111
+location fn0/bb20:parameter6 -> origin111
+location fn0/bb20:parameter7 -> origin111
+location fn0/bb20:parameter8 -> origin111
+location fn0/bb20:parameter9 -> origin111
+location fn0/bb20:parameter10 -> origin111
+location fn2/bb0:parameter0 -> origin80
+location fn2/bb0:parameter1 -> origin80
+location fn2/bb0:parameter2 -> origin163
+location fn3/bb0:parameter0 -> origin83
+location fn3/bb0:parameter1 -> origin165
+location fn3/bb0:parameter2 -> origin83
+location fn3/bb0:parameter3 -> origin165
+location fn3/bb0:parameter4 -> origin83
+location fn3/bb0:parameter5 -> origin165
+location fn3/bb0:parameter6 -> origin83
+location fn3/bb0:parameter7 -> origin165
+location fn3/bb0:parameter8 -> origin83
+location fn3/bb0:parameter9 -> origin165
+location fn3/bb0:parameter10 -> origin83
+location fn3/bb0:parameter11 -> origin165
+location fn3/bb0:parameter12 -> origin83
+location fn3/bb0:parameter13 -> origin165
+location fn3/bb0:parameter14 -> origin83
+location fn3/bb0:parameter15 -> origin165
+location fn3/bb1:parameter0 -> origin172
+location fn3/bb1:parameter1 -> origin172
+location fn3/bb1:parameter2 -> origin172
+location fn3/bb1:parameter3 -> origin172
+location fn3/bb1:parameter4 -> origin172
+location fn3/bb1:parameter5 -> origin172
+location fn3/bb1:parameter6 -> origin172
+location fn3/bb1:parameter7 -> origin172
+location fn3/bb1:parameter8 -> origin172
+location fn3/bb1:parameter9 -> origin172
+location fn3/bb1:parameter10 -> origin172
+location fn3/bb1:parameter11 -> origin172
+location fn3/bb1:parameter12 -> origin172
+location fn3/bb1:parameter13 -> origin172
+location fn3/bb1:parameter14 -> origin172
+location fn3/bb1:parameter15 -> origin172
+location fn3/bb1:parameter16 -> origin172
+location fn3/bb1:parameter17 -> origin172
+location fn3/bb1:parameter18 -> origin172
+location fn3/bb2:parameter0 -> origin169
+location fn3/bb2:parameter1 -> origin169
+location fn3/bb2:parameter2 -> origin169
+location fn3/bb2:parameter3 -> origin169
+location fn3/bb2:parameter4 -> origin169
+location fn3/bb2:parameter5 -> origin169
+location fn3/bb2:parameter6 -> origin169
+location fn3/bb2:parameter7 -> origin169
+location fn3/bb2:parameter8 -> origin169
+location fn3/bb2:parameter9 -> origin169
+location fn3/bb2:parameter10 -> origin169
+location fn3/bb2:parameter11 -> origin169
+location fn3/bb2:parameter12 -> origin169
+location fn3/bb2:parameter13 -> origin169
+location fn3/bb2:parameter14 -> origin169
+location fn3/bb2:parameter15 -> origin169
+location fn3/bb2:parameter16 -> origin169
+location fn3/bb2:parameter17 -> origin169
+location fn3/bb2:parameter18 -> origin169
+location fn3/bb3:parameter0 -> origin167
+location fn3/bb3:parameter1 -> origin167
+location fn3/bb3:parameter2 -> origin167
+location fn3/bb3:parameter3 -> origin167
+location fn3/bb3:parameter4 -> origin167
+location fn3/bb3:parameter5 -> origin167
+location fn3/bb3:parameter6 -> origin167
+location fn3/bb3:parameter7 -> origin167
+location fn3/bb3:parameter8 -> origin167
+location fn3/bb3:parameter9 -> origin167
+location fn3/bb3:parameter10 -> origin167
+location fn3/bb3:parameter11 -> origin167
+location fn3/bb3:parameter12 -> origin167
+location fn3/bb3:parameter13 -> origin167
+location fn3/bb3:parameter14 -> origin167
+location fn3/bb3:parameter15 -> origin167
+location fn3/bb3:parameter16 -> origin167
+location fn3/bb3:parameter17 -> origin167
+location fn3/bb3:parameter18 -> origin167
+location fn0/bb0:instruction0 -> origin22
+location fn0/bb0:instruction1 -> origin133
+location fn0/bb0:instruction2 -> origin3
+location fn0/bb0:instruction3 -> origin4
+location fn0/bb1:instruction0 -> origin2
+location fn0/bb2:instruction0 -> origin6
+location fn0/bb2:instruction1 -> origin6
+location fn0/bb2:instruction2 -> origin119
+location fn0/bb2:instruction3 -> origin7
+location fn0/bb2:instruction4 -> origin8
+location fn0/bb2:instruction5 -> origin8
+location fn0/bb2:instruction6 -> origin10
+location fn0/bb2:instruction7 -> origin12
+location fn0/bb2:instruction8 -> origin11
+location fn0/bb3:instruction0 -> origin115
+location fn0/bb3:instruction1 -> origin115
+location fn0/bb4:instruction0 -> origin24
+location fn0/bb4:instruction1 -> origin24
+location fn0/bb4:instruction2 -> origin24
+location fn0/bb4:instruction3 -> origin24
+location fn0/bb4:instruction4 -> origin25
+location fn0/bb4:instruction5 -> origin25
+location fn0/bb4:instruction6 -> origin25
+location fn0/bb4:instruction7 -> origin25
+location fn0/bb4:instruction8 -> origin26
+location fn0/bb4:instruction9 -> origin26
+location fn0/bb4:instruction10 -> origin26
+location fn0/bb4:instruction11 -> origin26
+location fn0/bb4:instruction12 -> origin27
+location fn0/bb4:instruction13 -> origin27
+location fn0/bb4:instruction14 -> origin27
+location fn0/bb4:instruction15 -> origin27
+location fn0/bb4:instruction16 -> origin28
+location fn0/bb4:instruction17 -> origin28
+location fn0/bb4:instruction18 -> origin28
+location fn0/bb4:instruction19 -> origin28
+location fn0/bb4:instruction20 -> origin29
+location fn0/bb4:instruction21 -> origin29
+location fn0/bb4:instruction22 -> origin29
+location fn0/bb4:instruction23 -> origin29
+location fn0/bb4:instruction24 -> origin30
+location fn0/bb4:instruction25 -> origin30
+location fn0/bb4:instruction26 -> origin30
+location fn0/bb4:instruction27 -> origin30
+location fn0/bb4:instruction28 -> origin31
+location fn0/bb4:instruction29 -> origin31
+location fn0/bb4:instruction30 -> origin31
+location fn0/bb4:instruction31 -> origin31
+location fn0/bb4:instruction32 -> origin22
+location fn0/bb4:instruction33 -> origin33
+location fn0/bb4:instruction34 -> origin33
+location fn0/bb4:instruction35 -> origin32
+location fn0/bb4:instruction36 -> origin35
+location fn0/bb6:instruction0 -> origin15
+location fn0/bb6:instruction1 -> origin125
+location fn0/bb6:instruction2 -> origin125
+location fn0/bb8:instruction0 -> origin17
+location fn0/bb9:instruction0 -> origin20
+location fn0/bb9:instruction1 -> origin131
+location fn0/bb9:instruction2 -> origin131
+location fn0/bb11:instruction0 -> origin21
+location fn0/bb11:instruction1 -> origin132
+location fn0/bb12:instruction0 -> origin37
+location fn0/bb12:instruction1 -> origin37
+location fn0/bb13:instruction0 -> origin40
+location fn0/bb13:instruction1 -> origin40
+location fn0/bb13:instruction2 -> origin39
+location fn0/bb14:instruction0 -> origin44
+location fn0/bb14:instruction1 -> origin44
+location fn0/bb14:instruction2 -> origin43
+location fn0/bb14:instruction3 -> origin42
+location fn0/bb15:instruction0 -> origin47
+location fn0/bb17:instruction0 -> origin51
+location fn0/bb17:instruction1 -> origin52
+location fn0/bb17:instruction2 -> origin50
+location fn0/bb17:instruction3 -> origin146
+location fn0/bb17:instruction4 -> origin48
+location fn0/bb17:instruction5 -> origin145
+location fn0/bb17:instruction6 -> origin55
+location fn0/bb17:instruction7 -> origin54
+location fn0/bb18:instruction0 -> origin58
+location fn0/bb18:instruction1 -> origin152
+location fn0/bb20:instruction0 -> origin62
+location fn0/bb20:instruction1 -> origin62
+location fn0/bb20:instruction2 -> origin155
+location fn0/bb20:instruction3 -> origin64
+location fn0/bb20:instruction4 -> origin64
+location fn0/bb20:instruction5 -> origin156
+location fn0/bb20:instruction6 -> origin66
+location fn0/bb20:instruction7 -> origin66
+location fn0/bb20:instruction8 -> origin157
+location fn0/bb20:instruction9 -> origin68
+location fn0/bb20:instruction10 -> origin68
+location fn0/bb20:instruction11 -> origin158
+location fn0/bb20:instruction12 -> origin70
+location fn0/bb20:instruction13 -> origin70
+location fn0/bb20:instruction14 -> origin159
+location fn0/bb20:instruction15 -> origin72
+location fn0/bb20:instruction16 -> origin72
+location fn0/bb20:instruction17 -> origin160
+location fn0/bb20:instruction18 -> origin74
+location fn0/bb20:instruction19 -> origin74
+location fn0/bb20:instruction20 -> origin161
+location fn0/bb20:instruction21 -> origin76
+location fn0/bb20:instruction22 -> origin76
+location fn0/bb20:instruction23 -> origin162
+location fn0/bb20:instruction24 -> origin60
+location fn0/bb20:instruction25 -> origin154
+location fn0/bb20:instruction26 -> origin154
+location fn0/bb20:instruction27 -> origin154
+location fn0/bb20:instruction28 -> origin154
+location fn0/bb20:instruction29 -> origin154
+location fn0/bb20:instruction30 -> origin154
+location fn0/bb20:instruction31 -> origin154
+location fn0/bb20:instruction32 -> origin154
+location fn0/bb20:instruction33 -> origin153
+location fn1/bb0:instruction0 -> origin79
+location fn2/bb0:instruction0 -> origin164
+location fn3/bb0:instruction0 -> origin85
+location fn3/bb0:instruction1 -> origin88
+location fn3/bb0:instruction2 -> origin88
+location fn3/bb0:instruction3 -> origin87
+location fn3/bb0:instruction4 -> origin90
+location fn3/bb0:instruction5 -> origin89
+location fn3/bb1:instruction0 -> origin93
+location fn3/bb3:instruction0 -> origin95
+location fn3/bb3:instruction1 -> origin103
+location fn3/bb3:instruction2 -> origin96
+location fn3/bb3:instruction3 -> origin104
+location fn3/bb3:instruction4 -> origin97
+location fn3/bb3:instruction5 -> origin105
+location fn3/bb3:instruction6 -> origin98
+location fn3/bb3:instruction7 -> origin106
+location fn3/bb3:instruction8 -> origin99
+location fn3/bb3:instruction9 -> origin107
+location fn3/bb3:instruction10 -> origin100
+location fn3/bb3:instruction11 -> origin108
+location fn3/bb3:instruction12 -> origin101
+location fn3/bb3:instruction13 -> origin109
+location fn3/bb3:instruction14 -> origin102
+location fn0/bb4:call-edge36 -> origin35
+location fn0/bb17:call-edge4 -> origin48
+location fn0/bb20:call-edge24 -> origin60
+location fn0/bb0:terminator -> origin114
+location fn0/bb1:terminator -> origin2
+location fn0/bb2:terminator -> origin9
+location fn0/bb3:terminator -> origin114
+location fn0/bb4:terminator -> origin34
+location fn0/bb5:terminator -> origin114
+location fn0/bb6:terminator -> origin14
+location fn0/bb7:terminator -> origin122
+location fn0/bb8:terminator -> origin16
+location fn0/bb9:terminator -> origin19
+location fn0/bb10:terminator -> origin128
+location fn0/bb11:terminator -> origin118
+location fn0/bb12:terminator -> origin136
+location fn0/bb13:terminator -> origin139
+location fn0/bb14:terminator -> origin41
+location fn0/bb15:terminator -> origin46
+location fn0/bb16:terminator -> origin142
+location fn0/bb17:terminator -> origin53
+location fn0/bb18:terminator -> origin57
+location fn0/bb19:terminator -> origin149
+location fn0/bb20:terminator -> origin59
+location fn1/bb0:terminator -> origin78
+location fn2/bb0:terminator -> origin81
+location fn3/bb0:terminator -> origin86
+location fn3/bb1:terminator -> origin92
+location fn3/bb2:terminator -> origin170
+location fn3/bb3:terminator -> origin94
+}

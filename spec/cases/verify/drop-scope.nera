@@ -1,0 +1,64 @@
+struct Pair {
+    first: Own<u64>,
+    second: Own<u64>,
+}
+
+fn main() -> u64 {
+    let conditional = alloc<u64>(1);
+    *conditional = 3;
+    if choose() {
+        free(conditional);
+    }
+
+    let first = alloc<u64>(1);
+    *first = 7;
+    let second = alloc<u64>(1);
+    *second = 11;
+    let pair = Pair { first: first, second: second };
+    let extracted = pair.first;
+    let loaded = *extracted;
+    free(extracted);
+
+    {
+        let nested = alloc<u64>(1);
+        *nested = 13;
+    }
+    let exit_value = exit_cleanup();
+    let moved_path = conditional_object_drop(true);
+    let retained_path = conditional_object_drop(false);
+    return loaded + exit_value + moved_path + retained_path;
+}
+
+fn choose() -> bool {
+    return true;
+}
+
+fn exit_cleanup() -> u64 {
+    let mut iteration = 0;
+    while iteration < 3 {
+        let loop_owner = alloc<u64>(1);
+        *loop_owner = iteration;
+        iteration = iteration + 1;
+        if iteration == 1 {
+            continue;
+        }
+        if iteration == 2 {
+            break;
+        }
+    }
+
+    let returned = alloc<u64>(1);
+    *returned = 9;
+    return *returned;
+}
+
+fn conditional_object_drop(move_source: bool) -> u64 {
+    let first = alloc<u64>(1);
+    let second = alloc<u64>(1);
+    let mut destination = Pair { first: first, second: alloc<u64>(1) };
+    let source = Pair { first: second, second: alloc<u64>(1) };
+    if move_source {
+        destination = source;
+    }
+    return 0;
+}

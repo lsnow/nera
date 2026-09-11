@@ -1,0 +1,17 @@
+fn main() -> u64 {
+    return even_step(0);
+}
+
+fn even_step(value: u64) -> u64 {
+    if value == 6 {
+        return value;
+    }
+    return odd_step(value + 1);
+}
+
+fn odd_step(value: u64) -> u64 {
+    if value == 6 {
+        return value;
+    }
+    return even_step(value + 1);
+}

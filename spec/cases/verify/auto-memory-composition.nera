@@ -1,0 +1,29 @@
+struct Packet { owner: Own<u64>, word: u64, }
+
+fn main() -> u64 { return run(true); }
+
+fn run(flag: bool) -> u64 {
+    let p = alloc<u64>(1);
+    *p = 40;
+    let mut packet: Packet;
+    packet.owner = p;
+    let values = [0, 2];
+    if flag {
+        packet.word = values[index(0)];
+    } else {
+        packet.word = 2;
+    }
+    let moved = packet.owner;
+    packet.owner = moved;
+    let owner = packet.owner;
+    let address = &raw *owner;
+    if address != &raw *owner { return 0; }
+    let answer = *owner + packet.word;
+    free(owner);
+    return answer;
+}
+
+fn index(n: u64) -> usize {
+    if n == 2 { return 1usize; }
+    return index(n + 1);
+}

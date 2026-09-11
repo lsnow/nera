@@ -1,0 +1,11 @@
+fn main() -> u64 {
+    let mut values = [2, 4, 6, 8];
+    {
+        let prefix: &mut [u64] = &mut values[..2];
+        prefix[0] = 10;
+    }
+    let whole: &[u64] = &values[..];
+    let left = &whole[..2];
+    let right = &whole[2..];
+    return left[0] + right[0];
+}

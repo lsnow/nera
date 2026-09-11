@@ -1,0 +1,4 @@
+fn deferred() {
+    "string expression";
+    return;
+}

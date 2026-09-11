@@ -1,0 +1,17 @@
+struct Pair {
+    left: u64,
+    right: u64,
+}
+
+fn main() -> u64 {
+    let pair = make_pair(20, 22);
+    return sum_pair(pair);
+}
+
+fn make_pair(left: u64, right: u64) -> Pair {
+    return Pair { left: left, right: right };
+}
+
+fn sum_pair(pair: Pair) -> u64 {
+    return pair.left + pair.right;
+}

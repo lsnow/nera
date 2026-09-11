@@ -1,0 +1,15 @@
+struct Pair { left: Own<u64>, right: Own<u64>, word: u64, }
+
+fn main() -> u64 {
+    let mut value: Pair;
+    let owner = alloc<u64>(1);
+    *owner = 42;
+    if choose() {
+        value.left = owner;
+    } else {
+        value.right = owner;
+    }
+    return 42;
+}
+
+fn choose() -> bool { return true; }

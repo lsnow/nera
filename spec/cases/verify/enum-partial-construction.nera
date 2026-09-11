@@ -1,0 +1,18 @@
+struct Payload { owner: Own<u64>, word: u64, }
+enum Packet { Empty, Full(Payload, Own<u64>), }
+
+fn main() -> u64 {
+    let a = alloc<u64>(1); *a = 40;
+    let b = alloc<u64>(1); *b = 1;
+    let mut packet = Packet::Full(Payload { owner: a, word: 2 }, b);
+    match packet {
+        Packet::Empty => { return 0; },
+        Packet::Full(payload, _) => {
+            // The first payload is moved, including its ordinary word bytes.
+            // Replacement cleans only the owner still present in the old case.
+            packet = Packet::Empty;
+            let owner = payload.owner;
+            return *owner + payload.word;
+        },
+    }
+}

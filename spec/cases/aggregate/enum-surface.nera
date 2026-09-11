@@ -1,0 +1,27 @@
+enum Message {
+    Empty,
+    Number(u64),
+    Pair {
+        left: u64,
+        right: u64,
+    },
+}
+
+fn main() -> u64 {
+    let message = Message::Pair { right: right_value(), left: left_value() };
+    match message {
+        Message::Empty => { return 0; },
+        Message::Number(value) => { return value; },
+        Message::Pair { left: left, right: right } => {
+            return left + right;
+        },
+    }
+}
+
+fn right_value() -> u64 {
+    return 5;
+}
+
+fn left_value() -> u64 {
+    return 4;
+}

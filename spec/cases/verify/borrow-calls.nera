@@ -1,0 +1,25 @@
+fn main() -> u64 {
+    let mut values = [10, 20, 30];
+    write(&mut values[1]);
+    let view = identity(&values[1..]);
+    let reference = reference_identity(&values[1]);
+    return recursive_read(reference, 0) + view[1];
+}
+
+fn write(value: &mut u64) {
+    *value = 12;
+    return;
+}
+
+fn identity(view: &[u64]) -> &[u64] {
+    return view;
+}
+
+fn reference_identity(value: &u64) -> &u64 {
+    return value;
+}
+
+fn recursive_read(value: &u64, depth: u64) -> u64 {
+    if depth == 3 { return *value; }
+    return recursive_read(value, depth + 1);
+}

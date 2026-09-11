@@ -1,0 +1,9 @@
+module values;
+
+pub struct Buffer<T, const N: usize> {
+    values: [T; N],
+}
+
+pub fn repeat<T, const N: usize>(value: T) -> Buffer<T, N> {
+    return Buffer<T, N> { values: [value; N] };
+}

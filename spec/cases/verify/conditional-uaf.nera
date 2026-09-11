@@ -1,0 +1,14 @@
+fn main() -> u64 {
+    return maybe_uaf(false);
+}
+
+fn maybe_uaf(use_after_free: bool) -> u64 {
+    let owner = alloc<u64>(1);
+    *owner = 23;
+    if use_after_free {
+        free(owner);
+    }
+    let value = *owner;
+    free(owner);
+    return value;
+}

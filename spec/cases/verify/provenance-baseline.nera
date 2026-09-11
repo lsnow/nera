@@ -1,0 +1,14 @@
+fn main() -> u64 {
+    let base = alloc<u64>(2);
+    // Address formation does not read the still-uninitialized allocation.
+    let tail = base + 8;
+    let end = tail + 8;
+    let same_end = end + 0;
+    let unaligned = base + 1;
+    *base = 20;
+    *tail = 22;
+    let alias = tail;
+    let answer = *base + *alias;
+    free(base);
+    return answer;
+}

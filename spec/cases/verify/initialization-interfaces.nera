@@ -1,0 +1,18 @@
+struct Padded { flag: bool, left: u64, right: u64, }
+
+fn main() -> u64 {
+    let mut p = make();
+    repair(&mut p);
+    return consume(p);
+}
+
+fn make() -> Padded {
+    let mut p: Padded;
+    p.flag = true;
+    p.left = 1;
+    p.right = 22;
+    return p;
+}
+
+fn repair(p: &mut Padded) { p.left = 20; return; }
+fn consume(p: Padded) -> u64 { return p.left + p.right; }

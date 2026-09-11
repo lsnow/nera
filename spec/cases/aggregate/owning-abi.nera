@@ -1,0 +1,45 @@
+struct Package {
+    selected: Own<u64>,
+    spare: Own<u64>,
+    marker: u64,
+}
+
+fn main() -> u64 {
+    let first_owner = alloc<u64>(1);
+    *first_owner = 40;
+    let first_spare = alloc<u64>(1);
+    *first_spare = 9;
+    let first = Package { selected: first_owner, spare: first_spare, marker: 2 };
+
+    let second_owner = alloc<u64>(1);
+    *second_owner = 7;
+    let second_spare = alloc<u64>(1);
+    *second_spare = 6;
+    let second = Package { selected: second_owner, spare: second_spare, marker: 8 };
+
+    let selected = choose(true, first, second);
+    let returned = recurse(true, selected);
+    return consume(returned);
+}
+
+fn choose(take_first: bool, first: Package, second: Package) -> Package {
+    if take_first {
+        return first;
+    }
+    return second;
+}
+
+fn recurse(again: bool, package: Package) -> Package {
+    if again {
+        let returned = recurse(false, package);
+        return returned;
+    }
+    return package;
+}
+
+fn consume(package: Package) -> u64 {
+    let owner = package.selected;
+    let value = *owner;
+    free(owner);
+    return value + package.marker;
+}

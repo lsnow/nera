@@ -1,0 +1,9 @@
+module app;
+use values::repeat;
+use borrow::hold;
+
+fn main() -> u64 {
+    let buffer = repeat<u64, 1 + 1>(21);
+    let view = hold<[u64; 2]>(&buffer.values);
+    return view[0] + view[1];
+}

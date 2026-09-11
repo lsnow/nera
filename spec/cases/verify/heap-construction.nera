@@ -1,0 +1,11 @@
+struct Pair { left: Own<u64>, right: Own<u64>, }
+
+fn main() -> u64 {
+    let storage = alloc<Pair>(1);
+    let left = alloc<u64>(1);
+    *left = 40;
+    storage.left = left;
+    // Only left is present; right is not a value yet.
+    free(storage);
+    return 42;
+}

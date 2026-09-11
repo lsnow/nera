@@ -1,0 +1,21 @@
+struct Saved { value: &u64, }
+
+fn main() -> u64 {
+    return select(1usize);
+}
+
+fn select(index: usize) -> u64 {
+    if index < 2usize {
+        let mut values = [[10, 20, 30], [40, 50, 60]];
+        let mut start = index;
+        let selected = &mut values[1][start];
+        start = 0usize;
+        *selected = 42;
+        let view = &values[1][index..3];
+        let copied = view;
+        let saved = Saved { value: &values[1][index] };
+        let answer = saved.value;
+        return *answer + copied[0];
+    }
+    return 0;
+}

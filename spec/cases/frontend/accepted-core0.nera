@@ -1,0 +1,10 @@
+fn stage2() -> u64 {
+    let left = 20;
+    let right = 22;
+    let value = left + right;
+    let memory = alloc<u64>(1);
+    *memory = value;
+    let loaded = *memory;
+    free(memory);
+    return loaded;
+}

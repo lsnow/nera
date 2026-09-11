@@ -1,0 +1,19 @@
+fn main() -> u64 {
+    return update(0usize, 2usize);
+}
+
+fn update(i: usize, j: usize) -> u64 {
+    let mut values = [10, 20, 30, 40];
+    if i < len(values) {
+        if j < len(values) {
+            if i != j {
+                let left = &mut values[i];
+                let right = &mut values[j];
+                *left = 12;
+                *right = 30;
+                return *left + *right;
+            }
+        }
+    }
+    return 0;
+}

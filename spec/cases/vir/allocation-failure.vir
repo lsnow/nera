@@ -1,0 +1,48 @@
+vir-unit-v18
+memory {
+target little pointer 8/8 usize 8/8
+type type0 = unit layout layout0 capabilities copy/trivial-drop/resource-free/sized
+type type1 = u64 layout layout1 capabilities copy/trivial-drop/resource-free/sized
+type type2 = own mutable pointer<type1> layout layout2 capabilities move-only/builtin-drop/resource/sized
+layout layout0 type type0 size 0 align 1 abi ignore fields []
+layout layout1 type type1 size 8 align 8 abi scalar fields []
+layout layout2 type type2 size 8 align 8 abi scalar fields []
+}
+borrow-regions {
+}
+runtime {
+entry fn0
+
+abi fn0 params [] results [unit<type0/layout0> effect ignore/none p[] r[]]
+fn fn0 "allocation_failure" () -> () contract contract0 entry bb0 @0..89 {
+  bb0() @0..89:
+    %0: u64 = const.u64 0 @43..56
+    %1: ptr<type1/layout1>, %2: permission = alloc %0 align 8 region0 access type1/layout1 @43..56
+    %3: bool = const.bool true @43..56
+    free %1 using %2 @62..75
+    %4: bool = const.bool false @62..75
+    return () @80..87
+}
+}
+specs {
+contract contract0 function fn0 () -> () {
+  clauses []
+}
+}
+source-map {
+source source0 "spec/cases/vir/allocation-failure.nera" bytes 90
+origin origin0 = user source0 @0..89
+origin origin1 = user source0 @43..56
+origin origin2 = user source0 @62..75
+origin origin3 = user source0 @80..87
+origin origin4 = generated origin1 reason implicit-drop
+origin origin5 = generated origin2 reason implicit-drop
+location fn0:entry -> origin0
+location fn0/bb0:entry -> origin0
+location fn0/bb0:instruction0 -> origin1
+location fn0/bb0:instruction1 -> origin1
+location fn0/bb0:instruction2 -> origin4
+location fn0/bb0:instruction3 -> origin2
+location fn0/bb0:instruction4 -> origin5
+location fn0/bb0:terminator -> origin3
+}

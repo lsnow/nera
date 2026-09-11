@@ -1,0 +1,28 @@
+fn main() -> u64 {
+    let values = [20, 22];
+    let begin = &raw values[0];
+    let middle = &raw values[1];
+    let end = begin + 16;
+    let bytes = ptr_byte_distance(begin, end);
+    let expected = 16usize;
+    if begin == end { return 1; }
+    if begin != begin { return 2; }
+    if end < begin { return 3; }
+    if end <= begin { return 4; }
+    if begin > end { return 5; }
+    if begin >= end { return 6; }
+    if begin < middle {
+        if middle <= end {
+            if end == middle + 8 {
+                if begin != end {
+                    if end > begin {
+                        if end >= end {
+                            if bytes == expected { return 42; }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return 0;
+}

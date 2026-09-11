@@ -1,0 +1,54 @@
+vir-unit-v18
+memory {
+target little pointer 8/8 usize 8/8
+type type0 = unit layout layout0 capabilities copy/trivial-drop/resource-free/sized
+type type1 = u64 layout layout1 capabilities copy/trivial-drop/resource-free/sized
+type type2 = own mutable pointer<type1> layout layout2 capabilities move-only/builtin-drop/resource/sized
+layout layout0 type type0 size 0 align 1 abi ignore fields []
+layout layout1 type type1 size 8 align 8 abi scalar fields []
+layout layout2 type type2 size 8 align 8 abi scalar fields []
+}
+borrow-regions {
+}
+runtime {
+entry fn0
+
+abi fn0 params [] results [unit<type0/layout0> effect ignore/none p[] r[]]
+fn fn0 "double_free" () -> () contract contract0 entry bb0 @0..100 {
+  bb0() @0..100:
+    %0: u64 = const.u64 8 @36..49
+    %1: ptr<type1/layout1>, %2: permission = alloc %0 align 8 region0 access type1/layout1 @36..49
+    %3: bool = const.bool true @36..49
+    free %1 using %2 @55..68
+    %4: bool = const.bool false @55..68
+    free %1 using %2 @73..86
+    %5: bool = const.bool false @73..86
+    return () @91..98
+}
+}
+specs {
+contract contract0 function fn0 () -> () {
+  clauses []
+}
+}
+source-map {
+source source0 "spec/cases/vir/double-free.nera" bytes 101
+origin origin0 = user source0 @0..100
+origin origin1 = user source0 @36..49
+origin origin2 = user source0 @55..68
+origin origin3 = user source0 @73..86
+origin origin4 = user source0 @91..98
+origin origin5 = generated origin1 reason implicit-drop
+origin origin6 = generated origin2 reason implicit-drop
+origin origin7 = generated origin3 reason implicit-drop
+location fn0:entry -> origin0
+location fn0/bb0:entry -> origin0
+location fn0/bb0:instruction0 -> origin1
+location fn0/bb0:instruction1 -> origin1
+location fn0/bb0:instruction2 -> origin5
+location fn0/bb0:instruction3 -> origin2
+location fn0/bb0:instruction4 -> origin6
+location fn0/bb0:instruction5 -> origin3
+location fn0/bb0:instruction6 -> origin7
+location fn0/bb0:terminator -> origin4
+}

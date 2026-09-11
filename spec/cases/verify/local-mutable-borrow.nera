@@ -1,0 +1,10 @@
+struct Pair { left: u64, right: u64, }
+
+fn main() -> u64 {
+    let mut pair = Pair { left: 3, right: 5 };
+    let unique: &mut u64 = &mut pair.left;
+    *unique = 7;
+    let moved: &mut u64 = unique;
+    *moved = 9;
+    return *moved + pair.right;
+}

@@ -1,0 +1,15 @@
+struct OwnerPair {
+    owner: Own<u64>,
+    value: u64,
+}
+
+fn main() -> u64 {
+    let owner = alloc<u64>(1);
+    *owner = 42;
+    let packed = OwnerPair { owner: owner, value: 7 };
+    let relocated = packed;
+    let answer = relocated.value;
+    let extracted = relocated.owner;
+    free(extracted);
+    return answer;
+}

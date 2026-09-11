@@ -1,0 +1,6 @@
+fn uninitialized_read() -> u64 {
+    let memory = alloc<u64>(1);
+    let value = *memory;
+    free(memory);
+    return value;
+}

@@ -1,0 +1,12 @@
+fn main() -> u64 {
+    let memory = alloc<u64>(1);
+    *memory = 42;
+    let returned = identity(memory);
+    let value = *returned;
+    free(returned);
+    return value;
+}
+
+fn identity(memory: Own<u64>) -> Own<u64> {
+    return memory;
+}

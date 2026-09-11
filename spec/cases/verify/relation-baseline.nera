@@ -1,0 +1,14 @@
+struct Data { flag: bool, words: [u64; 4], }
+
+fn main() -> u64 {
+    let value = make();
+    let view = &value.words[1..3];
+    return view[0];
+}
+
+fn make() -> Data {
+    let mut value: Data;
+    for i in 0usize..4usize { value.words[i] = 42; }
+    value.flag = true;
+    return value;
+}

@@ -1,0 +1,20 @@
+struct Pair { left: u64, right: u64, }
+
+fn main() -> u64 {
+    let mut pending: u64;
+    let address = &raw pending;
+    let alias = address;
+    let write_address = &raw mut pending;
+    pending = 20;
+    let mut pair: Pair;
+    let field = &raw pair.left;
+    pair.left = pending;
+    pair.right = 22;
+    let owner = alloc<u64>(1);
+    let uninitialized_heap = &raw *owner;
+    *owner = 42;
+    let shared = &*owner;
+    let through_reference = &raw *shared;
+    free(owner);
+    return pair.left + pair.right;
+}

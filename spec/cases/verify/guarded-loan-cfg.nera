@@ -1,0 +1,14 @@
+fn main() -> u64 {
+    let mut value = 1;
+    let parent = &mut value;
+    let mut total = 0;
+
+    for index in 0..3 {
+        let child = &mut *parent;
+        *child = *child + index;
+        *parent = *parent + 1;
+        total = total + *parent;
+    }
+
+    return total + *parent;
+}

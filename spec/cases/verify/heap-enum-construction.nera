@@ -1,0 +1,13 @@
+enum Item { Empty, Full(Own<u64>), }
+
+fn main() -> u64 {
+    let storage = alloc<Item>(1);
+    let first = alloc<u64>(1);
+    *first = 1;
+    *storage = Item::Full(first);
+    let second = alloc<u64>(1);
+    *second = 42;
+    *storage = Item::Full(second);
+    free(storage);
+    return 42;
+}

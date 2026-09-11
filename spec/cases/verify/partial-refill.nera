@@ -1,0 +1,23 @@
+struct Inner { owner: Own<u64>, word: u64, }
+struct Outer { nested: Inner, sibling: Own<u64>, }
+
+fn main() -> u64 {
+    let a = alloc<u64>(1);
+    *a = 10;
+    let b = alloc<u64>(1);
+    *b = 22;
+    let mut value = Outer { nested: Inner { owner: a, word: 2 }, sibling: b };
+    let moved = value.nested;
+    value.nested = moved;
+    value.nested = value.nested;
+    if choose() { let retired = value.nested.owner; }
+    let replacement = alloc<u64>(1);
+    *replacement = 20;
+    value.nested.owner = replacement;
+    let whole = value;
+    let left = whole.nested.owner;
+    let right = whole.sibling;
+    return *left + *right;
+}
+
+fn choose() -> bool { return true; }

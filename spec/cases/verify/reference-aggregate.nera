@@ -1,0 +1,26 @@
+struct Holder {
+    value: &u64,
+}
+
+enum MaybeRef {
+    None,
+    Some(&u64),
+}
+
+fn main() -> u64 {
+    let word = 7;
+    let other = 11;
+    let holder = Holder { value: &word };
+    let copied = holder;
+    let copied_value = copied.value;
+    let holder_value = holder.value;
+    let maybe = MaybeRef::Some(&other);
+    match maybe {
+        MaybeRef::Some(reference) => {
+            return *copied_value + *holder_value + *reference;
+        },
+        MaybeRef::None => {
+            return 0;
+        },
+    }
+}

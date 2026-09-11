@@ -1,0 +1,5 @@
+﻿// literals are recognized even though Core0 does not accept them
+/* outer /* nested */ comment */
+'é' '\n' b'\xff' "text\u{20ac}" b"bytes\0"
+0 42u64 0xff 0o17 0b1010 1.25 6.02e23 1f64
+:: -> => .. ..= && || == != <= >= << >> += -= *= /= %= &= |= ^= <<= >>=

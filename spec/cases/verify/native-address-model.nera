@@ -1,0 +1,29 @@
+// Eight references force the ordinary System V pointer ABI onto the stack.
+fn main() -> u64 {
+    for i in 0usize..3usize {
+        let owner = alloc<u64>(2);
+        let begin = &raw *owner;
+        let end = begin + 16;
+        if ptr_byte_distance(begin, end) != 16usize { return 0; }
+        if begin >= end { return 0; }
+        free(owner);
+    }
+    let values = [0, 0, 0, 0, 0, 0, 0, 42];
+    let first = &raw values[0];
+    let mut last = first;
+    if choose() { last = first + 56; } else { last = &raw values[7]; }
+    if last != &raw values[7] { return 0; }
+    let empty = identity(&values[8..8]);
+    if len(empty) != 0usize { return 0; }
+    return probe(&values[0], &values[1], &values[2], &values[3],
+                 &values[4], &values[5], &values[6], &values[7]);
+}
+
+fn choose() -> bool { return true; }
+fn identity(values: &[u64]) -> &[u64] { return values; }
+fn probe(a: &u64, b: &u64, c: &u64, d: &u64,
+         e: &u64, f: &u64, g: &u64, h: &u64) -> u64 {
+    let last = &raw *h;
+    if ptr_byte_distance(last, last + 8) != 8usize { return 0; }
+    return *a + *b + *c + *d + *e + *f + *g + *h;
+}

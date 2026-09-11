@@ -1,0 +1,26 @@
+fn structured() -> u64 {
+    let memory = alloc<u64>(1);
+    *memory = 7;
+    let selector = *memory;
+
+    {
+        let branch_local = selector + 1;
+    }
+
+    if selector < 10 {
+        *memory = 40;
+    } else if selector == 10 {
+        *memory = 41;
+    } else {
+        *memory = 42;
+    }
+
+    let final_value = *memory;
+    if final_value == 40 {
+        free(memory);
+        return final_value + 2;
+    }
+
+    free(memory);
+    return 0;
+}

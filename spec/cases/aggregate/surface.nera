@@ -1,0 +1,32 @@
+struct Record {
+    left: u64,
+    right: u64,
+    flags: (bool, u64),
+    slots: [u64; 3],
+}
+
+fn main() -> u64 {
+    let mut record = Record {
+        right: 5,
+        left: 3,
+        flags: (true, 11),
+        slots: [1, 2, 3],
+    };
+    let mut pair = (4, 6);
+    let mut values = [seed(); 3];
+    record.right = 8;
+    record.slots[2] = 9;
+    pair.0 = record.left;
+    values[index()] = record.slots[2] + pair.0;
+    let record_copy = record;
+    let repeated_pairs = [pair; 2];
+    return values[1] + record_copy.right + repeated_pairs[1].1;
+}
+
+fn index() -> usize {
+    return 1usize;
+}
+
+fn seed() -> u64 {
+    return 7;
+}

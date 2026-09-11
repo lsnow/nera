@@ -1,0 +1,27 @@
+struct Pair {
+    left: u64,
+    right: u64,
+}
+
+fn main() -> u64 {
+    let mut pairs = [
+        Pair { left: 1, right: 2 },
+        Pair { left: 3, right: 4 },
+    ];
+    let replacement_index = next();
+    if replacement_index < 2usize {
+        pairs[replacement_index] = Pair { left: 8, right: 9 };
+    } else {
+        return 0;
+    }
+    let selected_index = next();
+    if selected_index < 2usize {
+        let selected = pairs[selected_index];
+        return selected.left + selected.right;
+    }
+    return 0;
+}
+
+fn next() -> usize {
+    return 1usize;
+}

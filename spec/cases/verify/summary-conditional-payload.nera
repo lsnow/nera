@@ -1,0 +1,27 @@
+struct Package { p: Own<u64>, word: u64, }
+
+fn main() -> u64 { return run(true); }
+
+fn run(flag: bool) -> u64 {
+    let p = alloc<u64>(1);
+    *p = 42;
+    let old = &raw *p;
+    let package = Package { p: p, word: 0 };
+    let returned = repair(package, flag);
+    let owner = returned.p;
+    if flag {
+        if old != &raw *owner { return 0; }
+    }
+    return *owner + returned.word;
+}
+
+fn repair(package: Package, flag: bool) -> Package {
+    let mut p = package;
+    let moved = p.p;
+    if flag { p.p = moved; return p; }
+    free(moved);
+    let q = alloc<u64>(1);
+    *q = 42;
+    p.p = q;
+    return p;
+}

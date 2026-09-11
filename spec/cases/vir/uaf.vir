@@ -1,0 +1,56 @@
+vir-unit-v18
+memory {
+target little pointer 8/8 usize 8/8
+type type0 = u64 layout layout0 capabilities copy/trivial-drop/resource-free/sized
+type type1 = own mutable pointer<type0> layout layout1 capabilities move-only/builtin-drop/resource/sized
+layout layout0 type type0 size 8 align 8 abi scalar fields []
+layout layout1 type type1 size 8 align 8 abi scalar fields []
+}
+borrow-regions {
+}
+runtime {
+entry fn0
+
+abi fn0 params [] results [scalar<type0/layout0> effect copy/direct p[] r[0]]
+fn fn0 "uad_test" () -> (u64) contract contract0 entry bb0 @0..99 {
+  bb0() @0..99:
+    %0: u64 = const.u64 80 @35..49
+    %1: ptr<type0/layout0>, %2: permission = alloc %0 align 8 region0 access type0/layout0 @35..49
+    %3: bool = const.bool true @35..49
+    free %1 using %2 @55..63
+    %4: bool = const.bool false @55..63
+    %5: u64 = load %1 using %2 access type0/layout0 @76..78
+    %6: u64 = const.u64 1 @81..82
+    %7: u64 = add %5, %6 @76..82
+    return (%7) @88..97
+}
+}
+specs {
+contract contract0 function fn0 () -> (u64) {
+  binder binder0 ensures slot0: u64
+  clauses []
+}
+}
+source-map {
+source source0 "spec/cases/verify/uaf.nera" bytes 100
+origin origin0 = user source0 @0..99
+origin origin1 = user source0 @35..49
+origin origin2 = user source0 @55..63
+origin origin3 = user source0 @76..78
+origin origin4 = user source0 @76..82
+origin origin5 = user source0 @81..82
+origin origin6 = user source0 @88..97
+origin origin7 = generated origin1 reason implicit-drop
+origin origin8 = generated origin2 reason implicit-drop
+location fn0:entry -> origin0
+location fn0/bb0:entry -> origin0
+location fn0/bb0:instruction0 -> origin1
+location fn0/bb0:instruction1 -> origin1
+location fn0/bb0:instruction2 -> origin7
+location fn0/bb0:instruction3 -> origin2
+location fn0/bb0:instruction4 -> origin8
+location fn0/bb0:instruction5 -> origin3
+location fn0/bb0:instruction6 -> origin5
+location fn0/bb0:instruction7 -> origin4
+location fn0/bb0:terminator -> origin6
+}

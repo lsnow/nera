@@ -1,0 +1,8 @@
+struct Pair { left: u64, right: u64, }
+fn main() -> u64 {
+    let mut p: Pair;
+    p.left = 42;
+    ignore(&p);
+    return 42;
+}
+fn ignore(p: &Pair) { return; }

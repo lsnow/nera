@@ -1,0 +1,15 @@
+struct Pair {
+    left: u64,
+    right: u64,
+}
+
+fn main() -> u64 {
+    let mut pair = Pair { left: 1, right: 2 };
+    let parent = &mut pair;
+    {
+        let child = &mut parent.left;
+        *child = 40;
+    }
+    parent.right = 2;
+    return parent.left + parent.right;
+}

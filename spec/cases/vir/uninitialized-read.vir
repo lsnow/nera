@@ -1,0 +1,50 @@
+vir-unit-v18
+memory {
+target little pointer 8/8 usize 8/8
+type type0 = u64 layout layout0 capabilities copy/trivial-drop/resource-free/sized
+type type1 = own mutable pointer<type0> layout layout1 capabilities move-only/builtin-drop/resource/sized
+layout layout0 type type0 size 8 align 8 abi scalar fields []
+layout layout1 type type1 size 8 align 8 abi scalar fields []
+}
+borrow-regions {
+}
+runtime {
+entry fn0
+
+abi fn0 params [] results [scalar<type0/layout0> effect copy/direct p[] r[0]]
+fn fn0 "uninitialized_read" () -> (u64) contract contract0 entry bb0 @0..127 {
+  bb0() @0..127:
+    %0: u64 = const.u64 8 @50..63
+    %1: ptr<type0/layout0>, %2: permission = alloc %0 align 8 region0 access type0/layout0 @50..63
+    %3: bool = const.bool true @50..63
+    %4: u64 = load %1 using %2 access type0/layout0 @81..88
+    free %1 using %2 @94..107
+    %5: bool = const.bool false @94..107
+    return (%4) @112..125
+}
+}
+specs {
+contract contract0 function fn0 () -> (u64) {
+  binder binder0 ensures slot0: u64
+  clauses []
+}
+}
+source-map {
+source source0 "spec/cases/vir/uninitialized-read.nera" bytes 128
+origin origin0 = user source0 @0..127
+origin origin1 = user source0 @50..63
+origin origin2 = user source0 @81..88
+origin origin3 = user source0 @94..107
+origin origin4 = user source0 @112..125
+origin origin5 = generated origin1 reason implicit-drop
+origin origin6 = generated origin3 reason implicit-drop
+location fn0:entry -> origin0
+location fn0/bb0:entry -> origin0
+location fn0/bb0:instruction0 -> origin1
+location fn0/bb0:instruction1 -> origin1
+location fn0/bb0:instruction2 -> origin5
+location fn0/bb0:instruction3 -> origin2
+location fn0/bb0:instruction4 -> origin3
+location fn0/bb0:instruction5 -> origin6
+location fn0/bb0:terminator -> origin4
+}

@@ -1,0 +1,6 @@
+fn uad_test() -> u64 {
+    let p = alloc<u64>(10);
+    free(p);
+    let v = *p + 1;
+    return v;
+}

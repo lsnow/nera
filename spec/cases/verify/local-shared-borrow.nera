@@ -1,0 +1,9 @@
+struct Pair { left: u64, right: u64, }
+
+fn main() -> u64 {
+    let pair = Pair { left: 3, right: 5 };
+    let whole: &Pair = &pair;
+    let left = &pair.left;
+    let alias = whole;
+    return alias.right + *left;
+}

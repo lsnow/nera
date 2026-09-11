@@ -1,0 +1,5 @@
+module borrow;
+
+pub fn hold<T>(value: &T) -> &T {
+    return value;
+}

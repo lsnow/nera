@@ -1,0 +1,18 @@
+struct Pair {
+    left: u64,
+    right: u64,
+}
+
+fn main() -> u64 {
+    let mut pairs = [
+        Pair { left: 1, right: 2 },
+        Pair { left: 3, right: 4 },
+    ];
+    pairs[next()] = Pair { left: 8, right: 9 };
+    let selected = pairs[next()];
+    return selected.left + selected.right;
+}
+
+fn next() -> usize {
+    return 1usize;
+}

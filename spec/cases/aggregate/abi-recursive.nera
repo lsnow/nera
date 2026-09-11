@@ -1,0 +1,11 @@
+fn main() -> u64 {
+    let values = recursive_values(0);
+    return values[0] + values[1] + values[2];
+}
+
+fn recursive_values(step: u64) -> [u64; 3] {
+    if step == 1 {
+        return [40, 1, 1];
+    }
+    return recursive_values(step + 1);
+}

@@ -1,0 +1,23 @@
+struct Pair { left: u64, right: u64, }
+
+fn main() -> u64 {
+    let values = [20, 22];
+    let address = &raw values[0];
+    let middle = address + 8;
+    let endpoint = middle + 8;
+    let same_endpoint = endpoint + 0;
+    let unaligned = address + 1;
+    let view = &values[1..2];
+    let selected = &raw view[0];
+    let selected_end = selected + 8;
+    let mut pair: Pair;
+    let field = &raw mut pair.left;
+    let field_end = field + 8;
+    pair.left = 20;
+    pair.right = 22;
+    let owner = alloc<u64>(2);
+    let heap = &raw *owner;
+    let heap_end = heap + 16;
+    free(owner);
+    return pair.left + values[1];
+}
