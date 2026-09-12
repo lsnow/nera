@@ -986,9 +986,12 @@ impl Interpreter {
         program: &ResolvedRuntimeVirView<'_>,
     ) -> Result<VirExecution, VirExecutionError> {
         let entry = program.entry;
-        let entry_function = program
-            .function(entry)
-            .ok_or_else(|| error(VirExecutionErrorKind::InvalidRuntimeState, empty_span()))?;
+        let entry_function = program.function(entry).ok_or_else(|| {
+            error(
+                VirExecutionErrorKind::InvalidRuntimeState,
+                ByteSpan::empty(),
+            )
+        })?;
         if !entry_function.signature.parameters.is_empty() {
             return Err(error(
                 VirExecutionErrorKind::EntryPointParametersUnsupported {
@@ -1005,15 +1008,20 @@ impl Interpreter {
             entry_function.source_span,
         )?];
         loop {
-            let frame_index = stack
-                .len()
-                .checked_sub(1)
-                .ok_or_else(|| error(VirExecutionErrorKind::InvalidRuntimeState, empty_span()))?;
+            let frame_index = stack.len().checked_sub(1).ok_or_else(|| {
+                error(
+                    VirExecutionErrorKind::InvalidRuntimeState,
+                    ByteSpan::empty(),
+                )
+            })?;
             let function_id = stack[frame_index].function;
             let block_id = stack[frame_index].block;
-            let function = program
-                .function(function_id)
-                .ok_or_else(|| error(VirExecutionErrorKind::InvalidRuntimeState, empty_span()))?;
+            let function = program.function(function_id).ok_or_else(|| {
+                error(
+                    VirExecutionErrorKind::InvalidRuntimeState,
+                    ByteSpan::empty(),
+                )
+            })?;
             let block = program.block(function_id, block_id).ok_or_else(|| {
                 error(
                     VirExecutionErrorKind::InvalidRuntimeState,
@@ -4981,10 +4989,6 @@ fn error(kind: VirExecutionErrorKind, source_span: ByteSpan) -> VirExecutionErro
     }
 }
 
-fn empty_span() -> ByteSpan {
-    ByteSpan::new(0, 0).expect("empty span is valid")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5028,7 +5032,7 @@ mod tests {
                 consumed_permissions: BTreeSet::new(),
                 loan_authorities: BTreeMap::new(),
             };
-            let result = interpreter.pointer_pair(&frame, left, right, empty_span());
+            let result = interpreter.pointer_pair(&frame, left, right, ByteSpan::empty());
             if domain == root.domain {
                 assert!(result.is_ok());
             } else {
@@ -5182,7 +5186,7 @@ mod tests {
                         start_bytes: 0,
                         end_bytes: layout.size_bytes,
                     },
-                    empty_span(),
+                    ByteSpan::empty(),
                 )
                 .unwrap_err();
             assert!(
@@ -5217,7 +5221,7 @@ mod tests {
         let inactive = interpreter_with_enum_tag(Some(1));
         assert_eq!(
             inactive
-                .check_scalar_active_access(&memory, payload, empty_span())
+                .check_scalar_active_access(&memory, payload, ByteSpan::empty())
                 .expect_err("variant 0 payload is inactive under variant 1")
                 .kind(),
             &VirExecutionErrorKind::InactiveVariantAccess {
@@ -5232,7 +5236,7 @@ mod tests {
         let invalid = interpreter_with_enum_tag(Some(9));
         assert!(matches!(
             invalid
-                .check_scalar_active_access(&memory, payload, empty_span())
+                .check_scalar_active_access(&memory, payload, ByteSpan::empty())
                 .expect_err("unknown discriminant is invalid")
                 .kind(),
             VirExecutionErrorKind::InvalidObjectRepresentation {
@@ -5258,13 +5262,13 @@ mod tests {
         };
         assert_eq!(
             interpreter_with_enum_tag(Some(1))
-                .enum_discriminant(&memory, root, permission, ENUM, empty_span())
+                .enum_discriminant(&memory, root, permission, ENUM, ByteSpan::empty())
                 .expect("declared tag reads as its discriminant"),
             1
         );
         assert!(matches!(
             interpreter_with_enum_tag(Some(9))
-                .enum_discriminant(&memory, root, permission, ENUM, empty_span())
+                .enum_discriminant(&memory, root, permission, ENUM, ByteSpan::empty())
                 .expect_err("invalid tag must not become a runtime integer")
                 .kind(),
             VirExecutionErrorKind::InvalidObjectRepresentation { access: ENUM, .. }
@@ -5273,7 +5277,7 @@ mod tests {
         let uninitialized = interpreter_with_enum_tag(None);
         assert!(matches!(
             uninitialized
-                .check_scalar_active_access(&memory, payload, empty_span())
+                .check_scalar_active_access(&memory, payload, ByteSpan::empty())
                 .expect_err("missing discriminant bytes are uninitialized")
                 .kind(),
             VirExecutionErrorKind::UninitializedObjectLeaf {
@@ -5306,7 +5310,7 @@ mod tests {
         };
         assert_eq!(
             interpreter
-                .register_runtime_object(pointer, &shape, empty_span())
+                .register_runtime_object(pointer, &shape, ByteSpan::empty())
                 .expect_err("registry must not truncate and continue")
                 .kind(),
             &VirExecutionErrorKind::ObjectRootLimitExceeded {

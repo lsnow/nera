@@ -9,6 +9,7 @@ use super::{
     HirVariantId,
 };
 use crate::ByteSpan;
+use crate::diagnostic::span_contains;
 
 /// Access requested by a consumer of a resolved place.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -899,10 +900,6 @@ fn checked_static_add(
         })
     })
     .transpose()
-}
-
-const fn span_contains(parent: ByteSpan, child: ByteSpan) -> bool {
-    parent.start() <= child.start() && child.end() <= parent.end()
 }
 
 const fn place_error(

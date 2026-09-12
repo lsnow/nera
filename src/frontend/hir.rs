@@ -11,6 +11,8 @@ mod regions;
 mod resolve;
 mod spec;
 mod types;
+mod validation;
+pub(crate) mod visit;
 
 pub(crate) use types::supports_builtin_allocation;
 

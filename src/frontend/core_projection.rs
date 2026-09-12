@@ -58,7 +58,7 @@ impl Projector {
             return Err(invalid_vir(
                 vir.functions
                     .first()
-                    .map_or_else(empty_span, |function| function.source_span),
+                    .map_or_else(ByteSpan::empty, |function| function.source_span),
             ));
         };
         if function.id != vir.entry
@@ -313,8 +313,4 @@ impl Projector {
 
 const fn invalid_vir(source_span: ByteSpan) -> Core0CompatibilityError {
     Core0CompatibilityError::new(source_span)
-}
-
-fn empty_span() -> ByteSpan {
-    ByteSpan::new(0, 0).expect("empty span is valid")
 }

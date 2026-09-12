@@ -45,7 +45,12 @@ fn pair(
         consumed_permissions: BTreeSet::new(),
         loan_authorities: BTreeMap::new(),
     };
-    interpreter.pointer_pair(&frame, VirValueId::new(0), VirValueId::new(1), empty_span())
+    interpreter.pointer_pair(
+        &frame,
+        VirValueId::new(0),
+        VirValueId::new(1),
+        ByteSpan::empty(),
+    )
 }
 
 #[test]
@@ -128,7 +133,7 @@ fn runtime_relations_require_live_instance_exact_domain_and_known_path() {
     // A one-past address is comparable but cannot authorize even one byte.
     assert!(
         interpreter
-            .check_domain(one_past, 24, 25, empty_span())
+            .check_domain(one_past, 24, 25, ByteSpan::empty())
             .is_err()
     );
     interpreter.allocations.get_mut(&0).unwrap().live = false;
@@ -157,7 +162,7 @@ fn empty_selected_domain_has_an_endpoint_but_no_accessible_byte() {
     assert!(pair(&interpreter, empty, empty).is_ok());
     assert!(
         interpreter
-            .check_domain(empty, 24, 25, empty_span())
+            .check_domain(empty, 24, 25, ByteSpan::empty())
             .is_err()
     );
 }

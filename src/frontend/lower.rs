@@ -23,6 +23,7 @@ mod refill;
 mod unit;
 
 use super::FrontendFailure;
+use super::hir::visit::{HirVisitor, walk_expression, walk_statement};
 use super::hir::{
     HirBlock, HirBoundsSource, HirCall, HirCallingConvention, HirExpression, HirExpressionKind,
     HirForSource, HirFunction, HirIntegerPredicate, HirLocal, HirLocalId, HirLoopId, HirMatchArm,
@@ -5711,150 +5712,72 @@ fn statement_falls_through(statement: &HirStatement) -> bool {
 }
 
 fn collect_addressable_storage_locals(block: &HirBlock) -> BTreeSet<HirLocalId> {
-    let mut locals = BTreeSet::new();
-    collect_addressable_storage_in_block(block, &mut locals);
-    locals
+    let mut collector = AddressableStorageCollector::default();
+    collector.visit_block(block);
+    collector.locals
 }
 
-fn collect_addressable_storage_in_block(block: &HirBlock, locals: &mut BTreeSet<HirLocalId>) {
-    for statement in &block.statements {
-        match &statement.kind {
-            HirStatementKind::Declare { local } => {
-                locals.insert(*local);
-            }
-            HirStatementKind::Let { value, .. }
-            | HirStatementKind::Evaluate { expression: value } => {
-                collect_borrowed_storage_in_expression(value, locals);
-            }
-            HirStatementKind::Assign { destination, value } => {
-                collect_borrowed_storage_in_place(destination, locals);
-                collect_borrowed_storage_in_expression(value, locals);
-            }
-            HirStatementKind::Return { value } => {
-                if let Some(value) = value {
-                    collect_borrowed_storage_in_expression(value, locals);
-                }
-            }
-            HirStatementKind::Block { block } => {
-                collect_addressable_storage_in_block(block, locals);
-            }
-            HirStatementKind::If {
-                condition,
-                then_block,
-                else_block,
-            } => {
-                collect_borrowed_storage_in_expression(condition, locals);
-                collect_addressable_storage_in_block(then_block, locals);
-                if let Some(else_block) = else_block {
-                    collect_addressable_storage_in_block(else_block, locals);
-                }
-            }
-            HirStatementKind::While {
-                condition, body, ..
-            } => {
-                collect_borrowed_storage_in_expression(condition, locals);
-                collect_addressable_storage_in_block(body, locals);
-            }
-            HirStatementKind::For { source, body, .. } => {
-                let HirForSource::IntegerRange { start, end, .. } = source;
-                collect_borrowed_storage_in_expression(start, locals);
-                collect_borrowed_storage_in_expression(end, locals);
-                collect_addressable_storage_in_block(body, locals);
-            }
-            HirStatementKind::Match { scrutinee, arms } => {
-                collect_borrowed_storage_in_expression(scrutinee, locals);
-                for arm in arms {
-                    if let Some(guard) = &arm.guard {
-                        collect_borrowed_storage_in_expression(guard, locals);
-                    }
-                    collect_addressable_storage_in_block(&arm.body, locals);
-                }
-            }
-            HirStatementKind::Free { .. }
-            | HirStatementKind::Break { .. }
-            | HirStatementKind::Continue { .. } => {}
+#[derive(Default)]
+struct AddressableStorageCollector {
+    locals: BTreeSet<HirLocalId>,
+}
+
+impl<'hir> HirVisitor<'hir> for AddressableStorageCollector {
+    fn visit_statement(&mut self, statement: &'hir HirStatement) {
+        if let HirStatementKind::Declare { local } = &statement.kind {
+            self.locals.insert(*local);
         }
+        walk_statement(self, statement);
     }
-}
 
-fn collect_borrowed_storage_in_expression(
-    expression: &HirExpression,
-    locals: &mut BTreeSet<HirLocalId>,
-) {
-    match &expression.kind {
-        HirExpressionKind::Borrow { place, .. } | HirExpressionKind::RawAddress { place, .. } => {
-            if !matches!(
-                place.projections.first().map(|projection| &projection.kind),
-                Some(HirProjectionKind::Dereference)
-            ) {
+    fn visit_expression(&mut self, expression: &'hir HirExpression) {
+        match &expression.kind {
+            HirExpressionKind::Borrow { place, .. }
+            | HirExpressionKind::RawAddress { place, .. }
+                if !matches!(
+                    place.projections.first().map(|projection| &projection.kind),
+                    Some(HirProjectionKind::Dereference)
+                ) =>
+            {
                 let HirPlaceBase::Local(local) = place.base;
-                locals.insert(local);
+                self.locals.insert(local);
             }
-            collect_borrowed_storage_in_place(place, locals);
+            _ => {}
         }
-        HirExpressionKind::TupleConstructor { elements }
-        | HirExpressionKind::ArrayConstructor { elements } => {
-            for element in elements {
-                collect_borrowed_storage_in_expression(element, locals);
-            }
-        }
-        HirExpressionKind::ArrayRepeatConstructor { value, .. }
-        | HirExpressionKind::PointerOffset { base: value, .. } => {
-            collect_borrowed_storage_in_expression(value, locals);
-        }
-        HirExpressionKind::StructConstructor { fields }
-        | HirExpressionKind::EnumConstructor { fields, .. } => {
-            for field in fields {
-                collect_borrowed_storage_in_expression(&field.value, locals);
-            }
-        }
-        HirExpressionKind::Compare { left, right, .. }
-        | HirExpressionKind::PointerDistance {
-            begin: left,
-            end: right,
-        } => {
-            collect_borrowed_storage_in_expression(left, locals);
-            collect_borrowed_storage_in_expression(right, locals);
-        }
-        HirExpressionKind::WordAdd { operands, .. } => {
-            for operand in operands {
-                collect_borrowed_storage_in_expression(operand, locals);
-            }
-        }
-        HirExpressionKind::Read { place, .. }
-        | HirExpressionKind::Length { place }
-        | HirExpressionKind::OwnerAddress { place } => {
-            collect_borrowed_storage_in_place(place, locals);
-        }
-        HirExpressionKind::Call(call) => {
-            for argument in &call.arguments {
-                collect_borrowed_storage_in_expression(argument, locals);
-            }
-        }
-        HirExpressionKind::Unit
-        | HirExpressionKind::Integer(_)
-        | HirExpressionKind::Bool(_)
-        | HirExpressionKind::Allocate { .. } => {}
+        walk_expression(self, expression);
     }
 }
 
-fn collect_borrowed_storage_in_place(place: &HirPlace, locals: &mut BTreeSet<HirLocalId>) {
-    for projection in &place.projections {
-        match &projection.kind {
-            HirProjectionKind::DynamicIndex { index } => {
-                collect_borrowed_storage_in_expression(index, locals);
-            }
-            HirProjectionKind::Slice { start, end } => {
-                for bound in start.iter().chain(end) {
-                    collect_borrowed_storage_in_expression(bound, locals);
-                }
-            }
-            HirProjectionKind::Dereference
-            | HirProjectionKind::Field { .. }
-            | HirProjectionKind::TupleElement { .. }
-            | HirProjectionKind::ConstantIndex { .. }
-            | HirProjectionKind::Downcast { .. } => {}
+struct ConstructorCollector<'output, 'hir> {
+    output: &'output mut Vec<&'hir HirExpression>,
+}
+
+impl<'output, 'hir> HirVisitor<'hir> for ConstructorCollector<'output, 'hir> {
+    fn visit_expression(&mut self, expression: &'hir HirExpression) {
+        if matches!(
+            &expression.kind,
+            HirExpressionKind::TupleConstructor { .. }
+                | HirExpressionKind::ArrayConstructor { .. }
+                | HirExpressionKind::ArrayRepeatConstructor { .. }
+                | HirExpressionKind::StructConstructor { .. }
+                | HirExpressionKind::EnumConstructor { .. }
+        ) {
+            self.output.push(expression);
         }
+        walk_expression(self, expression);
+    }
+}
+
+struct CallCollector<'output, 'hir> {
+    output: &'output mut Vec<&'hir HirExpression>,
+}
+
+impl<'output, 'hir> HirVisitor<'hir> for CallCollector<'output, 'hir> {
+    fn visit_expression(&mut self, expression: &'hir HirExpression) {
+        if matches!(&expression.kind, HirExpressionKind::Call(_)) {
+            self.output.push(expression);
+        }
+        walk_expression(self, expression);
     }
 }
 
@@ -5862,272 +5785,11 @@ fn collect_constructors_in_block<'hir>(
     block: &'hir HirBlock,
     output: &mut Vec<&'hir HirExpression>,
 ) {
-    for statement in &block.statements {
-        match &statement.kind {
-            HirStatementKind::Declare { .. } => {}
-            HirStatementKind::Let { value, .. }
-            | HirStatementKind::Evaluate { expression: value } => {
-                collect_constructors_in_expression(value, output)
-            }
-            HirStatementKind::Assign { destination, value } => {
-                collect_constructors_in_place(destination, output);
-                collect_constructors_in_expression(value, output);
-            }
-            HirStatementKind::Return { value } => {
-                if let Some(value) = value {
-                    collect_constructors_in_expression(value, output);
-                }
-            }
-            HirStatementKind::Block { block } => collect_constructors_in_block(block, output),
-            HirStatementKind::If {
-                condition,
-                then_block,
-                else_block,
-            } => {
-                collect_constructors_in_expression(condition, output);
-                collect_constructors_in_block(then_block, output);
-                if let Some(else_block) = else_block {
-                    collect_constructors_in_block(else_block, output);
-                }
-            }
-            HirStatementKind::While {
-                condition, body, ..
-            } => {
-                collect_constructors_in_expression(condition, output);
-                collect_constructors_in_block(body, output);
-            }
-            HirStatementKind::For { source, body, .. } => {
-                let HirForSource::IntegerRange { start, end, .. } = source;
-                collect_constructors_in_expression(start, output);
-                collect_constructors_in_expression(end, output);
-                collect_constructors_in_block(body, output);
-            }
-            HirStatementKind::Match { scrutinee, arms } => {
-                collect_constructors_in_expression(scrutinee, output);
-                for arm in arms {
-                    if let Some(guard) = &arm.guard {
-                        collect_constructors_in_expression(guard, output);
-                    }
-                    collect_constructors_in_block(&arm.body, output);
-                }
-            }
-            HirStatementKind::Free { .. }
-            | HirStatementKind::Break { .. }
-            | HirStatementKind::Continue { .. } => {}
-        }
-    }
-}
-
-fn collect_constructors_in_expression<'hir>(
-    expression: &'hir HirExpression,
-    output: &mut Vec<&'hir HirExpression>,
-) {
-    match &expression.kind {
-        HirExpressionKind::TupleConstructor { elements }
-        | HirExpressionKind::ArrayConstructor { elements } => {
-            output.push(expression);
-            for element in elements {
-                collect_constructors_in_expression(element, output);
-            }
-        }
-        HirExpressionKind::ArrayRepeatConstructor { value, .. } => {
-            output.push(expression);
-            collect_constructors_in_expression(value, output);
-        }
-        HirExpressionKind::StructConstructor { fields }
-        | HirExpressionKind::EnumConstructor { fields, .. } => {
-            output.push(expression);
-            for field in fields {
-                collect_constructors_in_expression(&field.value, output);
-            }
-        }
-        HirExpressionKind::Compare { left, right, .. }
-        | HirExpressionKind::PointerDistance {
-            begin: left,
-            end: right,
-        } => {
-            collect_constructors_in_expression(left, output);
-            collect_constructors_in_expression(right, output);
-        }
-        HirExpressionKind::WordAdd { operands, .. } => {
-            for operand in operands {
-                collect_constructors_in_expression(operand, output);
-            }
-        }
-        HirExpressionKind::PointerOffset { base, .. } => {
-            collect_constructors_in_expression(base, output)
-        }
-        HirExpressionKind::Read { place, .. }
-        | HirExpressionKind::Length { place }
-        | HirExpressionKind::OwnerAddress { place }
-        | HirExpressionKind::Borrow { place, .. }
-        | HirExpressionKind::RawAddress { place, .. } => {
-            collect_constructors_in_place(place, output)
-        }
-        HirExpressionKind::Call(call) => {
-            for argument in &call.arguments {
-                collect_constructors_in_expression(argument, output);
-            }
-        }
-        HirExpressionKind::Unit
-        | HirExpressionKind::Integer(_)
-        | HirExpressionKind::Bool(_)
-        | HirExpressionKind::Allocate { .. } => {}
-    }
-}
-
-fn collect_constructors_in_place<'hir>(
-    place: &'hir HirPlace,
-    output: &mut Vec<&'hir HirExpression>,
-) {
-    for projection in &place.projections {
-        match &projection.kind {
-            super::hir::HirProjectionKind::DynamicIndex { index } => {
-                collect_constructors_in_expression(index, output)
-            }
-            super::hir::HirProjectionKind::Slice { start, end } => {
-                for bound in start.iter().chain(end) {
-                    collect_constructors_in_expression(bound, output);
-                }
-            }
-            super::hir::HirProjectionKind::Dereference
-            | super::hir::HirProjectionKind::Field { .. }
-            | super::hir::HirProjectionKind::TupleElement { .. }
-            | super::hir::HirProjectionKind::ConstantIndex { .. }
-            | super::hir::HirProjectionKind::Downcast { .. } => {}
-        }
-    }
+    ConstructorCollector { output }.visit_block(block);
 }
 
 fn collect_calls_in_block<'hir>(block: &'hir HirBlock, output: &mut Vec<&'hir HirExpression>) {
-    for statement in &block.statements {
-        match &statement.kind {
-            HirStatementKind::Declare { .. } => {}
-            HirStatementKind::Let { value, .. }
-            | HirStatementKind::Evaluate { expression: value } => {
-                collect_calls_in_expression(value, output);
-            }
-            HirStatementKind::Assign { destination, value } => {
-                collect_calls_in_place(destination, output);
-                collect_calls_in_expression(value, output);
-            }
-            HirStatementKind::Return { value } => {
-                if let Some(value) = value {
-                    collect_calls_in_expression(value, output);
-                }
-            }
-            HirStatementKind::Block { block } => collect_calls_in_block(block, output),
-            HirStatementKind::If {
-                condition,
-                then_block,
-                else_block,
-            } => {
-                collect_calls_in_expression(condition, output);
-                collect_calls_in_block(then_block, output);
-                if let Some(else_block) = else_block {
-                    collect_calls_in_block(else_block, output);
-                }
-            }
-            HirStatementKind::While {
-                condition, body, ..
-            } => {
-                collect_calls_in_expression(condition, output);
-                collect_calls_in_block(body, output);
-            }
-            HirStatementKind::For { source, body, .. } => {
-                let HirForSource::IntegerRange { start, end, .. } = source;
-                collect_calls_in_expression(start, output);
-                collect_calls_in_expression(end, output);
-                collect_calls_in_block(body, output);
-            }
-            HirStatementKind::Match { scrutinee, arms } => {
-                collect_calls_in_expression(scrutinee, output);
-                for arm in arms {
-                    if let Some(guard) = &arm.guard {
-                        collect_calls_in_expression(guard, output);
-                    }
-                    collect_calls_in_block(&arm.body, output);
-                }
-            }
-            HirStatementKind::Free { .. }
-            | HirStatementKind::Break { .. }
-            | HirStatementKind::Continue { .. } => {}
-        }
-    }
-}
-
-fn collect_calls_in_expression<'hir>(
-    expression: &'hir HirExpression,
-    output: &mut Vec<&'hir HirExpression>,
-) {
-    match &expression.kind {
-        HirExpressionKind::Call(call) => {
-            output.push(expression);
-            for argument in &call.arguments {
-                collect_calls_in_expression(argument, output);
-            }
-        }
-        HirExpressionKind::TupleConstructor { elements }
-        | HirExpressionKind::ArrayConstructor { elements } => {
-            for element in elements {
-                collect_calls_in_expression(element, output);
-            }
-        }
-        HirExpressionKind::ArrayRepeatConstructor { value, .. } => {
-            collect_calls_in_expression(value, output);
-        }
-        HirExpressionKind::StructConstructor { fields }
-        | HirExpressionKind::EnumConstructor { fields, .. } => {
-            for field in fields {
-                collect_calls_in_expression(&field.value, output);
-            }
-        }
-        HirExpressionKind::Compare { left, right, .. }
-        | HirExpressionKind::PointerDistance {
-            begin: left,
-            end: right,
-        } => {
-            collect_calls_in_expression(left, output);
-            collect_calls_in_expression(right, output);
-        }
-        HirExpressionKind::WordAdd { operands, .. } => {
-            for operand in operands {
-                collect_calls_in_expression(operand, output);
-            }
-        }
-        HirExpressionKind::PointerOffset { base, .. } => {
-            collect_calls_in_expression(base, output);
-        }
-        HirExpressionKind::Read { place, .. }
-        | HirExpressionKind::Length { place }
-        | HirExpressionKind::OwnerAddress { place }
-        | HirExpressionKind::Borrow { place, .. }
-        | HirExpressionKind::RawAddress { place, .. } => collect_calls_in_place(place, output),
-        HirExpressionKind::Unit
-        | HirExpressionKind::Integer(_)
-        | HirExpressionKind::Bool(_)
-        | HirExpressionKind::Allocate { .. } => {}
-    }
-}
-
-fn collect_calls_in_place<'hir>(place: &'hir HirPlace, output: &mut Vec<&'hir HirExpression>) {
-    for projection in &place.projections {
-        match &projection.kind {
-            super::hir::HirProjectionKind::DynamicIndex { index } => {
-                collect_calls_in_expression(index, output);
-            }
-            super::hir::HirProjectionKind::Slice { start, end } => {
-                for bound in start.iter().chain(end) {
-                    collect_calls_in_expression(bound, output);
-                }
-            }
-            super::hir::HirProjectionKind::Dereference
-            | super::hir::HirProjectionKind::Field { .. }
-            | super::hir::HirProjectionKind::TupleElement { .. }
-            | super::hir::HirProjectionKind::ConstantIndex { .. }
-            | super::hir::HirProjectionKind::Downcast { .. } => {}
-        }
-    }
+    CallCollector { output }.visit_block(block);
 }
 
 fn invalid_hir(source_span: ByteSpan) -> FrontendFailure {

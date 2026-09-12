@@ -2,10 +2,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::program::{
-    HirBody, HirFunction, HirProgramValidationError, require, span_contains, validation_error,
-};
+use super::program::{HirBody, HirFunction, HirProgramValidationError, require, validation_error};
 use super::resolve::resolve_place_from_locals;
+use super::validation::all_unique;
 use super::{
     HirBlock, HirExpression, HirExpressionKind, HirFieldInitializer, HirForSource, HirLocalId,
     HirLoopId, HirMatchArm, HirMutability, HirPattern, HirPatternKind, HirPlace, HirPlaceAccess,
@@ -13,6 +12,7 @@ use super::{
     HirScopeId, HirStatement, HirStatementKind, HirTypeId, HirTypeKind, HirUseMode,
 };
 use crate::ValueCapability;
+use crate::diagnostic::span_contains;
 
 const MAX_BODY_DEPTH: usize = 256;
 
@@ -1746,9 +1746,4 @@ fn canonical_use_mode(program: &HirProgram, ty: HirTypeId) -> Option<HirUseMode>
         ValueCapability::Copy => Some(HirUseMode::Copy),
         ValueCapability::MoveOnly => Some(HirUseMode::Move),
     }
-}
-
-fn all_unique<T: Ord>(items: impl IntoIterator<Item = T>) -> bool {
-    let mut seen = BTreeSet::new();
-    items.into_iter().all(|item| seen.insert(item))
 }

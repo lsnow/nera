@@ -9,6 +9,7 @@ use super::draft::{
 };
 use super::invalid_hir;
 use crate::ByteSpan;
+use crate::diagnostic::span_contains;
 use crate::frontend::FrontendFailure;
 use crate::frontend::hir::{HirLocalId, HirScopeId};
 use crate::vir::{
@@ -1051,10 +1052,6 @@ pub(super) fn emit_scope_exit_actions(
 
 fn strictly_increasing(locals: &[HirLocalId]) -> bool {
     locals.windows(2).all(|pair| pair[0] < pair[1])
-}
-
-const fn span_contains(parent: ByteSpan, child: ByteSpan) -> bool {
-    parent.start() <= child.start() && child.end() <= parent.end()
 }
 
 #[cfg(test)]

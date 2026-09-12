@@ -22,6 +22,7 @@ mod resource;
 mod spec;
 pub mod summary;
 mod transfer;
+mod vc;
 mod verify;
 
 pub use cfg::{

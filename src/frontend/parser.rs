@@ -2260,7 +2260,7 @@ fn parse_integer(raw: &[u8]) -> Result<(u64, Option<IntegerSuffix>), FrontendFai
     const OTHER_SUFFIXES: [&str; 8] = ["isize", "i16", "i32", "i64", "u16", "u32", "i8", "u8"];
     if OTHER_SUFFIXES.iter().any(|suffix| text.ends_with(suffix)) {
         return Err(FrontendFailure::unsupported(
-            empty_span(),
+            ByteSpan::empty(),
             "integer literals in the current surface slice can only use `u64` or `usize`",
         ));
     }
@@ -2285,7 +2285,10 @@ fn parse_integer(raw: &[u8]) -> Result<(u64, Option<IntegerSuffix>), FrontendFai
         .filter(|character| *character != '_')
         .collect();
     let value = u64::from_str_radix(&normalized, radix).map_err(|_| {
-        FrontendFailure::elaboration(empty_span(), "integer literal does not fit in Core0 `u64`")
+        FrontendFailure::elaboration(
+            ByteSpan::empty(),
+            "integer literal does not fit in Core0 `u64`",
+        )
     })?;
     Ok((value, suffix))
 }
@@ -2294,13 +2297,9 @@ fn parse_core_integer(raw: &[u8]) -> Result<(u64, bool), FrontendFailure> {
     let (value, suffix) = parse_integer(raw)?;
     if suffix == Some(IntegerSuffix::Usize) {
         return Err(FrontendFailure::unsupported(
-            empty_span(),
+            ByteSpan::empty(),
             "this integer position requires `u64` or an unsuffixed literal",
         ));
     }
     Ok((value, suffix == Some(IntegerSuffix::U64)))
-}
-
-fn empty_span() -> ByteSpan {
-    span(0, 0)
 }

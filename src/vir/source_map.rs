@@ -5,6 +5,7 @@ use super::{
     VirSourceId, VirType, VirUnitVersion,
 };
 use crate::ByteSpan;
+use crate::diagnostic::span_contains;
 
 /// One source file named by the canonical VIR source table.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1125,8 +1126,4 @@ fn inferred_source_len(runtime: &RuntimeVirProgram) -> usize {
 
 pub(super) fn hand_authored_source_map(runtime: &RuntimeVirProgram) -> VirSourceMap {
     VirSourceMap::from_runtime_source("<hand-authored-vir>", inferred_source_len(runtime), runtime)
-}
-
-const fn span_contains(parent: ByteSpan, child: ByteSpan) -> bool {
-    parent.start() <= child.start() && child.end() <= parent.end()
 }

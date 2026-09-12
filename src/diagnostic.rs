@@ -10,6 +10,12 @@ pub struct ByteSpan {
 }
 
 impl ByteSpan {
+    /// The canonical empty span used when no source position is available.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self { start: 0, end: 0 }
+    }
+
     /// Creates a byte span, returning `None` when its bounds are reversed.
     #[must_use]
     pub const fn new(start: usize, end: usize) -> Option<Self> {
@@ -39,12 +45,25 @@ impl ByteSpan {
     pub const fn is_empty(self) -> bool {
         self.start == self.end
     }
+
+    /// Returns whether `child` lies wholly within this half-open span.
+    #[must_use]
+    pub const fn contains(self, child: Self) -> bool {
+        self.start <= child.start && child.end <= self.end
+    }
 }
 
 impl From<ByteSpan> for Range<usize> {
     fn from(span: ByteSpan) -> Self {
         span.start..span.end
     }
+}
+
+/// Compatibility helper for phase-local validators that use function syntax.
+/// New code should prefer [`ByteSpan::contains`].
+#[must_use]
+pub(crate) const fn span_contains(parent: ByteSpan, child: ByteSpan) -> bool {
+    parent.contains(child)
 }
 
 /// Diagnostic severity independent of a particular renderer.
@@ -123,6 +142,17 @@ mod tests {
     #[test]
     fn byte_span_rejects_reversed_bounds() {
         assert_eq!(ByteSpan::new(4, 3), None);
+    }
+
+    #[test]
+    fn byte_span_empty_and_containment_are_canonical() {
+        let outer = ByteSpan::new(2, 8).expect("valid span");
+        let inner = ByteSpan::new(3, 8).expect("valid span");
+        let crossing = ByteSpan::new(1, 4).expect("valid span");
+
+        assert_eq!(ByteSpan::empty(), ByteSpan::new(0, 0).expect("valid span"));
+        assert!(outer.contains(inner));
+        assert!(!outer.contains(crossing));
     }
 
     #[test]

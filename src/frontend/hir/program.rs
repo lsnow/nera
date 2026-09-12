@@ -12,14 +12,13 @@ use super::ids::{
 };
 use super::regions::{HirRegion, HirRegionConstraint, HirRegionOrigin, HirRegionOwner};
 use super::spec::HirSpecEnvironment;
-use super::spec::{
-    HirSpecBinderOwner, HirSpecClauseOwner, HirSpecContractPosition, HirSpecLocation,
-    HirSpecSnapshot, HirSpecTermKind, HirTrustPolicyKind, HirTrustScope,
-};
+use super::spec::{HirSpecBinderOwner, HirSpecClauseOwner};
 use super::types::{
     HirCallingConvention, HirFunctionType, HirIntegerType, HirLayout, HirMutability,
     HirTargetDataLayout, HirTypeDefinition, HirTypeKind,
 };
+use super::validation::{all_unique, validate_specs};
+use crate::diagnostic::span_contains;
 use crate::{ByteSpan, DropCapability, SizeCapability, TypeCapabilities, ValueCapability};
 
 /// Version of the in-memory HIR table schema.
@@ -1061,7 +1060,7 @@ impl HirProgram {
                 "invalid declaration, binder ownership, or gated predicate body",
             )?;
         }
-        self.validate_specs()?;
+        validate_specs(self)?;
         Ok(())
     }
 
@@ -1514,296 +1513,6 @@ impl HirProgram {
         visit(self, actual, expected, &mut BTreeSet::new(), 0)
     }
 
-    fn validate_specs(&self) -> Result<(), HirProgramValidationError> {
-        const MAX_SPEC_TERM_DEPTH: usize = 256;
-
-        validate_dense("spec binder", &self.specs.binders, |item| item.id.get())?;
-        validate_dense("spec term", &self.specs.terms, |item| item.id.get())?;
-        validate_dense("spec clause", &self.specs.clauses, |item| item.id.get())?;
-        validate_dense("spec prove", &self.specs.proves, |item| item.id.get())?;
-        validate_dense("trust entry", &self.specs.trust_entries, |item| {
-            item.id.get()
-        })?;
-        validate_dense("spec loop invariant", &self.specs.loop_invariants, |item| {
-            item.id.get()
-        })?;
-
-        let mut binder_names = BTreeSet::new();
-        for binder in &self.specs.binders {
-            let owner_span = match binder.owner {
-                HirSpecBinderOwner::Clause(clause_id) => self
-                    .specs
-                    .clauses
-                    .get(clause_id.index())
-                    .filter(|clause| clause.id == clause_id)
-                    .map(|clause| clause.span),
-                HirSpecBinderOwner::Predicate(predicate) => self
-                    .predicate(predicate)
-                    .filter(|predicate| predicate.binders.contains(&binder.id))
-                    .map(|predicate| predicate.span),
-            };
-            require(
-                !binder.name.is_empty()
-                    && binder_names.insert((binder.owner, binder.name.as_str()))
-                    && self.is_spec_scalar_type(binder.ty)
-                    && owner_span.is_some_and(|span| span_contains(span, binder.span)),
-                "spec binder",
-                binder.id.index(),
-                "empty name, invalid type, foreign owner, or span outside owner",
-            )?;
-        }
-
-        let mut depths = Vec::with_capacity(self.specs.terms.len());
-        for term in &self.specs.terms {
-            let clause = self
-                .specs
-                .clauses
-                .get(term.clause.index())
-                .filter(|clause| clause.id == term.clause);
-            require(
-                clause.is_some_and(|clause| span_contains(clause.span, term.span))
-                    && self.is_spec_scalar_type(term.ty),
-                "spec term",
-                term.id.index(),
-                "missing clause, invalid type, or span outside clause",
-            )?;
-
-            let child = |id: super::HirSpecTermId| {
-                self.specs
-                    .terms
-                    .get(id.index())
-                    .filter(|child| child.id == id && id.index() < term.id.index())
-                    .filter(|child| child.clause == term.clause)
-            };
-            let bool_type = |ty| matches!(self.type_kind(ty), Some(HirTypeKind::Bool));
-            let u64_type = |ty| {
-                matches!(
-                    self.type_kind(ty),
-                    Some(HirTypeKind::Integer(super::HirIntegerType::U64))
-                )
-            };
-            let (valid, depth) = match &term.kind {
-                HirSpecTermKind::Bool(_) => (bool_type(term.ty), 1),
-                HirSpecTermKind::U64(_) => (u64_type(term.ty), 1),
-                HirSpecTermKind::Binder(id) => {
-                    let binder = self
-                        .specs
-                        .binders
-                        .get(id.index())
-                        .filter(|binder| binder.id == *id);
-                    (
-                        binder.is_some_and(|binder| {
-                            binder.ty == term.ty
-                                && binder.owner == HirSpecBinderOwner::Clause(term.clause)
-                        }),
-                        1,
-                    )
-                }
-                HirSpecTermKind::Snapshot(snapshot) => {
-                    (self.validate_spec_snapshot(term, *snapshot), 1)
-                }
-                HirSpecTermKind::Equal { left, right } => {
-                    let left_id = *left;
-                    let right_id = *right;
-                    let left = child(left_id);
-                    let right = child(right_id);
-                    let valid = bool_type(term.ty)
-                        && left.zip(right).is_some_and(|(left, right)| {
-                            left.ty == right.ty && self.is_spec_scalar_type(left.ty)
-                        });
-                    (valid, child_depth(&depths, left_id, right_id))
-                }
-                HirSpecTermKind::LessThan { left, right }
-                | HirSpecTermKind::LessOrEqual { left, right } => {
-                    let valid = bool_type(term.ty)
-                        && child(*left).is_some_and(|left| u64_type(left.ty))
-                        && child(*right).is_some_and(|right| u64_type(right.ty));
-                    (valid, child_depth(&depths, *left, *right))
-                }
-                HirSpecTermKind::Not(operand) => {
-                    let valid = bool_type(term.ty)
-                        && child(*operand).is_some_and(|operand| bool_type(operand.ty));
-                    (valid, unary_depth(&depths, *operand))
-                }
-                HirSpecTermKind::And(operands) | HirSpecTermKind::Or(operands) => {
-                    let valid = bool_type(term.ty)
-                        && operands.len() >= 2
-                        && operands.iter().all(|operand| {
-                            child(*operand).is_some_and(|operand| bool_type(operand.ty))
-                        });
-                    (valid, nary_depth(&depths, operands))
-                }
-            };
-            require(
-                valid && depth <= MAX_SPEC_TERM_DEPTH,
-                "spec term",
-                term.id.index(),
-                "ill-typed, cyclic/foreign, or exceeds the recursion-depth budget",
-            )?;
-            depths.push(depth);
-        }
-
-        for clause in &self.specs.clauses {
-            let root = self
-                .specs
-                .terms
-                .get(clause.root.index())
-                .filter(|term| term.id == clause.root && term.clause == clause.id);
-            let owner_valid = match clause.owner {
-                HirSpecClauseOwner::Contract { contract, position } => self
-                    .contract(contract)
-                    .filter(|contract| contract.clauses.contains(&clause.id))
-                    .is_some_and(|contract| {
-                        clause.location
-                            == match position {
-                                HirSpecContractPosition::Requires => {
-                                    HirSpecLocation::FunctionEntry {
-                                        function: contract.function,
-                                    }
-                                }
-                                HirSpecContractPosition::Ensures => {
-                                    HirSpecLocation::FunctionResult {
-                                        function: contract.function,
-                                    }
-                                }
-                            }
-                    }),
-                HirSpecClauseOwner::Prove(prove_id) => self
-                    .specs
-                    .proves
-                    .get(prove_id.index())
-                    .is_some_and(|prove| {
-                        prove.id == prove_id
-                            && prove.clause == clause.id
-                            && prove.location == clause.location
-                    }),
-                HirSpecClauseOwner::TrustEntry(entry_id) => self
-                    .specs
-                    .trust_entries
-                    .get(entry_id.index())
-                    .is_some_and(|entry| {
-                        entry.id == entry_id
-                            && entry.clause == clause.id
-                            && entry.scope.location() == clause.location
-                    }),
-                HirSpecClauseOwner::LoopInvariant(invariant_id) => self
-                    .specs
-                    .loop_invariants
-                    .get(invariant_id.index())
-                    .is_some_and(|invariant| {
-                        invariant.id == invariant_id
-                            && invariant.clause == clause.id
-                            && invariant.location == clause.location
-                    }),
-            };
-            require(
-                owner_valid
-                    && root.is_some_and(|root| {
-                        matches!(self.type_kind(root.ty), Some(HirTypeKind::Bool))
-                    })
-                    && self
-                        .function_by_id(clause.location.function())
-                        .is_some_and(|function| span_contains(function.span, clause.span)),
-                "spec clause",
-                clause.id.index(),
-                "invalid owner/location, non-boolean root, or foreign span",
-            )?;
-        }
-
-        for prove in &self.specs.proves {
-            require(
-                self.function_by_id(prove.function).is_some_and(|function| {
-                    matches!(
-                        prove.location,
-                        HirSpecLocation::FunctionEntry { function: owner }
-                            | HirSpecLocation::FunctionResult { function: owner }
-                            if owner == function.id
-                    ) && span_contains(function.span, prove.span)
-                }) && self
-                    .specs
-                    .clauses
-                    .get(prove.clause.index())
-                    .is_some_and(|clause| {
-                        clause.owner == HirSpecClauseOwner::Prove(prove.id)
-                            && clause.location == prove.location
-                    }),
-                "spec prove",
-                prove.id.index(),
-                "prove must own a boolean clause at its function entry or result",
-            )?;
-        }
-
-        for entry in &self.specs.trust_entries {
-            let valid_policy = entry.policy == HirTrustPolicyKind::EntryPointAssumption
-                && entry.scope
-                    == (HirTrustScope::FunctionEntry {
-                        function: self.entry_function,
-                    });
-            require(
-                valid_policy
-                    && self
-                        .function_by_id(entry.scope.function())
-                        .is_some_and(|function| span_contains(function.span, entry.span))
-                    && self
-                        .specs
-                        .clauses
-                        .get(entry.clause.index())
-                        .is_some_and(|clause| {
-                            clause.owner == HirSpecClauseOwner::TrustEntry(entry.id)
-                                && clause.location == entry.scope.location()
-                                && clause.span == entry.span
-                        }),
-                "trust entry",
-                entry.id.index(),
-                "policy denied, scope is not the program entry, or clause/origin mismatched",
-            )?;
-        }
-
-        require(
-            self.specs.loop_invariants.is_empty(),
-            "spec loop invariant",
-            0,
-            "non-trivial loop invariants remain feature gated",
-        )
-    }
-
-    fn is_spec_scalar_type(&self, ty: HirTypeId) -> bool {
-        matches!(
-            self.type_kind(ty),
-            Some(HirTypeKind::Bool) | Some(HirTypeKind::Integer(super::HirIntegerType::U64))
-        )
-    }
-
-    fn validate_spec_snapshot(&self, term: &super::HirSpecTerm, snapshot: HirSpecSnapshot) -> bool {
-        let Some(clause) = self.specs.clauses.get(term.clause.index()) else {
-            return false;
-        };
-        match snapshot {
-            HirSpecSnapshot::Local { function, local } => self
-                .function_by_id(function)
-                .and_then(|function| function.body.as_ref().map(|body| (function, body)))
-                .is_some_and(|(function, body)| {
-                    clause.location
-                        == HirSpecLocation::FunctionEntry {
-                            function: function.id,
-                        }
-                        && body.parameters.contains(&local)
-                        && body.locals.get(local.index()).is_some_and(|candidate| {
-                            candidate.id == local && candidate.ty == term.ty
-                        })
-                }),
-            HirSpecSnapshot::Result { function } => {
-                self.function_by_id(function).is_some_and(|function| {
-                    clause.location
-                        == HirSpecLocation::FunctionResult {
-                            function: function.id,
-                        }
-                        && function.signature.return_type == term.ty
-                })
-            }
-        }
-    }
-
     fn validate_type_kind(
         &self,
         id: HirTypeId,
@@ -2128,46 +1837,12 @@ pub(super) fn derive_type_capabilities(
     visit(types, fields, variants, root, &mut BTreeSet::new(), 0)
 }
 
-fn unary_depth(depths: &[usize], operand: super::HirSpecTermId) -> usize {
-    depths
-        .get(operand.index())
-        .and_then(|depth| depth.checked_add(1))
-        .unwrap_or(usize::MAX)
-}
-
-fn child_depth(depths: &[usize], left: super::HirSpecTermId, right: super::HirSpecTermId) -> usize {
-    depths
-        .get(left.index())
-        .zip(depths.get(right.index()))
-        .and_then(|(left, right)| left.max(right).checked_add(1))
-        .unwrap_or(usize::MAX)
-}
-
-fn nary_depth(depths: &[usize], operands: &[super::HirSpecTermId]) -> usize {
-    operands
-        .iter()
-        .map(|operand| depths.get(operand.index()).copied())
-        .collect::<Option<Vec<_>>>()
-        .and_then(|depths| depths.into_iter().max())
-        .and_then(|depth| depth.checked_add(1))
-        .unwrap_or(usize::MAX)
-}
-
-pub(super) const fn span_contains(parent: ByteSpan, child: ByteSpan) -> bool {
-    parent.start() <= child.start() && child.end() <= parent.end()
-}
-
-fn all_unique<T: Ord>(items: impl IntoIterator<Item = T>) -> bool {
-    let mut seen = BTreeSet::new();
-    items.into_iter().all(|item| seen.insert(item))
-}
-
 fn ranges_are_disjoint(ranges: &mut [(u64, u64)]) -> bool {
     ranges.sort_unstable();
     ranges.windows(2).all(|pair| pair[0].1 <= pair[1].0)
 }
 
-fn validate_dense<T>(
+pub(super) fn validate_dense<T>(
     table: &'static str,
     items: &[T],
     raw_id: impl Fn(&T) -> u32,
