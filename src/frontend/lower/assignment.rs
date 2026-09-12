@@ -821,13 +821,13 @@ fn apply_ready(memory: &VirMemorySchema, state: &mut FlowState, instruction: &Vi
         | VirInstruction::ObjectDrop {
             pointer, access, ..
         } => {
-            if let Some((fact, mask)) = object_mask(memory, state, *pointer, *access) {
-                if let Some(storage) = state.storages.get_mut(&fact.storage) {
-                    let ranges = absolute_ranges(fact.offset_bytes, &mask.possible);
-                    storage.set_ranges(&ranges, ByteState::Uninitialized);
-                    forget_variants(storage, fact.offset_bytes, *access, memory);
-                    forget_resource_values(storage, fact.offset_bytes, *access, memory);
-                }
+            if let Some((fact, mask)) = object_mask(memory, state, *pointer, *access)
+                && let Some(storage) = state.storages.get_mut(&fact.storage)
+            {
+                let ranges = absolute_ranges(fact.offset_bytes, &mask.possible);
+                storage.set_ranges(&ranges, ByteState::Uninitialized);
+                forget_variants(storage, fact.offset_bytes, *access, memory);
+                forget_resource_values(storage, fact.offset_bytes, *access, memory);
             }
         }
         VirInstruction::EnumSetDiscriminant {

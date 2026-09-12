@@ -360,25 +360,23 @@ fn disjoint_same_allocation(
             xx.root(),
             bb.addend().checked_sub(aa.addend()),
             yy.addend().checked_sub(xx.addend()),
-        ) {
-            if aa.scale() > 0
-                && aa.scale() == xx.scale()
-                && aa.addend() == xx.addend()
-                && aa.root() == bb.root()
-                && aa.scale() == bb.scale()
-                && xx.root() == yy.root()
-                && xx.scale() == yy.scale()
-                && (1..=aa.scale()).contains(&left_width)
-                && (1..=aa.scale()).contains(&right_width)
-            {
-                (status, index_separation, index_stop) = local::compare_observed(
-                    state,
-                    RelationComparison::NotEqual,
-                    word(i),
-                    word(j),
-                    limits,
-                );
-            }
+        ) && aa.scale() > 0
+            && aa.scale() == xx.scale()
+            && aa.addend() == xx.addend()
+            && aa.root() == bb.root()
+            && aa.scale() == bb.scale()
+            && xx.root() == yy.root()
+            && xx.scale() == yy.scale()
+            && (1..=aa.scale()).contains(&left_width)
+            && (1..=aa.scale()).contains(&right_width)
+        {
+            (status, index_separation, index_stop) = local::compare_observed(
+                state,
+                RelationComparison::NotEqual,
+                word(i),
+                word(j),
+                limits,
+            );
         }
     }
     let mut bands = None;

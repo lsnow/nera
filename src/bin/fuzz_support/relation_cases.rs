@@ -17,7 +17,7 @@ pub fn source(ordinal: u64, entropy: u64) -> String {
         _ => include_str!("../../../spec/cases/verify/relation-acceptance.nera"),
     };
     let mut source = source.to_owned();
-    if family % POSITIVE_COUNT == 0 && entropy & 1 != 0 {
+    if family.is_multiple_of(POSITIVE_COUNT) && entropy & 1 != 0 {
         source = source.replace("update(0usize, 2usize)", "update(2usize, 0usize)");
     }
     if family % POSITIVE_COUNT == 1 {

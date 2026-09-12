@@ -253,13 +253,12 @@ impl Validator<'_> {
                 else {
                     return Err(E::Path);
                 };
-                if let Knowledge::Known(active) = &variant.alternatives {
-                    if active.is_empty()
+                if let Knowledge::Known(active) = &variant.alternatives
+                    && (active.is_empty()
                         || active.iter().collect::<BTreeSet<_>>().len() != active.len()
-                        || active.iter().any(|v| !variants.contains(v))
-                    {
-                        return Err(E::Path);
-                    }
+                        || active.iter().any(|v| !variants.contains(v)))
+                {
+                    return Err(E::Path);
                 }
             }
             paths.clear();

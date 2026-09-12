@@ -290,53 +290,48 @@ pub(in crate::verifier) fn capture(
             let mut q = Query {
                 premises: Vec::new(),
             };
-            if let (
-                Some((start, pointer)),
-                Some(AbstractValue::Permission(permission)),
-                Ok(shape),
-            ) = (
+            if let (Some((start, pointer)), Some(AbstractValue::Permission(permission)), Ok(shape)) = (
                 q.pointer(pointer, before),
                 before.value(permission),
                 memory.object_shape(access),
-            ) {
-                if let AbstractProvenance::Known(allocation) = pointer.provenance() {
-                    let inner = super::range::access_range(pointer, shape.size_bytes());
-                    let (status, bounds) = super::range::covers_access(
-                        before,
-                        permission.range(),
-                        pointer,
-                        shape.size_bytes(),
-                        config.relation_limits,
-                    );
-                    if status != obligation.status() {
-                        return Err(());
-                    }
-                    q.premises.push(RelationPremise::Ranges {
-                        outer: Box::new(permission.range()),
-                        inner: Box::new(inner),
-                    });
-                    return Ok(Some(RelationEvidence {
-                        finding,
-                        config,
-                        case_ordinal,
-                        obligation_ordinal,
-                        guard: before.path_condition().clone(),
-                        instruction: instruction.clone(),
-                        obligation: obligation.kind(),
-                        goal: RelationGoal::Contained {
-                            allocation,
-                            start,
-                            size_bytes: shape.size_bytes(),
-                        },
-                        premises: q.premises,
-                        rule: RelationRule::SymbolicPermissionContainment,
-                        status,
-                        kernel_version: super::RELATION_KERNEL_VERSION,
-                        difference: None,
-                        bounds,
-                        disjoint: None,
-                    }));
+            ) && let AbstractProvenance::Known(allocation) = pointer.provenance()
+            {
+                let inner = super::range::access_range(pointer, shape.size_bytes());
+                let (status, bounds) = super::range::covers_access(
+                    before,
+                    permission.range(),
+                    pointer,
+                    shape.size_bytes(),
+                    config.relation_limits,
+                );
+                if status != obligation.status() {
+                    return Err(());
                 }
+                q.premises.push(RelationPremise::Ranges {
+                    outer: Box::new(permission.range()),
+                    inner: Box::new(inner),
+                });
+                return Ok(Some(RelationEvidence {
+                    finding,
+                    config,
+                    case_ordinal,
+                    obligation_ordinal,
+                    guard: before.path_condition().clone(),
+                    instruction: instruction.clone(),
+                    obligation: obligation.kind(),
+                    goal: RelationGoal::Contained {
+                        allocation,
+                        start,
+                        size_bytes: shape.size_bytes(),
+                    },
+                    premises: q.premises,
+                    rule: RelationRule::SymbolicPermissionContainment,
+                    status,
+                    kernel_version: super::RELATION_KERNEL_VERSION,
+                    difference: None,
+                    bounds,
+                    disjoint: None,
+                }));
             }
         }
     }
@@ -362,22 +357,20 @@ pub(in crate::verifier) fn capture(
         right: RelationTerm::PointerOffset { pointer: right, .. },
         size_bytes,
     } = goal
-    {
-        if let (Some(AbstractValue::Pointer(left)), Some(AbstractValue::Pointer(right))) =
+        && let (Some(AbstractValue::Pointer(left)), Some(AbstractValue::Pointer(right))) =
             (before.value(left), before.value(right))
-        {
-            let result = super::range::non_overlapping(
-                before,
-                *left,
-                *right,
-                size_bytes,
-                config.relation_limits,
-            );
-            status = result.0;
-            disjoint = result.1.map(Box::new);
-            if disjoint.is_some() {
-                rule = RelationRule::BoundedDifference;
-            }
+    {
+        let result = super::range::non_overlapping(
+            before,
+            *left,
+            *right,
+            size_bytes,
+            config.relation_limits,
+        );
+        status = result.0;
+        disjoint = result.1.map(Box::new);
+        if disjoint.is_some() {
+            rule = RelationRule::BoundedDifference;
         }
     }
     if let Some((comparison, left, right)) = query {

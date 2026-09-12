@@ -346,12 +346,10 @@ impl VirMemorySchema {
             mutability: source_mutability,
             ..
         }) = self.kind(source.ty)
+            && *mutability == super::VirMutability::Mutable
+            && *source_mutability != super::VirMutability::Mutable
         {
-            if *mutability == super::VirMutability::Mutable
-                && *source_mutability != super::VirMutability::Mutable
-            {
-                return None;
-            }
+            return None;
         }
         Some(sequence)
     }

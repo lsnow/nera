@@ -16,16 +16,15 @@ impl SourceIndex {
                     let location = VirLocation::FunctionEntry {
                         function: function.id,
                     };
-                    if let Some(origin) = program.as_unit().source_map.origin_at(location) {
-                        if let Some(span) = program
+                    if let Some(origin) = program.as_unit().source_map.origin_at(location)
+                        && let Some(span) = program
                             .as_unit()
                             .source_map
                             .source_span_for_origin(origin.id)
-                        {
-                            entry
-                                .0
-                                .extend(VerifierFinding::runtime(program, location, span.span));
-                        }
+                    {
+                        entry
+                            .0
+                            .extend(VerifierFinding::runtime(program, location, span.span));
                     }
                 }
             }

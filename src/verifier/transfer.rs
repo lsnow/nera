@@ -1918,17 +1918,14 @@ impl<'environment> TransferBuilder<'environment> {
         );
 
         if matches!(effect, MemoryEffect::WriteValue) {
-            if let (Some(id), Some(possible)) = (allocation_id, envelope) {
-                if let Some(allocation) = self.state.allocation_mut(id) {
-                    if possible.end() <= allocation.size_bytes() {
-                        allocation.forget_uninitialized(possible)?;
-                        if let Some(definite) =
-                            definite_write_range(pointer.offset_bytes(), access_bytes)
-                        {
-                            allocation.mark_initialized(definite)?;
-                            allocation.mark_valid(definite)?;
-                        }
-                    }
+            if let (Some(id), Some(possible)) = (allocation_id, envelope)
+                && let Some(allocation) = self.state.allocation_mut(id)
+                && possible.end() <= allocation.size_bytes()
+            {
+                allocation.forget_uninitialized(possible)?;
+                if let Some(definite) = definite_write_range(pointer.offset_bytes(), access_bytes) {
+                    allocation.mark_initialized(definite)?;
+                    allocation.mark_valid(definite)?;
                 }
             }
             if let Some(before) = allocation.as_ref()
@@ -4410,7 +4407,7 @@ impl<'environment> TransferBuilder<'environment> {
         } else {
             1
         };
-        if (slice && (stride == 0 || range.length() % stride != 0))
+        if (slice && (stride == 0 || !range.length().is_multiple_of(stride)))
             || count > crate::vir::VIR_OBJECT_SHAPE_MAX_NODES as u64
         {
             self.require(
@@ -4929,7 +4926,7 @@ fn prepare_repeated_object_state(
     shape: &VirObjectShape,
 ) -> Result<(), TransferError> {
     let object_bytes = shape.size_bytes();
-    if object_bytes == 0 || allocation.size_bytes() % object_bytes != 0 {
+    if object_bytes == 0 || !allocation.size_bytes().is_multiple_of(object_bytes) {
         return Ok(());
     }
     let count = allocation.size_bytes() / object_bytes;

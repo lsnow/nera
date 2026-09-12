@@ -137,7 +137,9 @@ fn hex_encoded_arbitrary_byte_corpus_never_loses_input() {
 fn decode_hex(text: &str) -> Vec<u8> {
     assert_eq!(text.len() % 2, 0, "hex corpus rows have whole bytes");
     text.as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let digits = std::str::from_utf8(pair).expect("hex corpus is ASCII");
             u8::from_str_radix(digits, 16).expect("valid hex corpus")

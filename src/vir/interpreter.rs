@@ -2532,7 +2532,9 @@ impl Interpreter {
             ));
         }
         self.check_domain(base, base.offset_bytes, source_end, source_span)?;
-        if base.offset_bytes % layout.alignment != 0 || start_bytes % layout.alignment != 0 {
+        if !base.offset_bytes.is_multiple_of(layout.alignment)
+            || start_bytes % layout.alignment != 0
+        {
             return Err(error(
                 VirExecutionErrorKind::MisalignedAccess {
                     allocation: base.allocation,
@@ -2659,7 +2661,9 @@ impl Interpreter {
             .layout(expected.layout)
             .ok_or_else(|| error(VirExecutionErrorKind::InvalidRuntimeState, source_span))?;
         let allocation = self.live_allocation(pointer.allocation, source_span)?;
-        if allocation.alignment < layout.alignment || pointer.offset_bytes % layout.alignment != 0 {
+        if allocation.alignment < layout.alignment
+            || !pointer.offset_bytes.is_multiple_of(layout.alignment)
+        {
             return Err(error(
                 VirExecutionErrorKind::MisalignedAccess {
                     allocation: pointer.allocation,
@@ -2718,7 +2722,9 @@ impl Interpreter {
                 )
             })?;
         let allocation = self.live_allocation(pointer.allocation, context.source_span)?;
-        if allocation.alignment < layout.alignment || pointer.offset_bytes % layout.alignment != 0 {
+        if allocation.alignment < layout.alignment
+            || !pointer.offset_bytes.is_multiple_of(layout.alignment)
+        {
             return Err(error(
                 VirExecutionErrorKind::MisalignedAccess {
                     allocation: pointer.allocation,
@@ -3742,13 +3748,14 @@ impl Interpreter {
         let extent = range.end_bytes - range.start_bytes;
         self.check_object_effect_size(if slice { extent } else { shape.size_bytes() }, span)?;
         let stride = shape.size_bytes();
-        if slice && (stride == 0 || extent % stride != 0) {
+        if slice && (stride == 0 || !extent.is_multiple_of(stride)) {
             return Err(error(
                 VirExecutionErrorKind::UnsupportedObjectEffectType { access },
                 span,
             ));
         }
-        if allocation.alignment < shape.alignment() || pointer.offset_bytes % shape.alignment() != 0
+        if allocation.alignment < shape.alignment()
+            || !pointer.offset_bytes.is_multiple_of(shape.alignment())
         {
             return Err(error(
                 VirExecutionErrorKind::MisalignedAccess {

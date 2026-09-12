@@ -342,12 +342,12 @@ impl<'a> Projector<'a> {
         let mut type_owners = BTreeMap::new();
         for module in hir.modules() {
             for declaration in &module.declarations {
-                if let crate::HirDeclaration::Type(ty) = declaration {
-                    if type_owners.insert(*ty, module.id).is_some() {
-                        return Err(InterfaceArtifactError::Inconsistent(
-                            "type declared by multiple modules",
-                        ));
-                    }
+                if let crate::HirDeclaration::Type(ty) = declaration
+                    && type_owners.insert(*ty, module.id).is_some()
+                {
+                    return Err(InterfaceArtifactError::Inconsistent(
+                        "type declared by multiple modules",
+                    ));
                 }
             }
         }

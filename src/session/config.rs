@@ -29,13 +29,13 @@ impl CompilationConfig {
             ("runtime", &request.runtime, profile.runtime()),
             ("verifier", &request.verifier, profile.verifier()),
         ] {
-            if let Some(name) = requested {
-                if name != known {
-                    return Err(SessionError::UnsupportedConfiguration {
-                        field,
-                        requested: name.clone(),
-                    });
-                }
+            if let Some(name) = requested
+                && name != known
+            {
+                return Err(SessionError::UnsupportedConfiguration {
+                    field,
+                    requested: name.clone(),
+                });
             }
         }
         Ok(Self {

@@ -1061,10 +1061,9 @@ impl TransferBuilder<'_> {
                             if let (Some(start), Some(end)) = (
                                 base.checked_add(bytes.start_bytes()),
                                 base.checked_add(bytes.end_bytes()),
-                            ) {
-                                if let Ok(range) = ByteRange::new(start, end) {
-                                    guaranteed.push(range);
-                                }
+                            ) && let Ok(range) = ByteRange::new(start, end)
+                            {
+                                guaranteed.push(range);
                             }
                         }
                     }

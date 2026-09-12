@@ -337,7 +337,7 @@ fn nested_expression(generator: &mut Generator, ordinal: u64) -> Vec<u8> {
         2 => 257,
         _ => generator.bounded(MAX_STRUCTURED_SIZE + 1),
     };
-    let closing_depth = if generator.next_u64() % 4 == 0 {
+    let closing_depth = if generator.next_u64().is_multiple_of(4) {
         depth.saturating_sub(generator.bounded(depth.saturating_add(1)))
     } else {
         depth
@@ -363,7 +363,7 @@ fn additive_expression(generator: &mut Generator, ordinal: u64) -> Vec<u8> {
 
 fn boundary_case(generator: &mut Generator, ordinal: u64) -> Vec<u8> {
     let mut bytes = BOUNDARY_CASES[ordinal as usize % BOUNDARY_CASES.len()].to_vec();
-    if ordinal as usize >= BOUNDARY_CASES.len() && generator.next_u64() % 2 == 0 {
+    if ordinal as usize >= BOUNDARY_CASES.len() && generator.next_u64().is_multiple_of(2) {
         let index = generator.bounded(bytes.len() + 1);
         bytes.insert(index, b" \t\n"[generator.bounded(3)]);
     }

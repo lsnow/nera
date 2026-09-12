@@ -373,7 +373,7 @@ fn generate_case(generator: &mut Generator, ordinal: u64) -> nera::ValidatedVirU
             })
             .clone();
     }
-    if ordinal % AGGREGATE_CASE_INTERVAL == 0 {
+    if ordinal.is_multiple_of(AGGREGATE_CASE_INTERVAL) {
         return aggregate_case(ordinal / AGGREGATE_CASE_INTERVAL);
     }
     if ordinal % AGGREGATE_CASE_INTERVAL == RESOURCE_CFG_CASE_OFFSET {
@@ -390,7 +390,7 @@ fn generate_case(generator: &mut Generator, ordinal: u64) -> nera::ValidatedVirU
             .unwrap_or_else(|| panic!("borrow seed must lower: {source}\n{:?}", output.issues()))
             .clone();
     }
-    let case = if ordinal % 16 == 0 {
+    let case = if ordinal.is_multiple_of(16) {
         let words = 1 + generator.bounded(8);
         let selected = generator.bounded(words);
         FuzzCase {

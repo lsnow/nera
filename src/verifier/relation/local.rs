@@ -67,14 +67,12 @@ pub(super) fn project(
             if visits > limits.max_steps {
                 return Err(DifferenceStop::Budget);
             }
-            if let Some(expression) = state.word_expression(value) {
-                if expression.scale() == 1 {
-                    if let Some(root) = expression.root() {
-                        if interval(state, word(root)).is_some() {
-                            insert(&mut values, root, limits)?;
-                        }
-                    }
-                }
+            if let Some(expression) = state.word_expression(value)
+                && expression.scale() == 1
+                && let Some(root) = expression.root()
+                && interval(state, word(root)).is_some()
+            {
+                insert(&mut values, root, limits)?;
             }
         }
         for fact in facts {
@@ -82,14 +80,13 @@ pub(super) fn project(
             if visits > limits.max_steps {
                 return Err(DifferenceStop::Budget);
             }
-            if let PathFact::Comparison { left, right, .. } = *fact {
-                if (values.contains(&left) || values.contains(&right))
-                    && interval(state, word(left)).is_some()
-                    && interval(state, word(right)).is_some()
-                {
-                    insert(&mut values, left, limits)?;
-                    insert(&mut values, right, limits)?;
-                }
+            if let PathFact::Comparison { left, right, .. } = *fact
+                && (values.contains(&left) || values.contains(&right))
+                && interval(state, word(left)).is_some()
+                && interval(state, word(right)).is_some()
+            {
+                insert(&mut values, left, limits)?;
+                insert(&mut values, right, limits)?;
             }
         }
         for premise in &relations {
@@ -146,10 +143,9 @@ pub(super) fn project(
             let (mut left, mut right) = (root(left), root(right));
             if let (RelationTerm::Value { value: a, .. }, RelationTerm::Value { value: b, .. }) =
                 (left, right)
+                && a > b
             {
-                if a > b {
-                    std::mem::swap(&mut left, &mut right);
-                }
+                std::mem::swap(&mut left, &mut right);
             }
             premise = DifferencePremise::Compare {
                 comparison: RelationComparison::NotEqual,
@@ -192,26 +188,24 @@ pub(super) fn project(
             left,
             right,
         } = *fact
+            && values.contains(&left)
+            && values.contains(&right)
         {
-            if values.contains(&left) && values.contains(&right) {
-                let (comparison, left, right) = match predicate {
-                    VirIntegerPredicate::Equal => (RelationComparison::Equal, left, right),
-                    VirIntegerPredicate::NotEqual => (RelationComparison::NotEqual, left, right),
-                    VirIntegerPredicate::LessThan => (RelationComparison::LessThan, left, right),
-                    VirIntegerPredicate::LessOrEqual => {
-                        (RelationComparison::LessOrEqual, left, right)
-                    }
-                    VirIntegerPredicate::GreaterThan => (RelationComparison::LessThan, right, left),
-                    VirIntegerPredicate::GreaterOrEqual => {
-                        (RelationComparison::LessOrEqual, right, left)
-                    }
-                };
-                push(DifferencePremise::Compare {
-                    comparison,
-                    left: word(left),
-                    right: word(right),
-                })?;
-            }
+            let (comparison, left, right) = match predicate {
+                VirIntegerPredicate::Equal => (RelationComparison::Equal, left, right),
+                VirIntegerPredicate::NotEqual => (RelationComparison::NotEqual, left, right),
+                VirIntegerPredicate::LessThan => (RelationComparison::LessThan, left, right),
+                VirIntegerPredicate::LessOrEqual => (RelationComparison::LessOrEqual, left, right),
+                VirIntegerPredicate::GreaterThan => (RelationComparison::LessThan, right, left),
+                VirIntegerPredicate::GreaterOrEqual => {
+                    (RelationComparison::LessOrEqual, right, left)
+                }
+            };
+            push(DifferencePremise::Compare {
+                comparison,
+                left: word(left),
+                right: word(right),
+            })?;
         }
     }
     for premise in relations {

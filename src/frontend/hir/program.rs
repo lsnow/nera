@@ -657,10 +657,16 @@ impl HirProgram {
         require(
             self.data_layout.pointer_size_bytes > 0
                 && self.data_layout.pointer_alignment.is_power_of_two()
-                && self.data_layout.pointer_size_bytes % self.data_layout.pointer_alignment == 0
+                && self
+                    .data_layout
+                    .pointer_size_bytes
+                    .is_multiple_of(self.data_layout.pointer_alignment)
                 && self.data_layout.usize_size_bytes > 0
                 && self.data_layout.usize_alignment.is_power_of_two()
-                && self.data_layout.usize_size_bytes % self.data_layout.usize_alignment == 0,
+                && self
+                    .data_layout
+                    .usize_size_bytes
+                    .is_multiple_of(self.data_layout.usize_alignment),
             "data layout",
             0,
             "invalid pointer or usize size/alignment",

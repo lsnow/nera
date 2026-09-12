@@ -194,7 +194,7 @@ impl Machine {
         if !allocation.live {
             return Err(CoreFault::UseAfterFree);
         }
-        if allocation.alignment < WORD_BYTES || pointer.offset_bytes % WORD_BYTES != 0 {
+        if allocation.alignment < WORD_BYTES || !pointer.offset_bytes.is_multiple_of(WORD_BYTES) {
             return Err(CoreFault::Misaligned);
         }
         let end = pointer

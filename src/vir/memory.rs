@@ -242,10 +242,16 @@ impl VirMemorySchema {
         validate_dense("variant", &self.variants, |item| item.id.get())?;
         if self.target.pointer_size_bytes == 0
             || !self.target.pointer_alignment.is_power_of_two()
-            || self.target.pointer_size_bytes % self.target.pointer_alignment != 0
+            || !self
+                .target
+                .pointer_size_bytes
+                .is_multiple_of(self.target.pointer_alignment)
             || self.target.usize_size_bytes == 0
             || !self.target.usize_alignment.is_power_of_two()
-            || self.target.usize_size_bytes % self.target.usize_alignment != 0
+            || !self
+                .target
+                .usize_size_bytes
+                .is_multiple_of(self.target.usize_alignment)
         {
             return Err(schema_error(VirMemorySchemaErrorKind::InvalidTarget));
         }
