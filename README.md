@@ -109,7 +109,7 @@ More complete examples are available in
 ## Requirements
 
 - x86_64 Linux.
-- Rust 1.85 or newer.
+- Rust 1.88 or newer.
 - GNU `as` and a C compiler capable of linking PIE executables for native
   output.
 
