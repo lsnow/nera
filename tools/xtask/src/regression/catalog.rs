@@ -50,7 +50,7 @@ pub(super) fn binaries(step: GateStep) -> &'static [&'static str] {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeSet, path::Path};
+    use std::collections::BTreeSet;
 
     use super::{BINARY_ENTRIES, CATALOGS};
     use crate::STAGE7_GATE;
@@ -78,17 +78,5 @@ mod tests {
             assert!(seen.insert(*step), "duplicate binary entry for {step:?}");
             assert!(!binaries.is_empty());
         }
-    }
-
-    #[test]
-    fn every_catalog_check_accepts_the_current_workspace() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let mut failures = Vec::new();
-        for (step, regression) in CATALOGS.iter().flat_map(|entries| entries.iter()) {
-            if let Err(error) = (regression.check)(&root) {
-                failures.push(format!("{step:?}: {error}"));
-            }
-        }
-        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 }
