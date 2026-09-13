@@ -59,6 +59,8 @@ define_hir_id!(/// Ghost/specification binder table index.
     HirSpecBinderId);
 define_hir_id!(/// Pure specification term table index.
     HirSpecTermId);
+define_hir_id!(/// Resource assertion table index (not a pure term).
+    HirSpecAssertionId);
 define_hir_id!(/// Specification clause table index.
     HirSpecClauseId);
 define_hir_id!(/// Proof-obligation table index.

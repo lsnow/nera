@@ -74,7 +74,7 @@ pub(super) fn canonicalize_function(
     mut draft: DraftLoweredFunction,
 ) -> Result<CanonicalLoweredFunction, FrontendFailure> {
     let source_span = draft.source_span;
-    let blocks = run_passes(
+    let blocks = run_passes_with_specs(
         draft.id,
         memory,
         std::mem::take(&mut draft.body.blocks),
@@ -83,6 +83,7 @@ pub(super) fn canonicalize_function(
         POST_CFG_PASSES,
         source_span,
         Some(&draft.abi),
+        &mut draft.local_specs,
     )
     .map_err(|error| pass_failure(error, source_span))?;
     Ok(seal_function(draft, blocks))
@@ -134,7 +135,32 @@ fn pass_failure(error: PostCfgError, source_span: ByteSpan) -> FrontendFailure {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 fn run_passes(
+    function: crate::VirFunctionId,
+    memory: &VirMemorySchema,
+    blocks: Vec<DraftBlock>,
+    region_constraints: &[DraftRegionConstraint],
+    source_map_entries: &mut [crate::vir::VirSourceMapEntry],
+    schedule: &[PostCfgPass],
+    source_span: ByteSpan,
+    abi: Option<&crate::VirAbiSignature>,
+) -> Result<Vec<VirBasicBlock>, PostCfgError> {
+    run_passes_with_specs(
+        function,
+        memory,
+        blocks,
+        region_constraints,
+        source_map_entries,
+        schedule,
+        source_span,
+        abi,
+        &mut [],
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_passes_with_specs(
     function: crate::VirFunctionId,
     memory: &VirMemorySchema,
     mut blocks: Vec<DraftBlock>,
@@ -143,6 +169,7 @@ fn run_passes(
     schedule: &[PostCfgPass],
     source_span: ByteSpan,
     abi: Option<&crate::VirAbiSignature>,
+    local_specs: &mut [super::local_spec::LocalSpec],
 ) -> Result<Vec<VirBasicBlock>, PostCfgError> {
     let mut ledger = PassLedger::new();
     let mut sealed = None;
@@ -155,11 +182,12 @@ fn run_passes(
                     .map_err(PostCfgError::InitializationPlanning)?;
             }
             PostCfgPass::LoanEndEffects => {
-                loan_end::plan(
+                loan_end::plan_with_specs(
                     function,
                     region_constraints,
                     &mut blocks,
                     source_map_entries,
+                    local_specs,
                 )
                 .map_err(PostCfgError::LoanEndPlanning)?;
                 materialize_loan_ends(&mut blocks)?;

@@ -11,6 +11,7 @@ use super::super::{
 use crate::diagnostic::span_contains;
 
 const MAX_SPEC_TERM_DEPTH: usize = 256;
+mod assertions;
 
 pub(super) fn validate_specs(program: &HirProgram) -> Result<(), HirProgramValidationError> {
     let specs = program.specs();
@@ -54,6 +55,17 @@ pub(super) fn validate_specs(program: &HirProgram) -> Result<(), HirProgramValid
             .get(term.clause.index())
             .filter(|clause| clause.id == term.clause);
         require(
+            !term.kind.is_checked_numeric()
+                || (matches!(
+                    program.version(),
+                    crate::HirVersion::V14 | crate::HirVersion::V15 | crate::HirVersion::V16
+                ) && clause
+                    .is_some_and(|c| !matches!(c.owner, HirSpecClauseOwner::TrustEntry(_)))),
+            "spec term",
+            term.id.index(),
+            "checked numeric terms require V14 and cannot enter trust clauses",
+        )?;
+        require(
             clause.is_some_and(|clause| span_contains(clause.span, term.span))
                 && is_spec_scalar_type(program, term.ty),
             "spec term",
@@ -69,13 +81,37 @@ pub(super) fn validate_specs(program: &HirProgram) -> Result<(), HirProgramValid
                 .filter(|child| child.clause == term.clause)
         };
         let bool_type = |ty| matches!(program.type_kind(ty), Some(HirTypeKind::Bool));
-        let u64_type = |ty| {
-            matches!(
-                program.type_kind(ty),
-                Some(HirTypeKind::Integer(HirIntegerType::U64))
-            )
-        };
+        let u64_type = |ty| is_spec_word_type(program, ty);
         let (valid, depth) = match &term.kind {
+            HirSpecTermKind::CheckedAdd { left, right }
+            | HirSpecTermKind::CheckedSub { left, right } => (
+                u64_type(term.ty)
+                    && child(*left).is_some_and(|t| t.ty == term.ty)
+                    && child(*right).is_some_and(|t| t.ty == term.ty),
+                child_depth(&depths, *left, *right),
+            ),
+            HirSpecTermKind::CheckedScale { operand, .. } => (
+                u64_type(term.ty) && child(*operand).is_some_and(|t| t.ty == term.ty),
+                unary_depth(&depths, *operand),
+            ),
+            HirSpecTermKind::RangeContains {
+                outer_start: a,
+                outer_end: b,
+                inner_start: c,
+                inner_end: d,
+            }
+            | HirSpecTermKind::RangeDisjoint {
+                left_start: a,
+                left_end: b,
+                right_start: c,
+                right_end: d,
+            } => (
+                bool_type(term.ty)
+                    && [a, b, c, d]
+                        .iter()
+                        .all(|id| child(**id).is_some_and(|t| u64_type(t.ty))),
+                nary_depth(&depths, &[*a, *b, *c, *d]),
+            ),
             HirSpecTermKind::Bool(_) => (bool_type(term.ty), 1),
             HirSpecTermKind::U64(_) => (u64_type(term.ty), 1),
             HirSpecTermKind::Binder(id) => {
@@ -108,8 +144,9 @@ pub(super) fn validate_specs(program: &HirProgram) -> Result<(), HirProgramValid
             HirSpecTermKind::LessThan { left, right }
             | HirSpecTermKind::LessOrEqual { left, right } => {
                 let valid = bool_type(term.ty)
-                    && child(*left).is_some_and(|left| u64_type(left.ty))
-                    && child(*right).is_some_and(|right| u64_type(right.ty));
+                    && child(*left)
+                        .zip(child(*right))
+                        .is_some_and(|(left, right)| u64_type(left.ty) && left.ty == right.ty);
                 (valid, child_depth(&depths, *left, *right))
             }
             HirSpecTermKind::Not(operand) => {
@@ -136,10 +173,20 @@ pub(super) fn validate_specs(program: &HirProgram) -> Result<(), HirProgramValid
     }
 
     for clause in &specs.clauses {
-        let root = specs
-            .terms
-            .get(clause.root.index())
-            .filter(|term| term.id == clause.root && term.clause == clause.id);
+        let root_valid = match clause.root {
+            crate::HirSpecRoot::Pure(id) => specs.terms.get(id.index()).is_some_and(|term| {
+                term.id == id
+                    && term.clause == clause.id
+                    && matches!(program.type_kind(term.ty), Some(HirTypeKind::Bool))
+            }),
+            crate::HirSpecRoot::Assertion(id) => {
+                matches!(clause.owner, HirSpecClauseOwner::Prove(_))
+                    && specs
+                        .assertions
+                        .get(id.index())
+                        .is_some_and(|item| item.id == id && item.clause == clause.id)
+            }
+        };
         let owner_valid = match clause.owner {
             HirSpecClauseOwner::Contract { contract, position } => program
                 .contract(contract)
@@ -181,9 +228,7 @@ pub(super) fn validate_specs(program: &HirProgram) -> Result<(), HirProgramValid
         };
         require(
             owner_valid
-                && root.is_some_and(|root| {
-                    matches!(program.type_kind(root.ty), Some(HirTypeKind::Bool))
-                })
+                && root_valid
                 && program
                     .function_by_id(clause.location.function())
                     .is_some_and(|function| span_contains(function.span, clause.span)),
@@ -192,6 +237,8 @@ pub(super) fn validate_specs(program: &HirProgram) -> Result<(), HirProgramValid
             "invalid owner/location, non-boolean root, or foreign span",
         )?;
     }
+
+    assertions::validate(program)?;
 
     for prove in &specs.proves {
         require(
@@ -202,6 +249,7 @@ pub(super) fn validate_specs(program: &HirProgram) -> Result<(), HirProgramValid
                         prove.location,
                         HirSpecLocation::FunctionEntry { function: owner }
                             | HirSpecLocation::FunctionResult { function: owner }
+                            | HirSpecLocation::Statement { function: owner, .. }
                             if owner == function.id
                     ) && span_contains(function.span, prove.span)
                 })
@@ -252,10 +300,19 @@ pub(super) fn validate_specs(program: &HirProgram) -> Result<(), HirProgramValid
 }
 
 fn is_spec_scalar_type(program: &HirProgram, ty: HirTypeId) -> bool {
+    matches!(program.type_kind(ty), Some(HirTypeKind::Bool)) || is_spec_word_type(program, ty)
+}
+
+fn is_spec_word_type(program: &HirProgram, ty: HirTypeId) -> bool {
     matches!(
         program.type_kind(ty),
-        Some(HirTypeKind::Bool) | Some(HirTypeKind::Integer(HirIntegerType::U64))
-    )
+        Some(HirTypeKind::Integer(HirIntegerType::U64))
+    ) || (program.version() == crate::HirVersion::V16
+        && program.data_layout().usize_size_bytes == 8
+        && matches!(
+            program.type_kind(ty),
+            Some(HirTypeKind::Integer(HirIntegerType::Usize))
+        ))
 }
 
 fn validate_spec_snapshot(
@@ -271,11 +328,12 @@ fn validate_spec_snapshot(
             .function_by_id(function)
             .and_then(|function| function.body.as_ref().map(|body| (function, body)))
             .is_some_and(|(function, body)| {
-                clause.location
+                (clause.location
                     == HirSpecLocation::FunctionEntry {
                         function: function.id,
                     }
                     && body.parameters.contains(&local)
+                    || matches!(clause.location, HirSpecLocation::Statement { function: owner, .. } if owner == function.id))
                     && body
                         .locals
                         .get(local.index())

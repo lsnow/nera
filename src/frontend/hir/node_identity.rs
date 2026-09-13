@@ -105,7 +105,8 @@ fn visit_statement_mut<E>(
             }
             Ok(())
         }
-        HirStatementKind::Declare { .. }
+        HirStatementKind::Prove { .. }
+        | HirStatementKind::Declare { .. }
         | HirStatementKind::Free { .. }
         | HirStatementKind::Break { .. }
         | HirStatementKind::Continue { .. } => Ok(()),
@@ -276,7 +277,8 @@ fn visit_statement<E>(
             }
             Ok(())
         }
-        HirStatementKind::Declare { .. }
+        HirStatementKind::Prove { .. }
+        | HirStatementKind::Declare { .. }
         | HirStatementKind::Free { .. }
         | HirStatementKind::Break { .. }
         | HirStatementKind::Continue { .. } => Ok(()),

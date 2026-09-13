@@ -20,6 +20,11 @@ impl VcTermId {
 /// retained and structurally equal source terms share the same normalized ID.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum VcTerm {
+    CheckedAdd(VcTermId, VcTermId),
+    CheckedSub(VcTermId, VcTermId),
+    CheckedScale(VcTermId, u64),
+    RangeContains([VcTermId; 4]),
+    RangeDisjoint([VcTermId; 4]),
     Bool(bool),
     U64(u64),
     Binder(u32),
@@ -35,6 +40,9 @@ pub(super) enum VcTerm {
 impl VcTerm {
     pub(super) const fn child_count(&self) -> usize {
         match self {
+            Self::CheckedAdd(..) | Self::CheckedSub(..) => 2,
+            Self::CheckedScale(..) => 1,
+            Self::RangeContains(..) | Self::RangeDisjoint(..) => 4,
             Self::Equal(..) | Self::LessThan(..) | Self::LessOrEqual(..) => 2,
             Self::Not(_) => 1,
             Self::And(operands) | Self::Or(operands) => operands.len(),
@@ -44,6 +52,11 @@ impl VcTerm {
 
     pub(super) fn child_at(&self, index: usize) -> Option<VcTermId> {
         match self {
+            Self::CheckedAdd(left, right) | Self::CheckedSub(left, right) => {
+                [*left, *right].get(index).copied()
+            }
+            Self::CheckedScale(operand, _) => (index == 0).then_some(*operand),
+            Self::RangeContains(ends) | Self::RangeDisjoint(ends) => ends.get(index).copied(),
             Self::Equal(left, right)
             | Self::LessThan(left, right)
             | Self::LessOrEqual(left, right) => [*left, *right].get(index).copied(),
@@ -56,10 +69,10 @@ impl VcTerm {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::verifier) struct VcLimits {
-    pub(super) max_nodes: usize,
-    pub(super) max_normalization_steps: usize,
-    pub(super) max_queries: usize,
-    pub(super) max_query_steps: usize,
+    pub(in crate::verifier) max_nodes: usize,
+    pub(in crate::verifier) max_normalization_steps: usize,
+    pub(in crate::verifier) max_queries: usize,
+    pub(in crate::verifier) max_query_steps: usize,
 }
 
 impl Default for VcLimits {

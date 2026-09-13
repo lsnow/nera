@@ -73,6 +73,7 @@ fn statement_live_in(
     active_loops: &[LoopLiveness],
 ) -> Result<BTreeSet<HirLocalId>, FrontendFailure> {
     match &statement.kind {
+        HirStatementKind::Prove { .. } => {}
         HirStatementKind::Declare { local } => {
             live.remove(local);
         }

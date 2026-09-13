@@ -987,7 +987,7 @@ fn span() -> ByteSpan {
     ByteSpan::new(0, 100).expect("valid test span")
 }
 
-const EXPECTED_DUMP: &str = r#"vir-unit-v18
+const EXPECTED_DUMP: &str = r#"vir-unit-v21
 memory {
 target little pointer 8/8 usize 8/8
 type type0 = u64 layout layout0 capabilities copy/trivial-drop/resource-free/sized

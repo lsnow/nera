@@ -176,7 +176,7 @@ fn unit_owns_all_tables_and_exposes_a_read_only_runtime_view() {
     let unit = program.as_unit();
     let runtime = program.runtime();
 
-    assert_eq!(unit.version, VirUnitVersion::V18);
+    assert_eq!(unit.version, VirUnitVersion::V21);
     assert_eq!(unit.specs.len(), 1);
     assert_eq!(unit.specs.contracts()[0].function, VirFunctionId::new(0));
     assert!(!unit.source_map.sources().is_empty());
@@ -186,7 +186,7 @@ fn unit_owns_all_tables_and_exposes_a_read_only_runtime_view() {
 
     let dump = unit.stable_dump();
     let sections = [
-        "vir-unit-v18",
+        "vir-unit-v21",
         "memory {",
         "borrow-regions {",
         "runtime {",
@@ -286,6 +286,9 @@ fn historical_unit_versions_fail_closed_at_the_current_schema_boundary() {
         VirUnitVersion::V15,
         VirUnitVersion::V16,
         VirUnitVersion::V17,
+        VirUnitVersion::V18,
+        VirUnitVersion::V19,
+        VirUnitVersion::V20,
     ] {
         legacy.version = version;
         assert_eq!(

@@ -18,7 +18,8 @@ fail-closed operation.
 The following commands have distinct meanings:
 
 - `nera frontend` checks syntax, names, types, and supported source features.
-- `nera verify` attempts to prove every generated memory-safety condition.
+- `nera verify` attempts to prove every generated memory-safety condition and
+  supported local assertion.
 - `nera run` executes the program with the interpreter and reports it as
   unverified.
 - `nera build` emits assembly, an object file, or an executable and reports the
@@ -457,8 +458,8 @@ components are initialized.
 
 ## 17. Verification behavior
 
-Verification covers memory safety, not general functional correctness. The
-current checks include:
+Verification covers memory safety and supported local assertions, not general
+functional correctness. The current memory checks include:
 
 - allocation liveness and single ownership;
 - use-after-free and double-free prevention;
@@ -478,8 +479,81 @@ refuted, or unknown. Only proven conditions contribute to a successful
 closed.
 
 The language does not require explicit contracts for ordinary safe code in this
-release. Advanced contract and proof syntax is reserved but not accepted by the
-0.0.1 source parser.
+release. Local assertions are supported as described below. General function
+contracts and proof blocks remain reserved and unsupported.
+
+### 17.1 Static local assertions
+
+```nera
+fn main() -> u64 {
+    let mut value = 1;
+    assert value == 1;
+    value = 2;
+    assert value < 4 && !(value == 3);
+    let p = alloc<u64>(1);
+    assert alive(p.region);
+    *p = value;
+    assert initialized(p, 0..1);
+    free(p);
+    return value;
+}
+```
+
+`assert logical-expression;` creates a static condition at that statement.
+It observes the values and memory state at that position, including preceding
+assignments and releases. It must hold on every reachable branch represented
+at that point. A successful assertion does not create permissions or become an
+unchecked assumption for later statements.
+
+Supported pure expressions use `bool`, `u64`, and 64-bit `usize` constants,
+parameters, and available local values:
+
+- parentheses and `!`;
+- `&&` and `||`;
+- `==`, `!=`, `<`, `<=`, `>`, and `>=`;
+- checked `+`, `-`, and multiplication by a literal constant.
+
+Precedence from strongest to weakest is `!`, `*`, `+ -`, comparisons,
+`&&`, then `||`. Comparisons cannot be chained without parentheses.
+Arithmetic operands must have the same type; a directly participating
+unsuffixed integer literal may adopt the other operand's word type. General
+contextual typing of compound constant expressions is not supported.
+Logical arithmetic does not wrap. Overflow or an undefined expression cannot
+establish a proof; boolean short-circuiting can avoid an unused operand.
+
+The following standalone resource observations are also accepted:
+
+| Expression | Meaning |
+| --- | --- |
+| `alive(p.region)` | The allocation observed through `p` is currently live. |
+| `initialized(p)` | The first element at `p` is initialized. |
+| `initialized(p, begin..end)` | The half-open element range relative to `p` is initialized. |
+
+Here `p` is a local pointer, owner, or reference name. Initialization
+observations currently support `bool` and `u64` elements. Element offsets
+are checked when scaled to bytes; dynamic ranges require sufficient existing
+facts to determine their initialization. Resource observations cannot yet be
+combined with boolean operators. A user declaration shadowing one of these
+builtin names is not interpreted as a logical builtin.
+
+Assertions do not evaluate ordinary calls, allocate, borrow, or read fields or
+pointer contents. For example, `assert *p == 42;` is unsupported. Some local
+values that reside in addressable storage, or whose values were not retained
+across a control-flow join, cannot yet be observed; the compiler rejects these
+cases explicitly. Assertions do not extend a borrow's lifetime.
+
+Only single-file programs currently support explicit assertions. General
+function preconditions/postconditions, `old`, `result`, loop invariants,
+`proof`/`ghost`, and source quantifiers remain unsupported.
+
+`verify` exits with status 0 for a checked program, 1 for an unproved program,
+and 2 for rejected source. Failed conditions distinguish insufficient facts,
+false predicates, resource conflicts, unsupported reasoning, and exhausted
+budgets where applicable. The compiler and verifier remain part of the trust
+boundary.
+
+`run` and `build` erase assertions and remain unverified, even if an assertion
+is false. A static assertion is not a runtime bounds check or trap.
 
 ## 18. Compact grammar
 
@@ -520,7 +594,8 @@ block         = "{" { statement } "}" ;
 statement     = let-statement | assignment | call ";" | free-statement
               | return-statement | if-statement | while-statement
               | for-statement | match-statement | "break" ";"
-              | "continue" ";" | block ;
+              | "continue" ";" | assert-statement | block ;
+assert-statement = "assert" logical-expression ";" ;
 let-statement = "let" [ "mut" ] identifier [ ":" type ]
                 [ "=" expression ] ";" ;
 return-statement = "return" [ expression ] ";" ;
@@ -532,6 +607,8 @@ for-statement = "for" identifier "in" expression ".." expression block ;
 expression    = primary [ comparison primary ] ;
 primary       = atom { "+" atom } ;
 comparison    = "==" | "!=" | "<" | "<=" | ">" | ">=" ;
+logical-expression = pure-logical-expression | resource-observation ;
+(* The bounded logical operators and observations are specified in 17.1. *)
 ```
 
 ## 19. Preview limits

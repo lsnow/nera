@@ -318,6 +318,35 @@ fn generic_type_budget_does_not_reduce_existing_block_depth() {
 }
 
 #[test]
+fn nested_assertions_in_block_for_and_match_fit_the_default_thread_stack() {
+    // Explicitly pin the normal libtest stack size: RUST_MIN_STACK must not
+    // conceal a recursive frontend regression in CI or a developer shell.
+    std::thread::Builder::new()
+        .name("nested-assertions".into())
+        .stack_size(2 * 1024 * 1024)
+        .spawn(|| {
+            for (prefix, suffix) in [
+                ("", ""),
+                ("for i in 0..1 {", "} return 0;"),
+                ("match true { true => {", "}, false => { return 0; }, }"),
+            ] {
+                let source = format!(
+                    "fn main()->u64 {{ {prefix} {}let value=id<u64>(42); assert value==value; return value;{} {suffix} }} fn id<T>(x:T)->T{{return x;}}",
+                    "{".repeat(60), "}".repeat(60),
+                );
+                checked(&source, 42);
+                let invalid = source.replace("assert value==value;", "assert missing==value;");
+                let output = analyze(&SourceFile::from_text("nested-invalid.nera", invalid));
+                assert_ne!(output.status(), FrontendStatus::AcceptedProposal);
+                assert!(!output.issues().is_empty());
+            }
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
 fn module_instances_keep_canonical_identity_sources_and_config_binding() {
     let compiler = session(&[("app", APP), ("values", VALUES), ("borrow", BORROW)]);
     let analysis = compiler.analyze("app").unwrap();

@@ -10,6 +10,91 @@ mod cli_process;
 use cli_process::{Fixture, run};
 
 #[test]
+fn local_arena_cli_checks_the_whole_program_not_just_prove_status() {
+    let fixture = Fixture::new();
+    let source = include_str!("../spec/cases/verify/spec-arena-local.nera");
+    for (name, source, expected) in [
+        ("checked", source.to_owned(), 0),
+        (
+            "false",
+            source.replace("assert second < 6usize;", "assert second > 6usize;"),
+            1,
+        ),
+        (
+            "uaf",
+            source.replace(
+                "return answer;",
+                "let p=alloc<u64>(1); free(p); return *p + answer;",
+            ),
+            1,
+        ),
+    ] {
+        let path = fixture.file(format!("{name}.nera"), source);
+        let output = run(fixture.command().arg("verify").arg(path));
+        assert_eq!(output.status.code(), Some(expected), "{output:?}");
+    }
+}
+
+#[test]
+fn local_assertions_have_real_exit_codes_and_execution_remains_unverified() {
+    let fixture = Fixture::new();
+    for (name, source, code, message) in [
+        (
+            "ok",
+            "fn main()->u64 { assert 1<2; return 7; }",
+            0,
+            "Spec: Proven=1",
+        ),
+        (
+            "false",
+            "fn main()->u64 { assert false; return 7; }",
+            1,
+            "logical predicate is false",
+        ),
+        (
+            "unknown",
+            "fn main()->u64 { return f(1); } fn f(x:u64)->u64 { assert x<8; return x; }",
+            1,
+            "insufficient current-state facts",
+        ),
+        (
+            "effect",
+            "fn main()->u64 { assert f()==7; return 7; } fn f()->u64{return 7;}",
+            2,
+            "unsupported static assertion",
+        ),
+    ] {
+        let path = fixture.file(format!("{name}.nera"), source);
+        let output = run(fixture.command().arg("verify").arg(&path));
+        assert_eq!(output.status.code(), Some(code), "{output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains(message),
+            "{output:?}"
+        );
+        if name == "false" {
+            let assembly = fixture.0.join("false-assert.s");
+            let built = run(fixture
+                .command()
+                .args(["build", "--emit", "asm"])
+                .arg(&path)
+                .arg("-o")
+                .arg(&assembly));
+            assert!(built.status.success(), "{built:?}");
+            assert!(
+                String::from_utf8_lossy(&built.stdout).contains("built (unverified)"),
+                "{built:?}"
+            );
+            let output = run(fixture.command().arg("run").arg(&path));
+            assert!(output.status.success(), "{output:?}");
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("unverified"),
+                "{output:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn source_process_reports_equal_the_library_for_success_failures_and_unsupported() {
     let fixture = Fixture::new();
     let cases: &[(&[u8], u8)] = &[

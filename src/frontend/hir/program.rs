@@ -38,6 +38,14 @@ pub enum HirVersion {
     V11,
     /// Bounded fixed-field and slice borrow-result projections.
     V12,
+    /// Separate pure roots and resource assertion DAGs.
+    V13,
+    /// Checked U64 arithmetic and half-open byte-range Spec terms.
+    V14,
+    /// Current-state memory observations and optional points-to scalar value.
+    V15,
+    /// Lexical Prove statements and local snapshot anchors.
+    V16,
 }
 
 impl HirVersion {
@@ -55,6 +63,10 @@ impl HirVersion {
                 | Self::V10
                 | Self::V11
                 | Self::V12
+                | Self::V13
+                | Self::V14
+                | Self::V15
+                | Self::V16
         )
     }
 
@@ -63,7 +75,17 @@ impl HirVersion {
     pub const fn supports_deferred_locals(self) -> bool {
         matches!(
             self,
-            Self::V6 | Self::V7 | Self::V8 | Self::V9 | Self::V10 | Self::V11 | Self::V12
+            Self::V6
+                | Self::V7
+                | Self::V8
+                | Self::V9
+                | Self::V10
+                | Self::V11
+                | Self::V12
+                | Self::V13
+                | Self::V14
+                | Self::V15
+                | Self::V16
         )
     }
 
@@ -71,7 +93,16 @@ impl HirVersion {
     pub const fn supports_deferred_resources(self) -> bool {
         matches!(
             self,
-            Self::V7 | Self::V8 | Self::V9 | Self::V10 | Self::V11 | Self::V12
+            Self::V7
+                | Self::V8
+                | Self::V9
+                | Self::V10
+                | Self::V11
+                | Self::V12
+                | Self::V13
+                | Self::V14
+                | Self::V15
+                | Self::V16
         )
     }
 }
@@ -425,7 +456,7 @@ impl HirProgram {
     /// structurally inconsistent reference before returning it.
     pub fn from_tables(tables: HirProgramTables) -> Result<Self, HirProgramValidationError> {
         let program = Self {
-            version: HirVersion::V12,
+            version: HirVersion::V16,
             data_layout: tables.data_layout,
             entry_module: tables.entry_module,
             entry_function: tables.entry_function,

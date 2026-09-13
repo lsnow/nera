@@ -23,6 +23,25 @@ pub struct VirSpecBinderId(u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VirSpecTermId(u32);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct VirSpecAssertionId(u32);
+
+pub type VirSpecAssertionKind = crate::SpecAssertionKind<
+    VirSpecTermId,
+    VirSpecAssertionId,
+    VirSpecBinderId,
+    VirSpecSnapshot,
+    super::VirMemoryAccess,
+>;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VirSpecAssertion {
+    pub id: VirSpecAssertionId,
+    pub clause: VirSpecClauseId,
+    pub kind: VirSpecAssertionKind,
+    pub origin: VirOriginId,
+}
+
 /// Dense identifier of one predicate declaration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct VirPredicateId(u32);
@@ -60,6 +79,7 @@ impl_id!(VirContractResourceId);
 impl_id!(VirSpecClauseId);
 impl_id!(VirSpecBinderId);
 impl_id!(VirSpecTermId);
+impl_id!(VirSpecAssertionId);
 impl_id!(VirPredicateId);
 impl_id!(VirSpecProveId);
 impl_id!(VirTrustEntryId);
@@ -138,6 +158,30 @@ pub struct VirSpecTerm {
 /// Minimal pure logic; child IDs must refer to earlier same-clause terms.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VirSpecTermKind {
+    CheckedAdd {
+        left: VirSpecTermId,
+        right: VirSpecTermId,
+    },
+    CheckedSub {
+        left: VirSpecTermId,
+        right: VirSpecTermId,
+    },
+    CheckedScale {
+        operand: VirSpecTermId,
+        stride: u64,
+    },
+    RangeContains {
+        outer_start: VirSpecTermId,
+        outer_end: VirSpecTermId,
+        inner_start: VirSpecTermId,
+        inner_end: VirSpecTermId,
+    },
+    RangeDisjoint {
+        left_start: VirSpecTermId,
+        left_end: VirSpecTermId,
+        right_start: VirSpecTermId,
+        right_end: VirSpecTermId,
+    },
     Bool(bool),
     U64(u64),
     Binder(VirSpecBinderId),
@@ -157,6 +201,19 @@ pub enum VirSpecTermKind {
     Not(VirSpecTermId),
     And(Vec<VirSpecTermId>),
     Or(Vec<VirSpecTermId>),
+}
+
+impl VirSpecTermKind {
+    pub(crate) fn is_checked_numeric(&self) -> bool {
+        matches!(
+            self,
+            Self::CheckedAdd { .. }
+                | Self::CheckedSub { .. }
+                | Self::CheckedScale { .. }
+                | Self::RangeContains { .. }
+                | Self::RangeDisjoint { .. }
+        )
+    }
 }
 
 /// Whether a contract binder or clause describes function entry or return.
@@ -276,6 +333,10 @@ pub struct VirContractResourceSummary {
 /// general pure logic points into the separate typed term arena.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VirSpecClauseKind {
+    /// Structurally checked, but proof rules remain gated in 8.1.2.
+    Assertion {
+        root: VirSpecAssertionId,
+    },
     Resource(VirContractResourceSummary),
     U64Range {
         binder: VirContractBinderId,
@@ -457,9 +518,11 @@ impl VirContract {
     }
 }
 
-/// Canonical function-contract table owned by one VIR unit.
+/// Canonical specification tables owned by one VIR unit. Resource assertions
+/// observe runtime identities but never extend its allocation/loan state.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct VirSpecEnvironment {
+    assertions: Vec<VirSpecAssertion>,
     contracts: Vec<VirContract>,
     predicates: Vec<VirPredicate>,
     binders: Vec<VirSpecBinder>,
@@ -474,6 +537,7 @@ pub struct VirSpecEnvironment {
 /// [`VirSpecEnvironment::from_tables`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct VirSpecTables {
+    pub assertions: Vec<VirSpecAssertion>,
     pub contracts: Vec<VirContract>,
     pub predicates: Vec<VirPredicate>,
     pub binders: Vec<VirSpecBinder>,
@@ -488,6 +552,7 @@ impl VirSpecEnvironment {
     #[must_use]
     pub const fn empty() -> Self {
         Self {
+            assertions: Vec::new(),
             contracts: Vec::new(),
             predicates: Vec::new(),
             binders: Vec::new(),
@@ -514,6 +579,7 @@ impl VirSpecEnvironment {
     #[must_use]
     pub fn from_tables(tables: VirSpecTables) -> Self {
         Self {
+            assertions: tables.assertions,
             contracts: tables.contracts,
             predicates: tables.predicates,
             binders: tables.binders,
@@ -569,6 +635,15 @@ impl VirSpecEnvironment {
     #[must_use]
     pub fn terms(&self) -> &[VirSpecTerm] {
         &self.terms
+    }
+
+    #[must_use]
+    pub fn assertions(&self) -> &[VirSpecAssertion] {
+        &self.assertions
+    }
+
+    pub fn assertions_mut(&mut self) -> &mut Vec<VirSpecAssertion> {
+        &mut self.assertions
     }
 
     #[must_use]

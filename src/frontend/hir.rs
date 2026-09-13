@@ -4,6 +4,7 @@ mod body_validation;
 mod borrow_inference;
 mod ids;
 mod lifetimes;
+mod local_spec;
 mod node_identity;
 mod place;
 mod program;
@@ -26,6 +27,7 @@ use super::{
 };
 use crate::ByteSpan;
 
+pub use ids::HirSpecAssertionId;
 pub use ids::{
     HirContractId, HirFieldId, HirFunctionId, HirGenericParameterId, HirLayoutId, HirLocalId,
     HirLoopId, HirModuleId, HirNodeId, HirPredicateId, HirRegionConstraintId, HirRegionId,
@@ -43,6 +45,7 @@ pub use resolve::{
     HirBoundsSource, HirPlaceAccess, HirPlaceResolutionError, HirPlaceResolutionErrorKind,
     ResolvedHirPlace, ResolvedHirProjection, ResolvedHirProjectionKind,
 };
+pub use spec::{HirSpecAssertion, HirSpecAssertionKind, HirSpecRoot};
 pub use spec::{
     HirSpecBinder, HirSpecBinderOwner, HirSpecClause, HirSpecClauseOwner, HirSpecContractPosition,
     HirSpecEnvironment, HirSpecLocation, HirSpecLoopInvariant, HirSpecProve, HirSpecSnapshot,
@@ -79,6 +82,10 @@ pub struct HirStatement {
 /// Statement operands use `HirLocalId`; lowering never resolves source names again.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HirStatementKind {
+    /// Erased static obligation; its operands live only in the Spec arena.
+    Prove {
+        prove: HirSpecProveId,
+    },
     /// Declares storage without producing a readable value. All reads remain
     /// subject to independent VIR initialization/validity obligations.
     Declare {
@@ -430,6 +437,7 @@ enum SurfaceVariantStyle {
 }
 
 struct Elaborator {
+    specs: HirSpecEnvironment,
     graph: super::modules::ModuleGraph,
     current_module: usize,
     type_sources: BTreeMap<HirTypeId, crate::VirSourceSpan>,
@@ -578,6 +586,7 @@ impl Elaborator {
             next_scope: 1,
             next_loop: 0,
             next_node: 0,
+            specs: HirSpecEnvironment::empty(),
             active_loops: Vec::new(),
             current_function: None,
             return_type: core_types.unit,
@@ -787,7 +796,7 @@ impl Elaborator {
             functions,
             contracts,
             predicates: Vec::new(),
-            specs: HirSpecEnvironment::empty(),
+            specs: std::mem::replace(&mut self.specs, HirSpecEnvironment::empty()),
         };
         tables.assign_canonical_type_capabilities().map_err(|_| {
             FrontendFailure::elaboration(ast.span(), "typed HIR type capabilities are inconsistent")
@@ -1664,11 +1673,7 @@ impl Elaborator {
                 parameter.span,
             )?);
         }
-        let result = block
-            .statements
-            .iter()
-            .map(|statement| self.elaborate_statement(statement))
-            .collect::<Result<Vec<_>, _>>();
+        let result = self.elaborate_statements(&block.statements);
         let frame = self.scopes.pop().expect("root scope was pushed");
         let statements = result?;
         Ok((
@@ -1703,11 +1708,7 @@ impl Elaborator {
             locals: Vec::new(),
         });
 
-        let result = block
-            .statements
-            .iter()
-            .map(|statement| self.elaborate_statement(statement))
-            .collect::<Result<Vec<_>, _>>();
+        let result = self.elaborate_statements(&block.statements);
         let frame = self.scopes.pop().expect("block scope was pushed");
         let statements = result?;
         if frame.id != scope {
@@ -1724,11 +1725,27 @@ impl Elaborator {
         })
     }
 
+    /// Keep recursive block traversal out of iterator adapter/Result collection
+    /// frames, which accumulate on the host stack in debug builds.
+    fn elaborate_statements(
+        &mut self,
+        statements: &[AstStatement],
+    ) -> Result<Vec<HirStatement>, FrontendFailure> {
+        let mut elaborated = Vec::with_capacity(statements.len());
+        for statement in statements {
+            elaborated.push(self.elaborate_statement(statement)?);
+        }
+        Ok(elaborated)
+    }
+
     fn elaborate_statement(
         &mut self,
         statement: &AstStatement,
     ) -> Result<HirStatement, FrontendFailure> {
         let kind = match &statement.kind {
+            AstStatementKind::Assert { expression } => {
+                self.elaborate_assert(expression, statement.span)?
+            }
             AstStatementKind::Declare { name, annotation } => {
                 if self
                     .scopes
@@ -2167,12 +2184,7 @@ impl Elaborator {
                                 Ok(guard)
                             })
                             .transpose()?;
-                        let statements = arm
-                            .body
-                            .statements
-                            .iter()
-                            .map(|statement| self.elaborate_statement(statement))
-                            .collect::<Result<Vec<_>, _>>()?;
+                        let statements = self.elaborate_statements(&arm.body.statements)?;
                         Ok((pattern, guard, statements))
                     })();
                     let frame = self.scopes.pop().expect("match-arm scope was pushed");
@@ -2283,11 +2295,7 @@ impl Elaborator {
             },
             binding_span,
         )?;
-        let result = block
-            .statements
-            .iter()
-            .map(|statement| self.elaborate_statement(statement))
-            .collect::<Result<Vec<_>, _>>();
+        let result = self.elaborate_statements(&block.statements);
         let frame = self.scopes.pop().expect("for-loop scope was pushed");
         let statements = result?;
         if frame.id != scope || frame.locals.first().copied() != Some(local) {

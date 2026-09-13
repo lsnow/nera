@@ -270,9 +270,16 @@ impl Renderer<'_> {
                             "postcondition",
                             "return satisfies the declared or type-induced postcondition".into(),
                         ),
-                        ObligationEvidence::Proof(_) => {
-                            ("Spec", "specification proposition holds".into())
-                        }
+                        ObligationEvidence::Proof(proof) => (
+                            "Spec",
+                            proof
+                                .failure()
+                                .map_or(
+                                    "specification proposition holds",
+                                    crate::SpecFailure::description,
+                                )
+                                .into(),
+                        ),
                     };
                     self.obligation(layer, obligation.status(), &reason, obligation.finding());
                     if self.explain {

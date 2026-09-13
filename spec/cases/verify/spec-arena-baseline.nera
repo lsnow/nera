@@ -1,0 +1,23 @@
+fn main() -> u64 { return arena(1usize, 3usize); }
+
+fn arena(first: usize, second: usize) -> u64 {
+    let mut backing = [0, 0, 0, 0, 0, 0];
+    if first > 0usize {
+        if first < second {
+            if second < len(backing) {
+                let parent = &mut backing[..];
+                let left = &mut parent[..first];
+                let middle = &mut parent[first..second];
+                let remaining = &mut parent[second..];
+                remaining[0] = 7;
+                left[0] = 12;
+                middle[0] = 30;
+                let sum = left[0] + middle[0];
+                let sentinel = remaining[0];
+                parent[0] = sum;
+                return parent[0] + sentinel;
+            }
+        }
+    }
+    return 0;
+}

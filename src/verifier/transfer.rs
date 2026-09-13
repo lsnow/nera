@@ -22,6 +22,11 @@ mod object;
 mod obligation;
 mod permission;
 mod pointer;
+mod spec;
+pub(super) use spec::{
+    SpecFootprint, SpecMemoryQuery, query_spec_memory, spec_alive, spec_footprint,
+    spec_same_allocation,
+};
 #[cfg(test)]
 mod tests;
 mod value;

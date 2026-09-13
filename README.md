@@ -14,6 +14,8 @@ the verifier, and the direct x86_64 Linux backend, but it is not production-read
 - Inferred borrow relationships; source code uses `&T` and `&mut T` without
   spelling lifetime names.
 - Path-sensitive checks across branches and loops.
+- Static local assertions with bounded logic, checked arithmetic, and
+  allocation-liveness and initialization observations.
 - Detection of use-after-free, double free, conflicting aliases,
   uninitialized access, out-of-bounds access, and invalid pointer use.
 - Partial initialization and partial moves for structs, tuples, arrays, and
@@ -36,6 +38,11 @@ function call as an opaque operation.
 Every memory operation creates a safety condition. Verification succeeds only
 when all conditions are proven. A contradiction, an unsupported construct, an
 analysis limit, or an unknown result is rejected rather than silently accepted.
+
+Local `assert` statements add conditions at their source position. They inspect
+the facts available on each reachable branch without creating memory permissions
+or assumptions for later code. Assertions are erased by `run` and `build`;
+they are not runtime traps.
 
 `nera verify` reports a result relative to the compiler's stated capability
 profile and trust boundary. The compiler and native backend are not formally
@@ -105,6 +112,26 @@ fn main() -> u64 {
 
 More complete examples are available in
 [`examples/demo`](examples/demo) and [`spec/cases`](spec/cases).
+
+### Static assertions
+
+```nera
+fn main() -> u64 {
+    let value = 42;
+    assert value < 64 && value + 1 == 43;
+    let p = alloc<u64>(1);
+    assert alive(p.region);
+    *p = value;
+    assert initialized(p, 0..1);
+    free(p);
+    return value;
+}
+```
+
+The initialization range is half-open and measured in elements. Verification
+checks these assertions statically; running the program does not check them.
+See [the local arena example](spec/cases/verify/spec-arena-local.nera) for two
+dynamic slice cuts, borrow restoration, and local assertions over one backing array.
 
 ## Requirements
 
@@ -183,6 +210,15 @@ cargo run -p xtask -- check-rust
 
 The complete gate requires x86_64 Linux.
 
+For the focused local-assertion and memory-proof regression suite:
+
+```sh
+cargo run -p xtask -- check-spec-local
+```
+
+This runs the related tests, native checks, formatting, snapshots, compilation,
+and Clippy. It does not replace the full release gate.
+
 ## Command-line interface
 
 ```text
@@ -201,7 +237,11 @@ the program. `run` uses the interpreter, and `build` emits native artifacts.
 
 - Only `u64`, `usize`, and `bool` are available as scalar source types.
 - Raw and owning pointer allocation is currently limited to `u64` elements.
-- Arithmetic is intentionally small: addition and comparisons are supported.
+- Runtime arithmetic is intentionally small: addition and comparisons are
+  supported. Static assertions additionally support bounded logical operators,
+  checked subtraction, and multiplication by literal constants.
+- Local assertions currently require a single-file program. General function
+  contracts, proof blocks, ghost code, and source quantifiers are not available.
 - Modules form one closed source set; package discovery and separate linking are
   not implemented.
 - Generic code is checked through concrete instances; traits are not available.

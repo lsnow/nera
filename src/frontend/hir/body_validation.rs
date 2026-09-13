@@ -18,6 +18,7 @@ const MAX_BODY_DEPTH: usize = 256;
 
 #[derive(Default)]
 struct State {
+    proves: BTreeSet<super::HirSpecProveId>,
     next_scope: u32,
     next_loop: u32,
     next_statement: usize,
@@ -104,6 +105,20 @@ impl Validator<'_> {
             "function",
             self.function.id.index(),
             "a local is not owned exactly once by a lexical block",
+        )?;
+        require(
+            self.program
+                .specs()
+                .proves
+                .iter()
+                .filter(|p| {
+                    p.function == self.function.id
+                        && matches!(p.location, super::HirSpecLocation::Statement { .. })
+                })
+                .all(|p| state.proves.contains(&p.id)),
+            "function",
+            self.function.id.index(),
+            "local Prove lacks a body anchor",
         )?;
         for region in self
             .program
@@ -257,6 +272,70 @@ impl Validator<'_> {
         state: &mut State,
     ) -> Result<(), HirProgramValidationError> {
         match &statement.kind {
+            HirStatementKind::Prove { prove } => {
+                let valid = self
+                    .program
+                    .specs()
+                    .proves
+                    .get(prove.index())
+                    .is_some_and(|p| {
+                        p.function == self.function.id
+                            && p.span == statement.span
+                            && p.location
+                                == (super::HirSpecLocation::Statement {
+                                    function: self.function.id,
+                                    prove: *prove,
+                                })
+                            && self
+                                .program
+                                .specs()
+                                .terms
+                                .iter()
+                                .filter(|t| t.clause == p.clause)
+                                .all(|t| match t.kind {
+                                    super::HirSpecTermKind::Snapshot(
+                                        super::HirSpecSnapshot::Local { function, local },
+                                    ) => {
+                                        function == self.function.id
+                                            && visible.contains(&local)
+                                            && (state.declared_locals.contains(&local)
+                                                || state.parameters.contains(&local)
+                                                || state.pattern_bindings.contains(&local))
+                                    }
+                                    _ => true,
+                                })
+                    });
+                let resources_visible =
+                    self.program
+                        .specs()
+                        .proves
+                        .get(prove.index())
+                        .is_some_and(|p| {
+                            self.program
+                                .specs()
+                                .assertions
+                                .iter()
+                                .filter(|a| a.clause == p.clause)
+                                .all(|a| {
+                                    a.kind.snapshots().copied().all(|s| match s {
+                                        super::HirSpecSnapshot::Local { function, local } => {
+                                            function == self.function.id
+                                                && visible.contains(&local)
+                                                && (state.declared_locals.contains(&local)
+                                                    || state.parameters.contains(&local)
+                                                    || state.pattern_bindings.contains(&local))
+                                        }
+                                        _ => false,
+                                    })
+                                })
+                        });
+                require(
+                    valid && resources_visible && state.proves.insert(*prove),
+                    "statement",
+                    statement_index,
+                    "invalid local Prove anchor or invisible snapshot",
+                )
+            }
             HirStatementKind::Declare { local } => {
                 let definition = self
                     .body
@@ -1236,7 +1315,14 @@ impl Validator<'_> {
             ),
             HirExpressionKind::Length { place } => {
                 require(
-                    self.program.version() == super::HirVersion::V12,
+                    matches!(
+                        self.program.version(),
+                        super::HirVersion::V12
+                            | super::HirVersion::V13
+                            | super::HirVersion::V14
+                            | super::HirVersion::V15
+                            | super::HirVersion::V16
+                    ),
                     "expression",
                     statement_index,
                     "length metadata requires HIR V8",

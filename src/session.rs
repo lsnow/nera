@@ -234,10 +234,10 @@ impl CompilerSession {
         }
         if frontend.vir().is_some_and(|unit| {
             unit.as_unit().runtime.semantic_profile != self.config.runtime()
-                || unit.as_unit().version != crate::VirUnitVersion::V18
+                || unit.as_unit().version != crate::VirUnitVersion::V21
         }) || frontend.hir().is_some_and(|hir| {
             hir.data_layout() != crate::HirTargetDataLayout::x86_64()
-                || hir.version() != crate::HirVersion::V12
+                || hir.version() != crate::HirVersion::V16
         }) {
             return Err(SessionError::ProducerConfigurationMismatch);
         }

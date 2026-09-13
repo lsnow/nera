@@ -41,7 +41,8 @@ pub(crate) fn walk_statement<'hir, V: HirVisitor<'hir> + ?Sized>(
     statement: &'hir HirStatement,
 ) {
     match &statement.kind {
-        HirStatementKind::Declare { .. }
+        HirStatementKind::Prove { .. }
+        | HirStatementKind::Declare { .. }
         | HirStatementKind::Free { .. }
         | HirStatementKind::Break { .. }
         | HirStatementKind::Continue { .. } => {}

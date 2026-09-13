@@ -56,8 +56,8 @@ fn analyze_one(
             });
         }
     }
-    let proofs =
-        prove_function_specs(program, function, &cfg).ok_or(VerificationError::InvalidFinding)?;
+    let proofs = prove_function_specs(program, function, &cfg, config)
+        .ok_or(VerificationError::InvalidFinding)?;
 
     let summary = super::summary::project(
         program,
@@ -334,7 +334,6 @@ pub fn verify_program(
             verification
                 .proofs
                 .iter()
-                .copied()
                 .filter(|proof| !proof.status().is_proven())
                 .map(diagnostic_for_proof),
         );
@@ -377,10 +376,10 @@ pub fn verify_program(
     })
 }
 
-fn diagnostic_for_proof(proof: SpecProof) -> VerifierDiagnostic {
+fn diagnostic_for_proof(proof: &SpecProof) -> VerifierDiagnostic {
     let unknown = proof.status() == ObligationStatus::Unknown;
     VerifierDiagnostic {
-        relation_queries: Vec::new(),
+        relation_queries: proof.relation_queries().to_vec(),
         provenance_notes: Vec::new(),
         kind: if unknown {
             VerifierDiagnosticKind::UnknownProof
@@ -391,13 +390,25 @@ fn diagnostic_for_proof(proof: SpecProof) -> VerifierDiagnostic {
         finding: proof.finding(),
         message: if unknown {
             format!(
-                "cannot prove specification obligation {}",
-                proof.prove().get()
+                "cannot prove specification obligation {}: {}",
+                proof.prove().get(),
+                proof
+                    .failure()
+                    .map_or("unknown reason", super::spec::SpecFailure::description)
             )
         } else {
-            format!("specification obligation {} is false", proof.prove().get())
+            format!(
+                "specification obligation {} is false: {}",
+                proof.prove().get(),
+                proof
+                    .failure()
+                    .map_or("unknown reason", super::spec::SpecFailure::description)
+            )
         },
-        suggestion: Some("strengthen dominating facts or weaken the `prove` clause".to_owned()),
+        suggestion: Some(
+            "strengthen dominating facts, provide a valid witness, or weaken the `prove` clause"
+                .to_owned(),
+        ),
     }
 }
 

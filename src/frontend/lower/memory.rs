@@ -341,6 +341,7 @@ fn collect_statement(
     source_span: ByteSpan,
 ) -> Result<(), FrontendFailure> {
     match &statement.kind {
+        HirStatementKind::Prove { .. } => Ok(()),
         HirStatementKind::Let { value, .. } | HirStatementKind::Evaluate { expression: value } => {
             collect_expression(hir, value, reachable, source_span)
         }

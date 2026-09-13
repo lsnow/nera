@@ -422,6 +422,7 @@ fn typed_prove_validates_dumps_and_cannot_change_runtime_view() {
     let runtime_before = unit.runtime().stable_dump();
     add_entry_prove(&mut unit);
     unit.specs = nera::VirSpecEnvironment::from_tables(VirSpecTables {
+        assertions: unit.specs.assertions().to_vec(),
         contracts: unit.specs.contracts().to_vec(),
         predicates: unit.specs.predicates().to_vec(),
         binders: unit.specs.binders().to_vec(),
@@ -459,7 +460,7 @@ fn prove_results_are_three_valued_and_only_proven_is_verified() {
             CfgAnalysisConfig::default(),
         )
         .expect("typed Prove is evaluated");
-        let proof = verification.functions()[&VirFunctionId::new(0)].proofs()[0];
+        let proof = &verification.functions()[&VirFunctionId::new(0)].proofs()[0];
         assert_eq!(proof.status(), expected);
         assert_eq!(proof.finding().origin(), expected_origin);
         assert_eq!(proof.finding().source_span(), span());

@@ -10,6 +10,7 @@ use super::{
 use super::{AstConstExpression, AstGenericArgument, AstGenericParameter};
 use crate::lexer::{Keyword, Punctuation, Token, TokenKind};
 use crate::{ByteSpan, SourceFile};
+mod spec;
 
 /// A finite parser budget turns adversarial nesting into a diagnostic, not a process abort.
 // A parenthesized expression crosses several precedence frames before this
@@ -597,6 +598,18 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
     ) -> Result<AstStatement, FrontendFailure> {
         match self.current().kind() {
             TokenKind::Keyword(Keyword::Let) => self.parse_let(),
+            TokenKind::Keyword(Keyword::Assert) => {
+                let start = self.bump().span().start();
+                let expression = self.parse_logical_expression()?;
+                let end = self
+                    .expect_punctuation(Punctuation::Semicolon, "expected `;` after assert")?
+                    .span()
+                    .end();
+                Ok(AstStatement {
+                    kind: AstStatementKind::Assert { expression },
+                    span: span(start, end),
+                })
+            }
             TokenKind::Keyword(Keyword::Return) => self.parse_return(),
             TokenKind::Keyword(Keyword::If) => self.parse_if(block_depth, loop_depth),
             TokenKind::Keyword(Keyword::While) => self.parse_while(block_depth, loop_depth),
@@ -2149,7 +2162,8 @@ fn statement_falls_through(statement: &AstStatement) -> bool {
             else_block: Some(else_block),
             ..
         } => block_falls_through(then_block) || block_falls_through(else_block),
-        AstStatementKind::Declare { .. }
+        AstStatementKind::Assert { .. }
+        | AstStatementKind::Declare { .. }
         | AstStatementKind::Let { .. }
         | AstStatementKind::Assign { .. }
         | AstStatementKind::Store { .. }

@@ -341,6 +341,9 @@ pub struct AstStatement {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AstStatementKind {
+    Assert {
+        expression: AstLogicalExpression,
+    },
     /// Mutable, explicitly typed storage declaration without a value.
     Declare {
         name: String,
@@ -394,6 +397,29 @@ pub enum AstStatementKind {
     Continue,
     Evaluate {
         expression: AstExpression,
+    },
+}
+
+/// Separate syntax tree: logical operators never reach runtime elaboration.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AstLogicalExpression {
+    pub kind: AstLogicalExpressionKind,
+    pub span: ByteSpan,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AstLogicalExpressionKind {
+    InitializedRange {
+        pointer: AstExpression,
+        start: Box<AstLogicalExpression>,
+        end: Box<AstLogicalExpression>,
+    },
+    Value(AstExpression),
+    Not(Box<AstLogicalExpression>),
+    Binary {
+        operator: crate::Punctuation,
+        left: Box<AstLogicalExpression>,
+        right: Box<AstLogicalExpression>,
     },
 }
 
@@ -1050,7 +1076,7 @@ mod tests {
             second.hir().expect("second elaboration has HIR tables")
         );
         assert!(hir.validate_tables().is_ok());
-        assert_eq!(hir.version(), super::HirVersion::V12);
+        assert_eq!(hir.version(), super::HirVersion::V16);
         assert_eq!(hir.modules().len(), 1);
         assert_eq!(hir.functions().len(), 1);
         assert_eq!(hir.contracts().len(), 1);

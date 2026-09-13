@@ -16,6 +16,7 @@ mod concrete;
 mod draft;
 mod liveness;
 mod loan_end;
+mod local_spec;
 mod memory;
 mod place;
 mod post_cfg;
@@ -133,7 +134,9 @@ fn lower_sources(
     let mut functions = Vec::with_capacity(lowered_functions.len());
     let mut function_abis = Vec::with_capacity(lowered_functions.len());
     let mut source_map_entries = Vec::new();
+    let mut local_specs = Vec::new();
     for lowered in lowered_functions {
+        local_specs.extend(lowered.local_specs);
         functions.push(lowered.function);
         function_abis.push(lowered.abi);
         source_map_entries.extend(lowered.source_map_entries);
@@ -190,9 +193,9 @@ fn lower_sources(
     };
     patch_lowered_loan_origins(&mut runtime, &source_map)?;
     let borrows = lower_borrow_environment(hir, &runtime, &source_map)?;
-    let specs = infer_contracts(hir, &memory, &runtime, &source_map)?;
+    let specs = infer_contracts(hir, &memory, &runtime, &source_map, &local_specs)?;
     VirUnit {
-        version: VirUnitVersion::V18,
+        version: VirUnitVersion::V21,
         memory: memory.into_schema(),
         borrows,
         runtime,
@@ -420,6 +423,7 @@ struct LoweredLoop {
 }
 
 struct Lowerer<'hir> {
+    local_specs: Vec<local_spec::LocalSpec>,
     hir: &'hir HirProgram,
     function: &'hir HirFunction,
     types: ConcreteTypes<'hir>,
@@ -611,6 +615,7 @@ impl<'hir> Lowerer<'hir> {
             return Err(invalid_hir(function.span));
         }
         let mut lowerer = Self {
+            local_specs: Vec::new(),
             hir,
             function,
             types,
@@ -811,6 +816,7 @@ impl<'hir> Lowerer<'hir> {
             .collect::<Result<Vec<_>, FrontendFailure>>()?;
         let body = self.cfg.finish_draft(function.span)?;
         Ok(DraftLoweredFunction {
+            local_specs: self.local_specs,
             id: VirFunctionId::new(function.id.get()),
             name: function_symbol(self.hir, function),
             signature: abi.physical().clone(),
@@ -867,6 +873,7 @@ impl<'hir> Lowerer<'hir> {
         live_after: &[HirLocalId],
     ) -> Result<(), FrontendFailure> {
         match &statement.kind {
+            HirStatementKind::Prove { prove } => self.lower_local_prove(*prove, statement.span),
             HirStatementKind::Declare { local } => {
                 let object = self.local_object(*local, statement.span)?;
                 if self
@@ -5695,7 +5702,8 @@ fn statement_falls_through(statement: &HirStatement) -> bool {
             else_block: Some(else_block),
             ..
         } => block_falls_through(then_block) || block_falls_through(else_block),
-        HirStatementKind::Declare { .. }
+        HirStatementKind::Prove { .. }
+        | HirStatementKind::Declare { .. }
         | HirStatementKind::Let { .. }
         | HirStatementKind::Assign { .. }
         | HirStatementKind::Free { .. }

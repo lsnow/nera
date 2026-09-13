@@ -49,6 +49,9 @@ fn dump_unit(output: &mut String, unit: &VirUnit) -> fmt::Result {
         VirUnitVersion::V16 => writeln!(output, "vir-unit-v16")?,
         VirUnitVersion::V17 => writeln!(output, "vir-unit-v17")?,
         VirUnitVersion::V18 => writeln!(output, "vir-unit-v18")?,
+        VirUnitVersion::V19 => writeln!(output, "vir-unit-v19")?,
+        VirUnitVersion::V20 => writeln!(output, "vir-unit-v20")?,
+        VirUnitVersion::V21 => writeln!(output, "vir-unit-v21")?,
     }
     writeln!(output, "memory {{")?;
     dump_memory_schema(output, &unit.memory)?;
@@ -157,6 +160,17 @@ fn dump_specs(output: &mut String, specs: &super::VirSpecEnvironment) -> fmt::Re
             spec_type_name(binder.ty),
             binder.origin.get()
         )?;
+    }
+    for assertion in specs.assertions() {
+        write!(
+            output,
+            "assertion assertion{} clause{} origin{} = ",
+            assertion.id.get(),
+            assertion.clause.get(),
+            assertion.origin.get()
+        )?;
+        dump_spec_assertion_kind(output, &assertion.kind)?;
+        writeln!(output)?;
     }
     for term in specs.terms() {
         write!(
@@ -269,6 +283,103 @@ fn dump_borrow_environment(output: &mut String, borrows: &VirBorrowEnvironment) 
     Ok(())
 }
 
+fn dump_spec_assertion_kind(
+    output: &mut String,
+    kind: &super::VirSpecAssertionKind,
+) -> fmt::Result {
+    use crate::SpecAssertionKind as A;
+    match kind {
+        A::Alive(pointer) => {
+            write!(output, "alive ")?;
+            dump_spec_term_kind(output, &super::VirSpecTermKind::Snapshot(*pointer))
+        }
+        A::SameAllocation { left, right } => {
+            write!(output, "same-allocation ")?;
+            dump_spec_term_kind(output, &super::VirSpecTermKind::Snapshot(*left))?;
+            write!(output, " ")?;
+            dump_spec_term_kind(output, &super::VirSpecTermKind::Snapshot(*right))
+        }
+        A::Initialized {
+            pointer,
+            start_bytes,
+            end_bytes,
+            layout,
+        } => {
+            write!(output, "initialized ")?;
+            dump_spec_term_kind(output, &super::VirSpecTermKind::Snapshot(*pointer))?;
+            write!(
+                output,
+                " bytes [term{}, term{}) type{} layout{}",
+                start_bytes.get(),
+                end_bytes.get(),
+                layout.ty.get(),
+                layout.layout.get()
+            )
+        }
+        A::Pure(term) => write!(output, "pure term{}", term.get()),
+        A::Permission(memory) | A::PointsTo { memory, .. } => {
+            write!(
+                output,
+                "{} ",
+                if matches!(kind, A::Permission(_)) {
+                    "permission"
+                } else {
+                    "points-to"
+                }
+            )?;
+            dump_spec_term_kind(output, &super::VirSpecTermKind::Snapshot(memory.pointer))?;
+            write!(output, " authority ")?;
+            dump_spec_term_kind(output, &super::VirSpecTermKind::Snapshot(memory.authority))?;
+            write!(
+                output,
+                " bytes [term{}, term{}) type{} layout{} {}",
+                memory.start_bytes.get(),
+                memory.end_bytes.get(),
+                memory.layout.ty.get(),
+                memory.layout.layout.get(),
+                match memory.access {
+                    crate::SpecAccess::Read => "read",
+                    crate::SpecAccess::Write => "write",
+                }
+            )?;
+            if let A::PointsTo { value, .. } = kind {
+                if let Some(value) = value {
+                    write!(output, " value term{}", value.get())?;
+                } else {
+                    write!(output, " value _")?;
+                }
+            }
+            Ok(())
+        }
+        A::Separation(children) => {
+            write!(output, "separation [")?;
+            for (i, child) in children.iter().enumerate() {
+                if i != 0 {
+                    write!(output, ", ")?;
+                }
+                write!(output, "assertion{}", child.get())?;
+            }
+            write!(output, "]")
+        }
+        A::Exists {
+            binder,
+            body,
+            witness,
+        } => {
+            write!(
+                output,
+                "exists sbinder{} body assertion{} witness ",
+                binder.get(),
+                body.get()
+            )?;
+            match witness {
+                Some(id) => write!(output, "term{}", id.get()),
+                None => write!(output, "none"),
+            }
+        }
+    }
+}
+
 fn dump_spec_clause_kind(output: &mut String, kind: &super::VirSpecClauseKind) -> fmt::Result {
     match kind {
         super::VirSpecClauseKind::Resource(summary) => {
@@ -328,6 +439,9 @@ fn dump_spec_clause_kind(output: &mut String, kind: &super::VirSpecClauseKind) -
             write!(output, "bool-value binder{} {value}", binder.get())
         }
         super::VirSpecClauseKind::Logic { root } => write!(output, "logic term{}", root.get()),
+        super::VirSpecClauseKind::Assertion { root } => {
+            write!(output, "assertion assertion{}", root.get())
+        }
     }
 }
 
@@ -404,6 +518,41 @@ const fn spec_type_name(ty: super::VirSpecType) -> &'static str {
 
 fn dump_spec_term_kind(output: &mut String, kind: &super::VirSpecTermKind) -> fmt::Result {
     match kind {
+        super::VirSpecTermKind::CheckedAdd { left, right } => {
+            write!(output, "checked-add term{} term{}", left.get(), right.get())
+        }
+        super::VirSpecTermKind::CheckedSub { left, right } => {
+            write!(output, "checked-sub term{} term{}", left.get(), right.get())
+        }
+        super::VirSpecTermKind::CheckedScale { operand, stride } => write!(
+            output,
+            "checked-scale term{} stride {stride}",
+            operand.get()
+        ),
+        super::VirSpecTermKind::RangeContains {
+            outer_start: a,
+            outer_end: b,
+            inner_start: c,
+            inner_end: d,
+        }
+        | super::VirSpecTermKind::RangeDisjoint {
+            left_start: a,
+            left_end: b,
+            right_start: c,
+            right_end: d,
+        } => write!(
+            output,
+            "{} bytes [term{}, term{}) [term{}, term{})",
+            if matches!(kind, super::VirSpecTermKind::RangeContains { .. }) {
+                "range-contains"
+            } else {
+                "range-disjoint"
+            },
+            a.get(),
+            b.get(),
+            c.get(),
+            d.get()
+        ),
         super::VirSpecTermKind::Bool(value) => write!(output, "bool {value}"),
         super::VirSpecTermKind::U64(value) => write!(output, "u64 {value}"),
         super::VirSpecTermKind::Binder(binder) => write!(output, "sbinder{}", binder.get()),

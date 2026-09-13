@@ -38,14 +38,15 @@ pub use capability_profile::{
 pub use diagnostic::{ByteSpan, Diagnostic, Severity};
 pub use frontend::{
     AstBlock, AstEnum, AstEnumTupleField, AstEnumVariant, AstEnumVariantPayload, AstExpression,
-    AstExpressionKind, AstFieldInitializer, AstFile, AstFunction, AstIntegerPredicate, AstMatchArm,
-    AstNamedPattern, AstParameter, AstPattern, AstPatternKind, AstPlace, AstPlaceProjection,
-    AstStatement, AstStatementKind, AstStruct, AstStructField, AstType, AstVariantInitializer,
-    AstVariantPatternPayload, Core0CompatibilityError, CoreInstruction, CoreProgramProposal,
-    CstFile, CstFunction, FrontendIssue, FrontendIssueKind, FrontendOutput, FrontendStatus,
-    HirAbiClass, HirBlock, HirBody, HirBoundsSource, HirCall, HirCallingConvention, HirContract,
-    HirContractId, HirDeclaration, HirEndianness, HirExpression, HirExpressionKind, HirField,
-    HirFieldId, HirFieldInitializer, HirFieldLayout, HirForSource, HirFunction, HirFunctionId,
+    AstExpressionKind, AstFieldInitializer, AstFile, AstFunction, AstIntegerPredicate,
+    AstLogicalExpression, AstLogicalExpressionKind, AstMatchArm, AstNamedPattern, AstParameter,
+    AstPattern, AstPatternKind, AstPlace, AstPlaceProjection, AstStatement, AstStatementKind,
+    AstStruct, AstStructField, AstType, AstVariantInitializer, AstVariantPatternPayload,
+    Core0CompatibilityError, CoreInstruction, CoreProgramProposal, CstFile, CstFunction,
+    FrontendIssue, FrontendIssueKind, FrontendOutput, FrontendStatus, HirAbiClass, HirBlock,
+    HirBody, HirBoundsSource, HirCall, HirCallingConvention, HirContract, HirContractId,
+    HirDeclaration, HirEndianness, HirExpression, HirExpressionKind, HirField, HirFieldId,
+    HirFieldInitializer, HirFieldLayout, HirForSource, HirFunction, HirFunctionId,
     HirFunctionSignature, HirFunctionType, HirGenericParameter, HirGenericParameterId,
     HirIntegerPredicate, HirIntegerType, HirLayout, HirLayoutId, HirLocal, HirLocalId, HirLoopId,
     HirMatchArm, HirModule, HirModuleId, HirModulePath, HirMutability, HirNodeId, HirPattern,
@@ -87,10 +88,10 @@ pub use verifier::{
     ObligationStatus, OwnershipState, PathCondition, PathFact, PermissionAuthority,
     PermissionAvailability, ProgramVerification, ResourceCase, ResourceJoinError,
     ResourceObligation, ResourceObligationKind, ResourcePayloadKey, ResourceState,
-    ResourceStateDefinitionError, SpecProof, SymbolicRangeBound, TransferError, TrustReportEntry,
-    TypedResourcePayload, U64Interval, U64IntervalError, VERIFIER_ACTIVE_VARIANT_MAX_ALTERNATIVES,
-    VERIFIER_BYTE_SET_MAX_RANGES, VERIFIER_MAX_ACTIVE_LOANS_PER_CASE,
-    VERIFIER_MAX_ALIASES_PER_LOAN, VERIFIER_MAX_REBORROW_DEPTH,
+    ResourceStateDefinitionError, SpecFailure, SpecProof, SymbolicRangeBound, TransferError,
+    TrustReportEntry, TypedResourcePayload, U64Interval, U64IntervalError,
+    VERIFIER_ACTIVE_VARIANT_MAX_ALTERNATIVES, VERIFIER_BYTE_SET_MAX_RANGES,
+    VERIFIER_MAX_ACTIVE_LOANS_PER_CASE, VERIFIER_MAX_ALIASES_PER_LOAN, VERIFIER_MAX_REBORROW_DEPTH,
     VERIFIER_MAX_REGION_CONSTRAINTS_PER_FUNCTION, VERIFIER_OBJECT_OFFSET_MAX_CANDIDATES,
     VERIFIER_OBJECT_STATE_MAX_ENTRIES, VERIFIER_RESOURCE_PAYLOAD_MAX_ENTRIES,
     VIR_V0_MAX_ALLOCATION_BYTES, VIR_V0_WORD_BYTES, VerificationError, VerifierDiagnostic,
@@ -99,6 +100,11 @@ pub use verifier::{
     analyze_function_cfg_with_entry, transfer_instruction, transfer_instruction_sequence,
     transfer_instruction_sequence_with_memory, transfer_instruction_with_memory, verify_program,
 };
+mod spec_assertion;
+pub use frontend::hir::{HirSpecAssertion, HirSpecAssertionId, HirSpecAssertionKind, HirSpecRoot};
+pub use spec_assertion::{SpecAccess, SpecAssertionKind, SpecMemoryClaim};
+pub use vir::{VirSpecAssertion, VirSpecAssertionId, VirSpecAssertionKind};
+
 pub use vir::{
     ResolvedRuntimeVirView, ResolvedVirUnit, RuntimeVirProgram, RuntimeVirView,
     SpannedVirInstruction, SpannedVirTerminator, VIR_AGGREGATE_ABI_MAX_DIRECT_BYTES,

@@ -235,7 +235,7 @@ fn local_borrow_tables() -> HirProgramTables {
 fn v5_preserves_signature_regions_and_canonical_outlives_constraints() {
     let program = validate(signature_region_tables()).expect("canonical signature regions");
 
-    assert_eq!(program.version(), HirVersion::V12);
+    assert_eq!(program.version(), HirVersion::V16);
     assert!(HirVersion::V4.supports_borrow_regions());
     assert!(HirVersion::V5.supports_borrow_regions());
     assert!(HirVersion::V7.supports_borrow_regions());

@@ -1,6 +1,7 @@
 //! Validation of VIR contracts and pure specification arenas.
 
 use super::*;
+mod assertions;
 
 pub(super) fn validate_specs(unit: &VirUnit) -> Result<(), VirValidationError> {
     let functions = unit
@@ -377,7 +378,7 @@ fn validate_contract(
                 &mut defined_binders,
                 source_span.span,
             )?,
-            VirSpecClauseKind::Logic { .. } => {}
+            VirSpecClauseKind::Logic { .. } | VirSpecClauseKind::Assertion { .. } => {}
         }
     }
     for resource in &contract.resources {
@@ -496,6 +497,13 @@ fn validate_pure_specs(
                 term.id,
             )));
         };
+        if term.kind.is_checked_numeric()
+            && matches!(clause.owner, crate::VirSpecClauseOwner::TrustEntry(_))
+        {
+            return Err(program_error(VirValidationErrorKind::InvalidSpecTerm(
+                term.id,
+            )));
+        }
         let Some(function) = clause_owner_function(unit, clause) else {
             return Err(program_error(
                 VirValidationErrorKind::InvalidSpecClauseOwner(clause.id),
@@ -514,6 +522,36 @@ fn validate_pure_specs(
                 .filter(|child| child.clause == term.clause)
         };
         let (valid, depth) = match &term.kind {
+            crate::VirSpecTermKind::CheckedAdd { left, right }
+            | crate::VirSpecTermKind::CheckedSub { left, right } => (
+                term.ty == crate::VirSpecType::U64
+                    && child(*left).is_some_and(|t| t.ty == crate::VirSpecType::U64)
+                    && child(*right).is_some_and(|t| t.ty == crate::VirSpecType::U64),
+                spec_binary_depth(&depths, *left, *right),
+            ),
+            crate::VirSpecTermKind::CheckedScale { operand, .. } => (
+                term.ty == crate::VirSpecType::U64
+                    && child(*operand).is_some_and(|t| t.ty == crate::VirSpecType::U64),
+                spec_unary_depth(&depths, *operand),
+            ),
+            crate::VirSpecTermKind::RangeContains {
+                outer_start: a,
+                outer_end: b,
+                inner_start: c,
+                inner_end: d,
+            }
+            | crate::VirSpecTermKind::RangeDisjoint {
+                left_start: a,
+                left_end: b,
+                right_start: c,
+                right_end: d,
+            } => (
+                term.ty == crate::VirSpecType::Bool
+                    && [a, b, c, d]
+                        .iter()
+                        .all(|id| child(**id).is_some_and(|t| t.ty == crate::VirSpecType::U64)),
+                spec_nary_depth(&depths, &[*a, *b, *c, *d]),
+            ),
             crate::vir::VirSpecTermKind::Bool(_) => (term.ty == crate::vir::VirSpecType::Bool, 1),
             crate::vir::VirSpecTermKind::U64(_) => (term.ty == crate::vir::VirSpecType::U64, 1),
             crate::vir::VirSpecTermKind::Binder(id) => {
@@ -605,6 +643,19 @@ fn validate_pure_specs(
             ));
         }
         match clause.kind {
+            VirSpecClauseKind::Assertion { root } => {
+                if !matches!(clause.owner, crate::VirSpecClauseOwner::Prove(_))
+                    || !unit
+                        .specs
+                        .assertions()
+                        .get(root.get() as usize)
+                        .is_some_and(|a| a.id == root && a.clause == clause.id)
+                {
+                    return Err(program_error(
+                        VirValidationErrorKind::InvalidSpecClauseOwner(clause.id),
+                    ));
+                }
+            }
             VirSpecClauseKind::Logic { root } => {
                 if !unit
                     .specs
@@ -632,6 +683,8 @@ fn validate_pure_specs(
         }
     }
 
+    assertions::validate(unit)?;
+
     for (index, prove) in unit.specs.proves().iter().enumerate() {
         let expected = crate::vir::VirSpecProveId::new(index as u32);
         if prove.id != expected {
@@ -646,7 +699,10 @@ fn validate_pure_specs(
             && unit.specs.clause(prove.clause).is_some_and(|clause| {
                 clause.owner == crate::vir::VirSpecClauseOwner::Prove(prove.id)
                     && clause.location == prove.location
-                    && matches!(clause.kind, VirSpecClauseKind::Logic { .. })
+                    && matches!(
+                        clause.kind,
+                        VirSpecClauseKind::Logic { .. } | VirSpecClauseKind::Assertion { .. }
+                    )
             })
             && origin_belongs_to_function(unit, prove.function, prove.origin);
         if !valid {
@@ -810,6 +866,17 @@ fn validate_spec_snapshot(
     ty: crate::vir::VirSpecType,
     snapshot: crate::vir::VirSpecSnapshot,
 ) -> bool {
+    validate_snapshot_type(unit, clause, snapshot, |runtime| {
+        spec_type_matches_runtime(ty, runtime)
+    })
+}
+
+fn validate_snapshot_type(
+    unit: &VirUnit,
+    clause: &crate::VirSpecClause,
+    snapshot: crate::VirSpecSnapshot,
+    matches_type: impl Fn(VirType) -> bool + Copy,
+) -> bool {
     match snapshot {
         crate::vir::VirSpecSnapshot::Parameter { function, slot } => unit
             .runtime
@@ -819,7 +886,7 @@ fn validate_spec_snapshot(
             .and_then(|function| function.signature.parameters.get(slot as usize))
             .is_some_and(|runtime_ty| {
                 clause.location == crate::vir::VirSpecLocation::FunctionEntry { function }
-                    && spec_type_matches_runtime(ty, *runtime_ty)
+                    && matches_type(*runtime_ty)
             }),
         crate::vir::VirSpecSnapshot::Result { function, slot } => unit
             .runtime
@@ -829,10 +896,10 @@ fn validate_spec_snapshot(
             .and_then(|function| function.signature.results.get(slot as usize))
             .is_some_and(|runtime_ty| {
                 clause.location == crate::vir::VirSpecLocation::FunctionResult { function }
-                    && spec_type_matches_runtime(ty, *runtime_ty)
+                    && matches_type(*runtime_ty)
             }),
         crate::vir::VirSpecSnapshot::Value { function, value } => {
-            validate_runtime_snapshot(unit, clause, ty, function, value)
+            validate_runtime_snapshot(unit, clause, matches_type, function, value)
         }
     }
 }
@@ -840,7 +907,7 @@ fn validate_spec_snapshot(
 fn validate_runtime_snapshot(
     unit: &VirUnit,
     clause: &crate::vir::VirSpecClause,
-    ty: crate::vir::VirSpecType,
+    matches_type: impl Fn(VirType) -> bool,
     function_id: VirFunctionId,
     value: VirValueId,
 ) -> bool {
@@ -869,7 +936,7 @@ fn validate_runtime_snapshot(
         .iter()
         .find(|parameter| parameter.id == value)
     {
-        return spec_type_matches_runtime(ty, parameter.ty);
+        return matches_type(parameter.ty);
     }
     for (definition, instruction) in block.instructions.iter().enumerate() {
         let mut found = None;
@@ -887,7 +954,7 @@ fn validate_runtime_snapshot(
             | VirLocation::BlockEntry { .. }
             | VirLocation::BlockParameter { .. } => false,
         };
-        return available && spec_type_matches_runtime(ty, runtime_ty);
+        return available && matches_type(runtime_ty);
     }
     false
 }

@@ -441,7 +441,7 @@ fn instantiate_clause(
                 },
             )?;
         }
-        VirSpecClauseKind::Logic { .. } => {
+        VirSpecClauseKind::Logic { .. } | VirSpecClauseKind::Assertion { .. } => {
             return Err(ContractDefinitionError::UnsupportedLogicalClause(clause.id));
         }
     }

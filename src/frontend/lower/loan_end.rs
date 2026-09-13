@@ -56,11 +56,12 @@ struct PlannedEnd {
 
 /// Moves eligible pending `LoanEnd` effects to the first boundary after their
 /// final authority use, then rewrites source-map instruction identities.
-pub(super) fn plan(
+pub(super) fn plan_with_specs(
     function: VirFunctionId,
     constraints: &[DraftRegionConstraint],
     blocks: &mut [DraftBlock],
     source_map_entries: &mut [VirSourceMapEntry],
+    local_specs: &mut [super::local_spec::LocalSpec],
 ) -> Result<LoanEndPlanSummary, LoanEndPlanningError> {
     let regions = RegionSolution::solve(constraints)?;
     let parents = collect_and_check_parents(blocks, &regions)?;
@@ -68,7 +69,40 @@ pub(super) fn plan(
     let mut remapped = BTreeMap::new();
 
     for block in blocks {
+        // Anchor before the next non-movable operation. Ends moved across this
+        // boundary are observed in their final order without making Spec a use.
+        let following: Vec<_> = local_specs
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.block == block.id)
+            .map(|(index, s)| {
+                (
+                    index,
+                    block
+                        .instructions
+                        .iter()
+                        .enumerate()
+                        .skip(s.boundary)
+                        .find(|(_, i)| {
+                            !matches!(i, DraftInstruction::Pending(PendingEffect::LoanEnd(_)))
+                        })
+                        .map(|(ordinal, _)| ordinal as u64),
+                )
+            })
+            .collect();
         let block_summary = plan_block(block, &parents, &mut remapped)?;
+        for (index, next) in following {
+            local_specs[index].boundary = if let Some(ordinal) = next {
+                *remapped.get(&(block.id, ordinal)).ok_or(
+                    LoanEndPlanningError::MissingSourceLocation {
+                        block: block.id,
+                        ordinal,
+                    },
+                )? as usize
+            } else {
+                block.instructions.len()
+            };
+        }
         summary.ends += block_summary.ends;
         summary.moved += block_summary.moved;
         summary.lexical_fallbacks += block_summary.lexical_fallbacks;

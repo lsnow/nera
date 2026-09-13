@@ -35,7 +35,28 @@ impl<'a, 'unit> RelationReplayCache<'a, 'unit> {
         self.verified
             .functions()
             .get(&proposal.finding.site().function())
-            .is_some_and(|f| f.cfg().relation_queries().contains(proposal))
+            .is_some_and(|f| {
+                f.cfg().relation_queries().contains(proposal)
+                    || f.proofs()
+                        .iter()
+                        .any(|proof| proof.relation_queries().contains(proposal))
+            })
+    }
+
+    /// A Prove-local trace is separate from the CFG transfer journal. Exact
+    /// equality detects omission/reordering as well as forged observations.
+    #[must_use]
+    pub fn accepts_spec_trace(
+        &self,
+        function: crate::VirFunctionId,
+        prove: crate::VirSpecProveId,
+        proposal: &[QueryEvidence],
+    ) -> bool {
+        self.verified
+            .functions()
+            .get(&function)
+            .and_then(|f| f.proofs().iter().find(|p| p.prove() == prove))
+            .is_some_and(|p| p.relation_queries() == proposal)
     }
 
     /// Batch replay also detects omitted observations, including Unknown.

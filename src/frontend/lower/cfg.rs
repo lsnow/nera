@@ -335,6 +335,18 @@ pub(super) struct CfgBuilder {
 }
 
 impl CfgBuilder {
+    pub(super) fn spec_boundary(
+        &self,
+        span: ByteSpan,
+    ) -> Result<(VirBlockId, usize), FrontendFailure> {
+        let id = self.current.ok_or_else(|| invalid_hir(span))?;
+        let block = self
+            .blocks
+            .iter()
+            .find(|b| b.id == id)
+            .ok_or_else(|| invalid_hir(span))?;
+        Ok((id, block.instructions.len()))
+    }
     #[cfg(test)]
     pub(super) fn new(
         root_scope: HirScopeId,

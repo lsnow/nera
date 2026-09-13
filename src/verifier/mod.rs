@@ -49,7 +49,7 @@ pub use resource::{
     VERIFIER_MAX_REGION_CONSTRAINTS_PER_FUNCTION, VERIFIER_OBJECT_OFFSET_MAX_CANDIDATES,
     VERIFIER_OBJECT_STATE_MAX_ENTRIES, VERIFIER_RESOURCE_PAYLOAD_MAX_ENTRIES,
 };
-pub use spec::{SpecProof, TrustReportEntry};
+pub use spec::{SpecFailure, SpecProof, TrustReportEntry};
 pub use transfer::{
     InstructionSequenceTransfer, InstructionTransfer, ObligationStatus, ResourceObligation,
     ResourceObligationKind, TransferError, VIR_V0_MAX_ALLOCATION_BYTES, VIR_V0_WORD_BYTES,

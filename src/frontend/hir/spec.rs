@@ -1,11 +1,40 @@
 //! Typed, runtime-independent specification HIR arenas.
 
+use super::HirSpecAssertionId;
 use super::{
     HirContractId, HirFunctionId, HirLocalId, HirLoopId, HirPredicateId, HirSpecBinderId,
     HirSpecClauseId, HirSpecLoopInvariantId, HirSpecProveId, HirSpecTermId, HirTrustEntryId,
     HirTypeId,
 };
 use crate::ByteSpan;
+
+pub type HirSpecAssertionKind = crate::SpecAssertionKind<
+    HirSpecTermId,
+    HirSpecAssertionId,
+    HirSpecBinderId,
+    HirSpecSnapshot,
+    HirTypeId,
+>;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HirSpecAssertion {
+    pub id: HirSpecAssertionId,
+    pub clause: HirSpecClauseId,
+    pub kind: HirSpecAssertionKind,
+    pub span: ByteSpan,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HirSpecRoot {
+    Pure(HirSpecTermId),
+    Assertion(HirSpecAssertionId),
+}
+
+impl From<HirSpecTermId> for HirSpecRoot {
+    fn from(id: HirSpecTermId) -> Self {
+        Self::Pure(id)
+    }
+}
 
 /// Entry/exit side of one function contract.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -18,6 +47,11 @@ pub enum HirSpecContractPosition {
 /// loop heads are named now but non-trivial invariants remain gated.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum HirSpecLocation {
+    /// Identity of one lexical Prove statement, resolved after CFG planning.
+    Statement {
+        function: HirFunctionId,
+        prove: HirSpecProveId,
+    },
     FunctionEntry {
         function: HirFunctionId,
     },
@@ -35,6 +69,7 @@ impl HirSpecLocation {
     pub const fn function(self) -> HirFunctionId {
         match self {
             Self::FunctionEntry { function }
+            | Self::Statement { function, .. }
             | Self::FunctionResult { function }
             | Self::LoopHead { function, .. } => function,
         }
@@ -81,10 +116,35 @@ pub struct HirSpecTerm {
     pub span: ByteSpan,
 }
 
-/// Minimal stage-6.4.5 pure logic. Arithmetic, calls, quantifiers, `old` and
-/// memory/resource predicates deliberately have no representation here.
+/// Bounded Bool/U64 logic with checked arithmetic. Memory assertions remain in
+/// their separate arena; calls, `old` and arbitrary arithmetic are absent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HirSpecTermKind {
+    CheckedAdd {
+        left: HirSpecTermId,
+        right: HirSpecTermId,
+    },
+    CheckedSub {
+        left: HirSpecTermId,
+        right: HirSpecTermId,
+    },
+    CheckedScale {
+        operand: HirSpecTermId,
+        stride: u64,
+    },
+    /// Half-open byte endpoints in one caller-selected coordinate system.
+    RangeContains {
+        outer_start: HirSpecTermId,
+        outer_end: HirSpecTermId,
+        inner_start: HirSpecTermId,
+        inner_end: HirSpecTermId,
+    },
+    RangeDisjoint {
+        left_start: HirSpecTermId,
+        left_end: HirSpecTermId,
+        right_start: HirSpecTermId,
+        right_end: HirSpecTermId,
+    },
     Bool(bool),
     U64(u64),
     Binder(HirSpecBinderId),
@@ -106,6 +166,19 @@ pub enum HirSpecTermKind {
     Or(Vec<HirSpecTermId>),
 }
 
+impl HirSpecTermKind {
+    pub(crate) fn is_checked_numeric(&self) -> bool {
+        matches!(
+            self,
+            Self::CheckedAdd { .. }
+                | Self::CheckedSub { .. }
+                | Self::CheckedScale { .. }
+                | Self::RangeContains { .. }
+                | Self::RangeDisjoint { .. }
+        )
+    }
+}
+
 /// Entity that owns one clause in the shared clause arena.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum HirSpecClauseOwner {
@@ -118,13 +191,14 @@ pub enum HirSpecClauseOwner {
     LoopInvariant(HirSpecLoopInvariantId),
 }
 
-/// One pure boolean clause shared by contracts, proves and invariants.
+/// Typed clause root. Resource assertions are admitted only in Prove; contracts,
+/// trust entries and invariants retain their pure-boolean boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HirSpecClause {
     pub id: HirSpecClauseId,
     pub owner: HirSpecClauseOwner,
     pub location: HirSpecLocation,
-    pub root: HirSpecTermId,
+    pub root: HirSpecRoot,
     pub span: ByteSpan,
 }
 
@@ -193,9 +267,10 @@ pub struct HirSpecLoopInvariant {
     pub span: ByteSpan,
 }
 
-/// Separate pure specification arenas owned by one HIR program.
+/// Separate pure-term and assertion arenas owned by one HIR program.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HirSpecEnvironment {
+    pub assertions: Vec<HirSpecAssertion>,
     pub binders: Vec<HirSpecBinder>,
     pub terms: Vec<HirSpecTerm>,
     pub clauses: Vec<HirSpecClause>,
@@ -208,6 +283,7 @@ impl HirSpecEnvironment {
     #[must_use]
     pub const fn empty() -> Self {
         Self {
+            assertions: Vec::new(),
             binders: Vec::new(),
             terms: Vec::new(),
             clauses: Vec::new(),

@@ -537,6 +537,9 @@ impl Instantiator<'_> {
                 _ => {}
             }
             match &mut statement.kind {
+                AstStatementKind::Assert { expression } => {
+                    self.logical_expression(module, expression, env, depth + 1)?
+                }
                 AstStatementKind::Declare { annotation, .. } => {
                     self.ty(module, annotation, env, statement.span, 0)?
                 }
@@ -600,6 +603,37 @@ impl Instantiator<'_> {
         }
         Ok(())
     }
+    fn logical_expression(
+        &mut self,
+        module: usize,
+        expression: &mut super::AstLogicalExpression,
+        env: &Environment,
+        depth: usize,
+    ) -> Result<(), FrontendFailure> {
+        self.step(module, expression.span, depth)?;
+        match &mut expression.kind {
+            super::AstLogicalExpressionKind::InitializedRange {
+                pointer,
+                start,
+                end,
+            } => {
+                self.expression(module, pointer, env, depth + 1)?;
+                self.logical_expression(module, start, env, depth + 1)?;
+                self.logical_expression(module, end, env, depth + 1)
+            }
+            super::AstLogicalExpressionKind::Value(value) => {
+                self.expression(module, value, env, depth + 1)
+            }
+            super::AstLogicalExpressionKind::Not(value) => {
+                self.logical_expression(module, value, env, depth + 1)
+            }
+            super::AstLogicalExpressionKind::Binary { left, right, .. } => {
+                self.logical_expression(module, left, env, depth + 1)?;
+                self.logical_expression(module, right, env, depth + 1)
+            }
+        }
+    }
+
     fn place(
         &mut self,
         module: usize,

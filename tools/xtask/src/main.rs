@@ -5,6 +5,7 @@ use std::process::{Command, ExitCode};
 
 mod gate;
 mod regression;
+mod spec_local;
 mod stage4;
 
 const FUZZ_ITERATIONS: &str = "20000";
@@ -303,6 +304,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         "generate-vir" => stage4::generate(&root),
         "check-rust" => run_gate(&root, &gate::rust_steps()),
         "check-vir" => stage4::check(&root),
+        "check-spec-local" => spec_local::run(&root),
         "stage4" => {
             stage4::check(&root)?;
             run_frontend_regression(&root)
@@ -824,6 +826,7 @@ fn print_help() {
          Commands:\n\
            check-rust Run the current deduplicated Rust gate\n\
            check-vir Check checked-in VIR corpus snapshots\n\
+           check-spec-local Run the stage 8.1 focused Spec/VC acceptance union\n\
            generate-vir Refresh checked-in VIR corpus snapshots\n\
            stage4    Run VIR regression and frontend fuzz\n\
            check-verifier Run verifier tests and the deterministic verifier fuzz gate\n\

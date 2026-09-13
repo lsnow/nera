@@ -1,4 +1,10 @@
 use super::FrontendFailure;
+mod local_assert;
+mod spec_arithmetic;
+mod spec_assertions;
+mod spec_exists;
+mod spec_memory;
+mod spec_separation;
 use crate::ValidatedVirUnit;
 use crate::backend::X86_64_UNKNOWN_LINUX_GNU;
 use crate::frontend::hir::{
@@ -967,6 +973,7 @@ fn typed_spec_hir_lowers_into_the_shared_spec_vir_arenas() {
     let mut contracts = base.contracts().to_vec();
     contracts[contract_id.index()].clauses = vec![HirSpecClauseId::new(1)];
     let specs = HirSpecEnvironment {
+        assertions: vec![],
         binders: Vec::new(),
         terms: vec![
             HirSpecTerm {
@@ -1030,7 +1037,7 @@ fn typed_spec_hir_lowers_into_the_shared_spec_vir_arenas() {
                 location: HirSpecLocation::FunctionEntry {
                     function: function_id,
                 },
-                root: HirSpecTermId::new(2),
+                root: HirSpecTermId::new(2).into(),
                 span,
             },
             HirSpecClause {
@@ -1042,7 +1049,7 @@ fn typed_spec_hir_lowers_into_the_shared_spec_vir_arenas() {
                 location: HirSpecLocation::FunctionResult {
                     function: function_id,
                 },
-                root: HirSpecTermId::new(5),
+                root: HirSpecTermId::new(5).into(),
                 span,
             },
         ],

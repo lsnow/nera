@@ -18,6 +18,9 @@ use nera::{
 mod address_program;
 #[path = "support/enum_construction_program.rs"]
 mod enum_construction_program;
+#[path = "support/local_assert.rs"]
+#[allow(dead_code)]
+mod local_assert;
 #[path = "support/local_storage_program.rs"]
 mod local_storage_program;
 #[path = "support/object_effect_program.rs"]
@@ -28,6 +31,91 @@ mod provenance_cases;
 mod resource_payload_program;
 #[path = "support/slice_program.rs"]
 mod slice_program;
+#[path = "support/spec_arena.rs"]
+#[allow(dead_code)] // Shared mutation builder; this target uses the positive raw case.
+mod spec_arena;
+#[path = "support/spec_arithmetic.rs"]
+mod spec_arithmetic;
+#[path = "support/spec_exists.rs"]
+mod spec_exists;
+
+#[test]
+fn source_local_assertions_preserve_native_execution() {
+    let output = nera::analyze(&nera::SourceFile::from_text(
+        "native-local-assert.nera",
+        local_assert::SOURCE,
+    ));
+    let unit = output.vir().unwrap();
+    assert!(
+        verify_program(&unit.resolve().unwrap(), nera::CfgAnalysisConfig::default())
+            .unwrap()
+            .is_memory_checked_core0()
+    );
+    assert_interpreter_matches_native("source-local-assert", unit);
+}
+#[path = "support/spec_memory.rs"]
+mod spec_memory;
+#[path = "support/spec_separation.rs"]
+mod spec_separation;
+
+#[test]
+fn checked_spec_exists_preserves_native_execution() {
+    let unit = spec_exists::checked_unit().into_validated().unwrap();
+    assert!(
+        verify_program(&unit.resolve().unwrap(), nera::CfgAnalysisConfig::default())
+            .unwrap()
+            .is_memory_checked_core0()
+    );
+    assert_interpreter_matches_native("checked-spec-exists", &unit);
+}
+
+#[test]
+fn checked_spec_separation_preserves_native_execution() {
+    let unit = spec_separation::checked_unit().into_validated().unwrap();
+    let resolved = unit.resolve().unwrap();
+    assert!(
+        verify_program(&resolved, nera::CfgAnalysisConfig::default())
+            .unwrap()
+            .is_memory_checked_core0()
+    );
+    assert_eq!(
+        interpret(resolved.runtime()).unwrap().values(),
+        [VirRuntimeValue::U64(7)]
+    );
+    assert_interpreter_matches_native("checked-spec-separation", &unit);
+}
+
+#[test]
+fn checked_spec_memory_preserves_native_execution() {
+    let unit = spec_memory::checked_unit().into_validated().unwrap();
+    let resolved = unit.resolve().unwrap();
+    assert!(
+        verify_program(&resolved, nera::CfgAnalysisConfig::default())
+            .unwrap()
+            .is_memory_checked_core0()
+    );
+    assert_eq!(
+        interpret(resolved.runtime()).unwrap().values(),
+        [VirRuntimeValue::U64(7)]
+    );
+    assert_interpreter_matches_native("checked-spec-memory", &unit);
+}
+
+#[test]
+fn checked_spec_arithmetic_preserves_native_arena_execution() {
+    let unit = spec_arithmetic::unit(8).into_validated().unwrap();
+    let resolved = unit.resolve().unwrap();
+    assert!(
+        verify_program(&resolved, nera::CfgAnalysisConfig::default())
+            .unwrap()
+            .is_memory_checked_core0()
+    );
+    assert_eq!(
+        interpret(resolved.runtime()).unwrap().values(),
+        [VirRuntimeValue::U64(49)]
+    );
+    assert_interpreter_matches_native("checked-spec-arithmetic", &unit);
+}
 #[path = "../src/bin/fuzz_support/summary_cases.rs"]
 mod summary_cases;
 
@@ -273,6 +361,131 @@ fn two_live_dynamic_element_loans_match_native_and_interpreter() {
         "update(0usize, 2usize) + update(3usize, 1usize)",
     );
     assert_resource_ledger(&source, 0, None);
+}
+
+#[test]
+fn spec_arena_source_baseline_preserves_native_storage_and_release_ledger() {
+    assert_resource_ledger(
+        include_str!("../spec/cases/verify/spec-arena-baseline.nera"),
+        0,
+        None,
+    );
+}
+
+#[test]
+fn spec_local_arena_preserves_native_storage_and_release_ledger() {
+    let source = include_str!("../spec/cases/verify/spec-arena-local.nera");
+    let output = nera::analyze(&nera::SourceFile::from_text(
+        "native-local-arena.nera",
+        source,
+    ));
+    let unit = output.vir().unwrap();
+    assert!(
+        verify_program(&unit.resolve().unwrap(), nera::CfgAnalysisConfig::default())
+            .unwrap()
+            .is_memory_checked_core0()
+    );
+    assert_interpreter_matches_native("spec-local-arena", unit);
+    assert_resource_ledger(source, 0, None);
+}
+
+#[test]
+fn resource_assertion_schema_is_erased_by_interpreter_and_native() {
+    use nera::{
+        SpecAccess, SpecAssertionKind as A, SpecMemoryClaim, VirLocation, VirSpecAssertion,
+        VirSpecAssertionId, VirSpecClause, VirSpecClauseId, VirSpecClauseKind, VirSpecClauseOrigin,
+        VirSpecClauseOwner, VirSpecLocation, VirSpecProve, VirSpecProveId, VirSpecSnapshot,
+        VirSpecTerm, VirSpecTermId, VirSpecTermKind, VirSpecType,
+    };
+    let mut unit = spec_arena::unit(1, 3, spec_arena::Mutation::None);
+    let plain = unit.clone().into_validated().unwrap();
+    let function = VirFunctionId::new(1);
+    let point = VirLocation::Instruction {
+        function,
+        block: VirBlockId::new(0),
+        ordinal: 1,
+    };
+    let origin = unit.source_map.origin_at(point).unwrap().id;
+    let clause = VirSpecClauseId::new(unit.specs.clauses().len() as u32);
+    for (id, value) in [(0, 0), (1, 8)] {
+        unit.specs.terms_mut().push(VirSpecTerm {
+            id: VirSpecTermId::new(id),
+            clause,
+            ty: VirSpecType::U64,
+            kind: VirSpecTermKind::U64(value),
+            origin,
+        });
+    }
+    let snapshot = VirSpecSnapshot::Value {
+        function,
+        value: VirValueId::new(3),
+    };
+    unit.specs.assertions_mut().push(VirSpecAssertion {
+        id: VirSpecAssertionId::new(0),
+        clause,
+        kind: A::Permission(SpecMemoryClaim {
+            pointer: snapshot,
+            authority: VirSpecSnapshot::Value {
+                function,
+                value: VirValueId::new(4),
+            },
+            start_bytes: VirSpecTermId::new(0),
+            end_bytes: VirSpecTermId::new(1),
+            layout: nera::VirMemoryAccess::core_u64(),
+            access: SpecAccess::Write,
+        }),
+        origin,
+    });
+    let location = VirSpecLocation::Runtime(point);
+    unit.specs.clauses_mut().push(VirSpecClause {
+        id: clause,
+        owner: VirSpecClauseOwner::Prove(VirSpecProveId::new(0)),
+        location,
+        origin: VirSpecClauseOrigin::Explicit { origin },
+        kind: VirSpecClauseKind::Assertion {
+            root: VirSpecAssertionId::new(0),
+        },
+    });
+    unit.specs.proves_mut().push(VirSpecProve {
+        id: VirSpecProveId::new(0),
+        function,
+        location,
+        clause,
+        origin,
+    });
+    let mut premature = unit.clone();
+    let mut forged = unit.clone();
+    if let A::Permission(memory) = &mut forged.specs.assertions_mut()[0].kind {
+        memory.authority = snapshot;
+    }
+    assert!(
+        forged.validate().is_err(),
+        "a pointer is not permission authority"
+    );
+    let before_allocation = VirSpecLocation::Runtime(VirLocation::Instruction {
+        function,
+        block: VirBlockId::new(0),
+        ordinal: 0,
+    });
+    premature.specs.clauses_mut()[clause.get() as usize].location = before_allocation;
+    premature.specs.proves_mut()[0].location = before_allocation;
+    assert!(
+        premature.validate().is_err(),
+        "pointer cannot be observed before its definition"
+    );
+    let unit = unit.into_validated().unwrap();
+    assert_eq!(unit.runtime().stable_dump(), plain.runtime().stable_dump());
+    let resolved = unit.resolve().unwrap();
+    assert!(
+        verify_program(&resolved, nera::CfgAnalysisConfig::default())
+            .unwrap()
+            .is_memory_checked_core0()
+    );
+    assert_eq!(
+        interpret(resolved.runtime()).unwrap().values(),
+        [VirRuntimeValue::U64(49)]
+    );
+    assert_interpreter_matches_native("resource-assertion-erasure", &unit);
 }
 
 #[test]

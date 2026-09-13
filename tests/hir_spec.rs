@@ -59,6 +59,7 @@ fn typed_spec_tables() -> HirProgramTables {
     let u64_ty = type_id(&base, HirTypeKind::Integer(nera::HirIntegerType::U64));
 
     tables.specs = HirSpecEnvironment {
+        assertions: vec![],
         binders: vec![HirSpecBinder {
             id: HirSpecBinderId::new(0),
             owner: HirSpecBinderOwner::Clause(HirSpecClauseId::new(1)),
@@ -128,7 +129,7 @@ fn typed_spec_tables() -> HirProgramTables {
                 location: HirSpecLocation::FunctionEntry {
                     function: function_id,
                 },
-                root: HirSpecTermId::new(2),
+                root: HirSpecTermId::new(2).into(),
                 span,
             },
             HirSpecClause {
@@ -140,7 +141,7 @@ fn typed_spec_tables() -> HirProgramTables {
                 location: HirSpecLocation::FunctionResult {
                     function: function_id,
                 },
-                root: HirSpecTermId::new(5),
+                root: HirSpecTermId::new(5).into(),
                 span,
             },
         ],
@@ -227,7 +228,7 @@ fn hir_spec_rejects_non_dominating_snapshots_foreign_terms_and_binders() {
 #[test]
 fn hir_spec_rejects_wrong_root_types_and_contract_locations() {
     let mut wrong_root = typed_spec_tables();
-    wrong_root.specs.clauses[0].root = HirSpecTermId::new(0);
+    wrong_root.specs.clauses[0].root = HirSpecTermId::new(0).into();
     assert_eq!(
         HirProgram::from_tables(wrong_root)
             .expect_err("clause roots are boolean")

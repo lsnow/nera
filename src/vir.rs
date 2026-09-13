@@ -74,12 +74,13 @@ pub use spec::{
     VirContract, VirContractAccess, VirContractBinder, VirContractBinderId, VirContractFree,
     VirContractInitialization, VirContractLiveness, VirContractOwnership, VirContractPermission,
     VirContractPointer, VirContractPosition, VirContractResource, VirContractResourceId,
-    VirContractResourceSummary, VirPredicate, VirPredicateId, VirSpecBinder, VirSpecBinderId,
-    VirSpecBinderOwner, VirSpecClause, VirSpecClauseId, VirSpecClauseKind, VirSpecClauseOrigin,
-    VirSpecClauseOwner, VirSpecEnvironment, VirSpecLocation, VirSpecLoopInvariant,
-    VirSpecLoopInvariantId, VirSpecProve, VirSpecProveId, VirSpecSnapshot, VirSpecTables,
-    VirSpecTerm, VirSpecTermId, VirSpecTermKind, VirSpecType, VirTrustEntry, VirTrustEntryId,
-    VirTrustPolicyKind, VirTrustScope,
+    VirContractResourceSummary, VirPredicate, VirPredicateId, VirSpecAssertion, VirSpecAssertionId,
+    VirSpecAssertionKind, VirSpecBinder, VirSpecBinderId, VirSpecBinderOwner, VirSpecClause,
+    VirSpecClauseId, VirSpecClauseKind, VirSpecClauseOrigin, VirSpecClauseOwner,
+    VirSpecEnvironment, VirSpecLocation, VirSpecLoopInvariant, VirSpecLoopInvariantId,
+    VirSpecProve, VirSpecProveId, VirSpecSnapshot, VirSpecTables, VirSpecTerm, VirSpecTermId,
+    VirSpecTermKind, VirSpecType, VirTrustEntry, VirTrustEntryId, VirTrustPolicyKind,
+    VirTrustScope,
 };
 pub use validate::{VirValidationError, VirValidationErrorKind};
 
@@ -114,6 +115,12 @@ pub enum VirUnitVersion {
     V17,
     /// Bounded fixed-field and slice borrow-result projections.
     V18,
+    /// Separate resource assertion DAG, with pure terms unchanged.
+    V19,
+    /// Checked Spec arithmetic and byte-range relations; no runtime ABI change.
+    V20,
+    /// Memory observations; resource claims name physical permission snapshots.
+    V21,
 }
 
 /// Stable identifier of a function within one VIR unit.
@@ -246,7 +253,7 @@ impl VirUnit {
         assign_loan_effect_origins(&mut runtime, &source_map);
         let specs = VirSpecEnvironment::implicit(&runtime);
         Self {
-            version: VirUnitVersion::V18,
+            version: VirUnitVersion::V21,
             memory,
             borrows: VirBorrowEnvironment::empty(),
             runtime,

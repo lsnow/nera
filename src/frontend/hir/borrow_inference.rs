@@ -471,6 +471,7 @@ impl Elaborator {
                 break;
             }
             match &statement.kind {
+                AstStatementKind::Assert { .. } => {}
                 AstStatementKind::Declare { name, .. } => {
                     environment.insert(name, Origin::NotBorrow)
                 }
@@ -636,6 +637,7 @@ impl Elaborator {
                 break;
             }
             match &statement.kind {
+                AstStatementKind::Assert { .. } => {}
                 AstStatementKind::Declare { name, .. } => {
                     environment.insert(name, Origin::NotBorrow);
                 }
@@ -1182,6 +1184,7 @@ fn source_components(graph: &[BTreeSet<usize>]) -> Vec<Vec<usize>> {
 fn collect_called_functions(block: &AstBlock, names: &mut BTreeSet<String>) {
     for statement in &block.statements {
         match &statement.kind {
+            AstStatementKind::Assert { .. } => {}
             AstStatementKind::Declare { .. }
             | AstStatementKind::Free { .. }
             | AstStatementKind::Break

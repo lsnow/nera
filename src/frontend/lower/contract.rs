@@ -19,6 +19,7 @@ pub(super) fn infer_contracts(
     memory: &LoweredMemorySchema,
     runtime: &RuntimeVirProgram,
     source_map: &VirSourceMap,
+    local_specs: &[super::local_spec::LocalSpec],
 ) -> Result<VirSpecEnvironment, FrontendFailure> {
     let mut specs = VirSpecEnvironment::implicit(runtime);
     for function in hir
@@ -144,7 +145,7 @@ pub(super) fn infer_contracts(
             )?;
         }
     }
-    lower_hir_specs(hir, memory, source_map, &mut specs)?;
+    lower_hir_specs(hir, memory, source_map, &mut specs, local_specs)?;
     Ok(specs)
 }
 
@@ -334,6 +335,7 @@ fn lower_hir_specs(
     memory: &LoweredMemorySchema,
     source_map: &VirSourceMap,
     specs: &mut VirSpecEnvironment,
+    local_specs: &[super::local_spec::LocalSpec],
 ) -> Result<(), FrontendFailure> {
     let clause_base =
         u32::try_from(specs.clauses().len()).map_err(|_| invalid_hir(hir.entry_function().span))?;
@@ -388,8 +390,51 @@ fn lower_hir_specs(
             clause: shifted_clause_id(clause_base, term.clause)
                 .ok_or_else(|| invalid_hir(term.span))?,
             ty: lower_spec_type(hir, term.ty).ok_or_else(|| invalid_hir(term.span))?,
-            kind: lower_spec_term_kind(hir, memory, &term.kind, term.span)?,
+            kind: if let HirSpecTermKind::Snapshot(HirSpecSnapshot::Local { local, .. }) = term.kind
+                && let HirSpecLocation::Statement { prove, .. } =
+                    hir.specs().clauses[term.clause.index()].location
+            {
+                let binding = local_specs
+                    .iter()
+                    .find(|s| s.prove == prove)
+                    .ok_or_else(|| invalid_hir(term.span))?;
+                VirSpecTermKind::Snapshot(binding.scalar(
+                    local,
+                    lower_spec_type(hir, term.ty).ok_or_else(|| invalid_hir(term.span))?,
+                    term.span,
+                )?)
+            } else {
+                lower_spec_term_kind(hir, memory, &term.kind, term.span)?
+            },
             origin,
+        });
+    }
+
+    for assertion in &hir.specs().assertions {
+        specs.assertions_mut().push(crate::VirSpecAssertion {
+            id: crate::VirSpecAssertionId::new(assertion.id.get()),
+            clause: shifted_clause_id(clause_base, assertion.clause)
+                .ok_or_else(|| invalid_hir(assertion.span))?,
+            kind: lower_assertion(
+                hir,
+                memory,
+                &assertion.kind,
+                assertion.span,
+                if let HirSpecLocation::Statement { prove, .. } =
+                    hir.specs().clauses[assertion.clause.index()].location
+                {
+                    Some(
+                        local_specs
+                            .iter()
+                            .find(|s| s.prove == prove)
+                            .ok_or_else(|| invalid_hir(assertion.span))?,
+                    )
+                } else {
+                    None
+                },
+            )?,
+            origin: spec_source_origin(source_map, assertion.span)
+                .ok_or_else(|| invalid_hir(assertion.span))?,
         });
     }
 
@@ -419,11 +464,16 @@ fn lower_hir_specs(
                     crate::VirSpecLoopInvariantId::new(invariant.get()),
                 ),
             },
-            location: lower_spec_location(clause.location)
+            location: lower_spec_location(clause.location, local_specs)
                 .ok_or_else(|| invalid_hir(clause.span))?,
             origin: VirSpecClauseOrigin::Explicit { origin },
-            kind: VirSpecClauseKind::Logic {
-                root: VirSpecTermId::new(clause.root.get()),
+            kind: match clause.root {
+                crate::HirSpecRoot::Pure(root) => VirSpecClauseKind::Logic {
+                    root: VirSpecTermId::new(root.get()),
+                },
+                crate::HirSpecRoot::Assertion(root) => VirSpecClauseKind::Assertion {
+                    root: crate::VirSpecAssertionId::new(root.get()),
+                },
             },
         });
     }
@@ -446,7 +496,8 @@ fn lower_hir_specs(
         specs.proves_mut().push(VirSpecProve {
             id: VirSpecProveId::new(prove.id.get()),
             function: VirFunctionId::new(prove.function.get()),
-            location: lower_spec_location(prove.location).ok_or_else(|| invalid_hir(prove.span))?,
+            location: lower_spec_location(prove.location, local_specs)
+                .ok_or_else(|| invalid_hir(prove.span))?,
             clause: shifted_clause_id(clause_base, prove.clause)
                 .ok_or_else(|| invalid_hir(prove.span))?,
             origin,
@@ -486,6 +537,12 @@ pub(super) fn spec_source_spans(hir: &HirProgram) -> Vec<ByteSpan> {
         .map(|predicate| predicate.span)
         .chain(hir.specs().binders.iter().map(|binder| binder.span))
         .chain(hir.specs().terms.iter().map(|term| term.span))
+        .chain(
+            hir.specs()
+                .assertions
+                .iter()
+                .map(|assertion| assertion.span),
+        )
         .chain(hir.specs().clauses.iter().map(|clause| clause.span))
         .chain(hir.specs().proves.iter().map(|prove| prove.span))
         .chain(hir.specs().trust_entries.iter().map(|entry| entry.span))
@@ -513,12 +570,126 @@ fn lower_spec_type(hir: &HirProgram, ty: HirTypeId) -> Option<VirSpecType> {
     match hir.type_kind(ty)? {
         HirTypeKind::Bool => Some(VirSpecType::Bool),
         HirTypeKind::Integer(crate::frontend::hir::HirIntegerType::U64) => Some(VirSpecType::U64),
+        HirTypeKind::Integer(crate::frontend::hir::HirIntegerType::Usize)
+            if hir.data_layout().usize_size_bytes == 8 =>
+        {
+            Some(VirSpecType::U64)
+        }
         _ => None,
     }
 }
 
-fn lower_spec_location(location: HirSpecLocation) -> Option<VirSpecLocation> {
+fn lower_assertion(
+    hir: &HirProgram,
+    memory: &LoweredMemorySchema,
+    kind: &crate::HirSpecAssertionKind,
+    span: ByteSpan,
+    local: Option<&super::local_spec::LocalSpec>,
+) -> Result<crate::VirSpecAssertionKind, FrontendFailure> {
+    use crate::SpecAssertionKind as A;
+    let term = |id: crate::HirSpecTermId| VirSpecTermId::new(id.get());
+    let assertion = |id: crate::HirSpecAssertionId| crate::VirSpecAssertionId::new(id.get());
+    let snapshot = |s, authority| {
+        if let Some(local) = local {
+            local.pointer(s, authority, span)
+        } else if authority {
+            lower_authority_snapshot(hir, memory, s, span)
+        } else {
+            lower_snapshot(hir, memory, s, span)
+        }
+    };
+    let claim = |c: &crate::SpecMemoryClaim<HirSpecSnapshot, crate::HirSpecTermId, HirTypeId>| -> Result<_, FrontendFailure> {
+        Ok(crate::SpecMemoryClaim {
+            pointer: snapshot(c.pointer, false)?,
+            authority: snapshot(c.authority, true)?,
+            start_bytes: term(c.start_bytes), end_bytes: term(c.end_bytes),
+            layout: memory.access(c.layout, span)?, access: c.access,
+        })
+    };
+    Ok(match kind {
+        A::Alive(pointer) => A::Alive(snapshot(*pointer, false)?),
+        A::SameAllocation { left, right } => A::SameAllocation {
+            left: snapshot(*left, false)?,
+            right: snapshot(*right, false)?,
+        },
+        A::Initialized {
+            pointer,
+            start_bytes,
+            end_bytes,
+            layout,
+        } => A::Initialized {
+            pointer: snapshot(*pointer, false)?,
+            start_bytes: term(*start_bytes),
+            end_bytes: term(*end_bytes),
+            layout: memory.access(*layout, span)?,
+        },
+        A::Pure(id) => A::Pure(term(*id)),
+        A::Permission(c) => A::Permission(claim(c)?),
+        A::PointsTo { memory, value } => A::PointsTo {
+            memory: claim(memory)?,
+            value: value.map(term),
+        },
+        A::Separation(ids) => A::Separation(ids.iter().copied().map(assertion).collect()),
+        A::Exists {
+            binder,
+            body,
+            witness,
+        } => A::Exists {
+            binder: VirSpecBinderId::new(binder.get()),
+            body: assertion(*body),
+            witness: witness.map(term),
+        },
+    })
+}
+
+fn lower_authority_snapshot(
+    hir: &HirProgram,
+    memory: &LoweredMemorySchema,
+    snapshot: HirSpecSnapshot,
+    span: ByteSpan,
+) -> Result<VirSpecSnapshot, FrontendFailure> {
+    // Validated sized Own/reference ABI is exactly [pointer, permission]. Raw
+    // pointers cannot supply authority; HIR validation rejects that case.
+    Ok(match lower_snapshot(hir, memory, snapshot, span)? {
+        VirSpecSnapshot::Parameter { function, slot } => VirSpecSnapshot::Parameter {
+            function,
+            slot: slot.checked_add(1).ok_or_else(|| invalid_hir(span))?,
+        },
+        VirSpecSnapshot::Result { function, slot } => VirSpecSnapshot::Result {
+            function,
+            slot: slot.checked_add(1).ok_or_else(|| invalid_hir(span))?,
+        },
+        VirSpecSnapshot::Value { .. } => return Err(invalid_hir(span)),
+    })
+}
+
+fn lower_snapshot(
+    hir: &HirProgram,
+    memory: &LoweredMemorySchema,
+    snapshot: HirSpecSnapshot,
+    span: ByteSpan,
+) -> Result<VirSpecSnapshot, FrontendFailure> {
+    Ok(match snapshot {
+        HirSpecSnapshot::Local { function, local } => VirSpecSnapshot::Parameter {
+            function: VirFunctionId::new(function.get()),
+            slot: hir_parameter_abi_slot(hir, memory, function, local, span)?,
+        },
+        HirSpecSnapshot::Result { function } => VirSpecSnapshot::Result {
+            function: VirFunctionId::new(function.get()),
+            slot: 0,
+        },
+    })
+}
+
+fn lower_spec_location(
+    location: HirSpecLocation,
+    local_specs: &[super::local_spec::LocalSpec],
+) -> Option<VirSpecLocation> {
     match location {
+        HirSpecLocation::Statement { function, prove } => local_specs
+            .iter()
+            .find(|s| s.prove == prove && s.function.get() == function.get())
+            .map(super::local_spec::LocalSpec::location),
         HirSpecLocation::FunctionEntry { function } => Some(VirSpecLocation::FunctionEntry {
             function: VirFunctionId::new(function.get()),
         }),
@@ -538,20 +709,47 @@ fn lower_spec_term_kind(
     let term = |id: crate::frontend::hir::HirSpecTermId| VirSpecTermId::new(id.get());
     Ok(match kind {
         HirSpecTermKind::Bool(value) => VirSpecTermKind::Bool(*value),
+        HirSpecTermKind::CheckedAdd { left, right } => VirSpecTermKind::CheckedAdd {
+            left: term(*left),
+            right: term(*right),
+        },
+        HirSpecTermKind::CheckedSub { left, right } => VirSpecTermKind::CheckedSub {
+            left: term(*left),
+            right: term(*right),
+        },
+        HirSpecTermKind::CheckedScale { operand, stride } => VirSpecTermKind::CheckedScale {
+            operand: term(*operand),
+            stride: *stride,
+        },
+        HirSpecTermKind::RangeContains {
+            outer_start,
+            outer_end,
+            inner_start,
+            inner_end,
+        } => VirSpecTermKind::RangeContains {
+            outer_start: term(*outer_start),
+            outer_end: term(*outer_end),
+            inner_start: term(*inner_start),
+            inner_end: term(*inner_end),
+        },
+        HirSpecTermKind::RangeDisjoint {
+            left_start,
+            left_end,
+            right_start,
+            right_end,
+        } => VirSpecTermKind::RangeDisjoint {
+            left_start: term(*left_start),
+            left_end: term(*left_end),
+            right_start: term(*right_start),
+            right_end: term(*right_end),
+        },
         HirSpecTermKind::U64(value) => VirSpecTermKind::U64(*value),
         HirSpecTermKind::Binder(binder) => {
             VirSpecTermKind::Binder(VirSpecBinderId::new(binder.get()))
         }
-        HirSpecTermKind::Snapshot(snapshot) => VirSpecTermKind::Snapshot(match snapshot {
-            HirSpecSnapshot::Local { function, local } => VirSpecSnapshot::Parameter {
-                function: VirFunctionId::new(function.get()),
-                slot: hir_parameter_abi_slot(hir, memory, *function, *local, source_span)?,
-            },
-            HirSpecSnapshot::Result { function } => VirSpecSnapshot::Result {
-                function: VirFunctionId::new(function.get()),
-                slot: 0,
-            },
-        }),
+        HirSpecTermKind::Snapshot(snapshot) => {
+            VirSpecTermKind::Snapshot(lower_snapshot(hir, memory, *snapshot, source_span)?)
+        }
         HirSpecTermKind::Equal { left, right } => VirSpecTermKind::Equal {
             left: term(*left),
             right: term(*right),

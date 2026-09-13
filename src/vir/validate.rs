@@ -96,6 +96,7 @@ pub enum VirValidationErrorKind {
     },
     InvalidSpecBinder(VirSpecBinderId),
     InvalidSpecTerm(VirSpecTermId),
+    InvalidSpecAssertion(crate::VirSpecAssertionId),
     SpecTermDepthExceeded(VirSpecTermId),
     InvalidSpecClauseOwner(VirSpecClauseId),
     InvalidSpecClauseLocation(VirSpecClauseId),
@@ -205,7 +206,7 @@ pub enum VirValidationErrorKind {
 }
 
 pub(super) fn validate(unit: &VirUnit) -> Result<(), VirValidationError> {
-    if unit.version != VirUnitVersion::V18 {
+    if unit.version != VirUnitVersion::V21 {
         return Err(program_error(
             VirValidationErrorKind::UnsupportedUnitVersion(unit.version),
         ));
@@ -284,6 +285,12 @@ fn additional_origins(unit: &VirUnit) -> Vec<VirOriginId> {
                 .map(|predicate| predicate.origin)
                 .chain(unit.specs.binders().iter().map(|binder| binder.origin))
                 .chain(unit.specs.terms().iter().map(|term| term.origin))
+                .chain(
+                    unit.specs
+                        .assertions()
+                        .iter()
+                        .map(|assertion| assertion.origin),
+                )
                 .chain(
                     unit.specs
                         .clauses()

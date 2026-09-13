@@ -224,7 +224,7 @@ fn current_units_retain_v2_temporary_origins_and_v1_rejects_them() {
         "surface.nera",
         include_bytes!("../spec/cases/aggregate/surface.nera"),
     );
-    assert_eq!(program.as_unit().version, VirUnitVersion::V18);
+    assert_eq!(program.as_unit().version, VirUnitVersion::V21);
     let temporary = program
         .as_unit()
         .source_map
