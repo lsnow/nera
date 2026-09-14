@@ -43,7 +43,7 @@ fn source_copy_move_is_explicit_and_reaches_all_runtime_consumers() {
     let source = include_str!("../spec/cases/aggregate/copy-move.nera");
     let output = accepted("copy-move.nera", source);
     let hir = output.hir().expect("copy/move source has HIR");
-    assert_eq!(hir.version(), nera::HirVersion::V16);
+    assert_eq!(hir.version(), nera::HirVersion::V20);
     let body = hir.entry_function().body().expect("entry body");
 
     let HirStatementKind::Let { value, .. } = &body.root.statements[2].kind else {

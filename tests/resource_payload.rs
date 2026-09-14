@@ -30,7 +30,7 @@ fn canonical_shape_exposes_the_owning_move_path() {
 #[test]
 fn own_payload_round_trip_moves_permission_exactly_once() {
     let validated = resource_payload_program::validated();
-    assert!(validated.stable_dump().starts_with("vir-unit-v21\n"));
+    assert!(validated.stable_dump().starts_with("vir-unit-v25\n"));
     assert!(validated.stable_dump().contains("resource.init"));
     assert!(validated.stable_dump().contains("resource.take"));
     let resolved = validated.resolve().expect("resource VIR resolves");

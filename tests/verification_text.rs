@@ -235,7 +235,14 @@ fn same_call_site_keeps_distinct_cases_and_return_occurrences() {
     let text = render_text(&report, TextReportMode::Explain);
     assert_eq!(
         text.matches("related return occurrence:").count(),
-        report.counts().unwrap().postconditions.total()
+        report
+            .obligations()
+            .unwrap()
+            .filter(
+                |o| matches!(o.evidence, ObligationEvidence::Postcondition(_))
+                    && o.finding().occurrence().is_some()
+            )
+            .count()
     );
 }
 

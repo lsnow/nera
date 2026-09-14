@@ -52,6 +52,10 @@ fn dump_unit(output: &mut String, unit: &VirUnit) -> fmt::Result {
         VirUnitVersion::V19 => writeln!(output, "vir-unit-v19")?,
         VirUnitVersion::V20 => writeln!(output, "vir-unit-v20")?,
         VirUnitVersion::V21 => writeln!(output, "vir-unit-v21")?,
+        VirUnitVersion::V22 => writeln!(output, "vir-unit-v22")?,
+        VirUnitVersion::V23 => writeln!(output, "vir-unit-v23")?,
+        VirUnitVersion::V24 => writeln!(output, "vir-unit-v24")?,
+        VirUnitVersion::V25 => writeln!(output, "vir-unit-v25")?,
     }
     writeln!(output, "memory {{")?;
     dump_memory_schema(output, &unit.memory)?;
@@ -289,6 +293,12 @@ fn dump_spec_assertion_kind(
 ) -> fmt::Result {
     use crate::SpecAssertionKind as A;
     match kind {
+        A::Footprint { write, range } => write!(
+            output,
+            "{} {range:?}",
+            if *write { "writes" } else { "reads" }
+        ),
+        A::Disjoint { left, right } => write!(output, "disjoint {left:?} {right:?}"),
         A::Alive(pointer) => {
             write!(output, "alive ")?;
             dump_spec_term_kind(output, &super::VirSpecTermKind::Snapshot(*pointer))
@@ -553,9 +563,25 @@ fn dump_spec_term_kind(output: &mut String, kind: &super::VirSpecTermKind) -> fm
             c.get(),
             d.get()
         ),
+        super::VirSpecTermKind::Snapshot(super::VirSpecSnapshot::Memory {
+            function,
+            parameter,
+            old,
+            projection,
+        }) => write!(
+            output,
+            "memory fn{} input={parameter:?} old={old} {projection:?}",
+            function.get()
+        ),
         super::VirSpecTermKind::Bool(value) => write!(output, "bool {value}"),
         super::VirSpecTermKind::U64(value) => write!(output, "u64 {value}"),
         super::VirSpecTermKind::Binder(binder) => write!(output, "sbinder{}", binder.get()),
+        super::VirSpecTermKind::Snapshot(super::VirSpecSnapshot::EntryParameter {
+            function,
+            slot,
+        }) => {
+            write!(output, "entry-param fn{} slot{}", function.get(), slot)
+        }
         super::VirSpecTermKind::Snapshot(super::VirSpecSnapshot::Parameter { function, slot }) => {
             write!(output, "snapshot fn{}:parameter{}", function.get(), slot)
         }

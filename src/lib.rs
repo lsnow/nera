@@ -102,7 +102,10 @@ pub use verifier::{
 };
 mod spec_assertion;
 pub use frontend::hir::{HirSpecAssertion, HirSpecAssertionId, HirSpecAssertionKind, HirSpecRoot};
-pub use spec_assertion::{SpecAccess, SpecAssertionKind, SpecMemoryClaim};
+pub use spec_assertion::{
+    SpecAccess, SpecAssertionKind, SpecMemoryClaim, SpecMemoryIndex, SpecMemoryProjection,
+    SpecMemoryRange,
+};
 pub use vir::{VirSpecAssertion, VirSpecAssertionId, VirSpecAssertionKind};
 
 pub use vir::{
@@ -118,22 +121,23 @@ pub use vir::{
     VirBorrowRegion, VirBorrowRegionConstraint, VirBorrowRegionConstraintId, VirBorrowRegionId,
     VirBorrowRegionOrigin, VirBorrowRegionScope, VirCallTarget, VirComparisonSemantics,
     VirConstant, VirContract, VirContractAccess, VirContractBinder, VirContractBinderId,
-    VirContractFree, VirContractId, VirContractInitialization, VirContractLiveness,
-    VirContractOwnership, VirContractPermission, VirContractPointer, VirContractPosition,
-    VirContractResource, VirContractResourceId, VirContractResourceSummary, VirDivergenceSemantics,
-    VirEndianness, VirExecution, VirExecutionError, VirExecutionErrorKind, VirFailureDisposition,
-    VirField, VirFieldId, VirFieldLayout, VirFunction, VirFunctionAbi, VirFunctionId,
-    VirGeneratedReason, VirIndexBounds, VirInstruction, VirIntegerPredicate, VirIntegerType,
-    VirInterfaceEffect, VirInterfaceStorage, VirInterfaceTransfer, VirInterpreterConfig, VirLayout,
-    VirLayoutId, VirLoanAuthorityEffect, VirLoanEffect, VirLoanId, VirLoanKind, VirLoanRange,
-    VirLocation, VirLocationOrigin, VirMemoryAccess, VirMemorySchema, VirMemorySchemaError,
-    VirMemorySchemaErrorKind, VirMemoryType, VirMemoryTypeKind, VirMutability, VirNominalPath,
-    VirObjectArrayShape, VirObjectByteRange, VirObjectDestinationMode, VirObjectLeaf,
-    VirObjectPath, VirObjectPathSegment, VirObjectResourceLeaf, VirObjectShape,
-    VirObjectShapeError, VirObjectShapeErrorKind, VirObjectSourceMode, VirObjectVariantShape,
-    VirOrigin, VirOriginId, VirOriginKind, VirPointerDescription, VirPointerDomain, VirPointerKey,
-    VirPointerKind, VirPointerOffsetSemantics, VirPointerPaths, VirPointerSource, VirPredicate,
-    VirPredicateId, VirProveSemantics, VirProvenanceCatalog, VirRegionId, VirResolutionError,
+    VirContractCallBinding, VirContractFree, VirContractId, VirContractInitialization,
+    VirContractLiveness, VirContractOwnership, VirContractPermission, VirContractPointer,
+    VirContractPosition, VirContractResource, VirContractResourceId, VirContractResourceSummary,
+    VirDivergenceSemantics, VirEndianness, VirExecution, VirExecutionError, VirExecutionErrorKind,
+    VirFailureDisposition, VirField, VirFieldId, VirFieldLayout, VirFunction, VirFunctionAbi,
+    VirFunctionId, VirGeneratedReason, VirIndexBounds, VirInstruction, VirIntegerPredicate,
+    VirIntegerType, VirInterfaceEffect, VirInterfaceStorage, VirInterfaceTransfer,
+    VirInterpreterConfig, VirLayout, VirLayoutId, VirLoanAuthorityEffect, VirLoanEffect, VirLoanId,
+    VirLoanKind, VirLoanRange, VirLocation, VirLocationOrigin, VirMemoryAccess, VirMemorySchema,
+    VirMemorySchemaError, VirMemorySchemaErrorKind, VirMemoryType, VirMemoryTypeKind,
+    VirMutability, VirNominalPath, VirObjectArrayShape, VirObjectByteRange,
+    VirObjectDestinationMode, VirObjectLeaf, VirObjectPath, VirObjectPathSegment,
+    VirObjectResourceLeaf, VirObjectShape, VirObjectShapeError, VirObjectShapeErrorKind,
+    VirObjectSourceMode, VirObjectVariantShape, VirOrigin, VirOriginId, VirOriginKind,
+    VirPointerDescription, VirPointerDomain, VirPointerKey, VirPointerKind,
+    VirPointerOffsetSemantics, VirPointerPaths, VirPointerSource, VirPredicate, VirPredicateId,
+    VirProveSemantics, VirProvenanceCatalog, VirRegionId, VirResolutionError,
     VirResolutionErrorKind, VirRuntimePermission, VirRuntimePointer, VirRuntimeSemanticProfile,
     VirRuntimeValue, VirSemanticProfileId, VirSequence, VirSequenceExtent, VirSignature, VirSource,
     VirSourceId, VirSourceMap, VirSourceMapErrorKind, VirSourceSpan, VirSpecBinder,

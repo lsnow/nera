@@ -38,7 +38,7 @@ fn legacy_contracts_cannot_widen_domains_on_inputs_or_outputs() {
             panic!("pointer parameter")
         };
         *pointer = pointer.with_domain(domain);
-        let (_, checks) = check_preconditions(&state, &ids, contract);
+        let (_, checks) = check_preconditions(&state, &ids, contract, Default::default());
         assert_eq!(
             checks.iter().all(|c| c.status == ObligationStatus::Proven),
             proven
@@ -68,7 +68,7 @@ fn legacy_contracts_cannot_widen_domains_on_inputs_or_outputs() {
             object: domain,
             domain,
         });
-        let (_, checks) = check_preconditions(&state, &ids, contract);
+        let (_, checks) = check_preconditions(&state, &ids, contract, Default::default());
         assert!(checks.iter().any(|c| c.status == ObligationStatus::Unknown));
         let values: Vec<_> = ids.iter().map(|id| *state.value(*id).unwrap()).collect();
         assert!(

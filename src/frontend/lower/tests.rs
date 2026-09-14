@@ -1,4 +1,5 @@
 use super::FrontendFailure;
+mod contract_snapshots;
 mod local_assert;
 mod spec_arithmetic;
 mod spec_assertions;

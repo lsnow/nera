@@ -13,7 +13,10 @@ pub(super) fn validate(unit: &VirUnit) -> Result<(), VirValidationError> {
         let bad = || program_error(VirValidationErrorKind::InvalidSpecAssertion(assertion.id));
         let clause = specs.clause(assertion.clause).ok_or_else(bad)?;
         if assertion.id.get() as usize != index
-            || !matches!(clause.owner, crate::VirSpecClauseOwner::Prove(_))
+            || !matches!(
+                clause.owner,
+                crate::VirSpecClauseOwner::Prove(_) | crate::VirSpecClauseOwner::Contract { .. }
+            )
             || !origins_are_nested(unit, clause.origin.origin(), assertion.origin)
         {
             return Err(bad());
@@ -38,6 +41,37 @@ pub(super) fn validate(unit: &VirUnit) -> Result<(), VirValidationError> {
             binder: None,
         };
         let valid = match &assertion.kind {
+            A::Footprint { range, .. } => {
+                matches!(
+                    clause.owner,
+                    crate::VirSpecClauseOwner::Contract {
+                        position: crate::VirContractPosition::Requires,
+                        ..
+                    }
+                ) && clause.kind == crate::VirSpecClauseKind::Assertion { root: assertion.id }
+                    && range.as_ref().is_none_or(|r| {
+                        node.terms
+                            .extend([r.start_bytes.get() as usize, r.end_bytes.get() as usize]);
+                        scalar(r.start_bytes, VirSpecType::U64)
+                            && scalar(r.end_bytes, VirSpecType::U64)
+                            && unit.memory.resolves_access(r.layout)
+                            && valid_pointer(unit, clause, r.pointer, Some(r.layout))
+                    })
+            }
+            A::Disjoint { left, right } => {
+                node.terms.extend([
+                    left.start_bytes.get() as usize,
+                    left.end_bytes.get() as usize,
+                    right.start_bytes.get() as usize,
+                    right.end_bytes.get() as usize,
+                ]);
+                [left, right].iter().all(|range| {
+                    scalar(range.start_bytes, VirSpecType::U64)
+                        && scalar(range.end_bytes, VirSpecType::U64)
+                        && unit.memory.resolves_access(range.layout)
+                        && valid_pointer(unit, clause, range.pointer, Some(range.layout))
+                })
+            }
             A::Alive(pointer) => valid_pointer(unit, clause, *pointer, None),
             A::SameAllocation { left, right } => {
                 valid_pointer(unit, clause, *left, None)
@@ -67,9 +101,9 @@ pub(super) fn validate(unit: &VirUnit) -> Result<(), VirValidationError> {
                 ]);
                 let layout_ty = match unit.memory.kind(memory.layout.ty) {
                     Some(crate::VirMemoryTypeKind::Bool) => Some(VirSpecType::Bool),
-                    Some(crate::VirMemoryTypeKind::Integer(crate::VirIntegerType::U64)) => {
-                        Some(VirSpecType::U64)
-                    }
+                    Some(crate::VirMemoryTypeKind::Integer(
+                        crate::VirIntegerType::U64 | crate::VirIntegerType::Usize,
+                    )) => Some(VirSpecType::U64),
                     _ => None,
                 };
                 let mut valid = scalar(memory.start_bytes, VirSpecType::U64)

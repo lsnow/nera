@@ -98,6 +98,9 @@ pub(super) fn analyze(
                     audit.iterations += 1;
                 }
                 // Every member sees the same immutable candidate environment.
+                // analyze_one also rechecks explicit requires at every call,
+                // ensures at every return and the whole-body effect frame.
+                // No declaration is converted into an independent assumption.
                 let trial = published.trial(&candidates);
                 let mut observed = BTreeMap::new();
                 let mut complete = true;

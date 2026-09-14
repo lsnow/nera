@@ -96,6 +96,24 @@ pub struct HirSpecBinder {
 /// One-way read from runtime HIR into pure Spec HIR.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum HirSpecSnapshot {
+    /// Immutable length component of a slice input, not a pointee read.
+    Length {
+        function: HirFunctionId,
+        parameter: Option<u32>,
+        entry: bool,
+    },
+    /// Scalar cell observation, not a runtime load or a source of authority.
+    Memory {
+        function: HirFunctionId,
+        parameter: Option<u32>,
+        old: bool,
+        projection: crate::SpecMemoryProjection<super::HirFieldId>,
+    },
+    /// Immutable logical input value in ensures; never memory or permission state.
+    EntryParameter {
+        function: HirFunctionId,
+        parameter: u32,
+    },
     Local {
         function: HirFunctionId,
         local: HirLocalId,
@@ -117,7 +135,8 @@ pub struct HirSpecTerm {
 }
 
 /// Bounded Bool/U64 logic with checked arithmetic. Memory assertions remain in
-/// their separate arena; calls, `old` and arbitrary arithmetic are absent.
+/// their separate arena. EntryParameter and Memory model bounded scalar
+/// observations; general logical heaps, calls and arbitrary arithmetic remain absent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HirSpecTermKind {
     CheckedAdd {
@@ -191,7 +210,7 @@ pub enum HirSpecClauseOwner {
     LoopInvariant(HirSpecLoopInvariantId),
 }
 
-/// Typed clause root. Resource assertions are admitted only in Prove; contracts,
+/// Typed clause root. Resource assertions are admitted in Prove and contracts;
 /// trust entries and invariants retain their pure-boolean boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HirSpecClause {

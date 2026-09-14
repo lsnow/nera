@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 mod memory;
-mod separation;
+pub(super) mod separation;
 
 use crate::{
     ResolvedVirUnit, VirFunction, VirFunctionId, VirLocation, VirSpecClauseId, VirSpecClauseKind,

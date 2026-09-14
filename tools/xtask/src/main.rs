@@ -3,6 +3,7 @@ use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
+mod contracts;
 mod gate;
 mod regression;
 mod spec_local;
@@ -305,6 +306,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         "check-rust" => run_gate(&root, &gate::rust_steps()),
         "check-vir" => stage4::check(&root),
         "check-spec-local" => spec_local::run(&root),
+        "check-contracts" => contracts::run(&root),
         "stage4" => {
             stage4::check(&root)?;
             run_frontend_regression(&root)
@@ -827,6 +829,7 @@ fn print_help() {
            check-rust Run the current deduplicated Rust gate\n\
            check-vir Check checked-in VIR corpus snapshots\n\
            check-spec-local Run the stage 8.1 focused Spec/VC acceptance union\n\
+           check-contracts Run the stage 8.2 contract/frame acceptance union\n\
            generate-vir Refresh checked-in VIR corpus snapshots\n\
            stage4    Run VIR regression and frontend fuzz\n\
            check-verifier Run verifier tests and the deterministic verifier fuzz gate\n\

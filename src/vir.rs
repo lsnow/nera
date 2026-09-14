@@ -58,7 +58,8 @@ pub use provenance::{
     VirSubobject,
 };
 pub use resolve::{
-    ResolvedRuntimeVirView, ResolvedVirUnit, VirResolutionError, VirResolutionErrorKind,
+    ResolvedRuntimeVirView, ResolvedVirUnit, VirContractCallBinding, VirResolutionError,
+    VirResolutionErrorKind,
 };
 pub use semantics::{
     VIR_SYSTEM_SEMANTICS_V1, VIR_SYSTEM_SEMANTICS_V2, VirArithmeticSemantics,
@@ -121,6 +122,13 @@ pub enum VirUnitVersion {
     V20,
     /// Memory observations; resource claims name physical permission snapshots.
     V21,
+    /// Immutable entry scalar snapshots in function contracts.
+    V22,
+    /// Typed contract memory observations and heap entry snapshots.
+    V23,
+    /// Resource assertion contracts and authority-free disjoint ranges.
+    V24,
+    V25,
 }
 
 /// Stable identifier of a function within one VIR unit.
@@ -253,7 +261,7 @@ impl VirUnit {
         assign_loan_effect_origins(&mut runtime, &source_map);
         let specs = VirSpecEnvironment::implicit(&runtime);
         Self {
-            version: VirUnitVersion::V21,
+            version: VirUnitVersion::V25,
             memory,
             borrows: VirBorrowEnvironment::empty(),
             runtime,

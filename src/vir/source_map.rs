@@ -195,12 +195,14 @@ impl VirSourceMap {
 
     /// Source-aware lowering uses the same per-file origin canonicalization.
     /// Only origin tables are combined here, never separately lowered VIR units.
-    pub(crate) fn from_module_lowering(files: Vec<(VirSource, Vec<VirSourceMapEntry>)>) -> Self {
+    pub(crate) fn from_module_lowering(
+        files: Vec<(VirSource, Vec<VirSourceMapEntry>, Vec<ByteSpan>)>,
+    ) -> Self {
         let mut sources = Vec::new();
         let mut origins = Vec::new();
         let mut locations = Vec::new();
-        for (source, entries) in files {
-            let map = build_single_source_map(source, entries, Vec::new());
+        for (source, entries, spec_spans) in files {
+            let map = build_single_source_map(source, entries, spec_spans);
             let base = origins.len() as u32;
             sources.extend(map.sources);
             origins.extend(map.origins.into_iter().map(|mut origin| {
@@ -418,6 +420,10 @@ impl VirSourceMap {
                         | VirUnitVersion::V19
                         | VirUnitVersion::V20
                         | VirUnitVersion::V21
+                        | VirUnitVersion::V22
+                        | VirUnitVersion::V23
+                        | VirUnitVersion::V24
+                        | VirUnitVersion::V25
                 )
             {
                 return Err(VirSourceMapErrorKind::GeneratedReasonRequiresV6 {

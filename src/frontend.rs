@@ -254,7 +254,16 @@ pub struct AstFunction {
     pub generics: Vec<AstGenericParameter>,
     pub parameters: Vec<AstParameter>,
     pub return_type: AstType,
+    pub clauses: Vec<AstFunctionClause>,
     pub body: AstBlock,
+    pub span: ByteSpan,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AstFunctionClause {
+    pub ensures: bool,
+    pub effect: Option<bool>,
+    pub expression: AstLogicalExpression,
     pub span: ByteSpan,
 }
 
@@ -409,6 +418,12 @@ pub struct AstLogicalExpression {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AstLogicalExpressionKind {
+    ResourceRange {
+        writable: bool,
+        pointer: AstExpression,
+        start: Box<AstLogicalExpression>,
+        end: Box<AstLogicalExpression>,
+    },
     InitializedRange {
         pointer: AstExpression,
         start: Box<AstLogicalExpression>,
@@ -1076,7 +1091,7 @@ mod tests {
             second.hir().expect("second elaboration has HIR tables")
         );
         assert!(hir.validate_tables().is_ok());
-        assert_eq!(hir.version(), super::HirVersion::V16);
+        assert_eq!(hir.version(), super::HirVersion::CURRENT);
         assert_eq!(hir.modules().len(), 1);
         assert_eq!(hir.functions().len(), 1);
         assert_eq!(hir.contracts().len(), 1);
@@ -1166,10 +1181,6 @@ mod tests {
     #[test]
     fn specification_contract_and_trust_surface_remains_deferred() {
         for text in [
-            "fn f() requires forall index in 0..1: true; { return; }",
-            "fn f() ensures old(0) == 0; { return; }",
-            "fn f() reads memory[0..1]; { return; }",
-            "fn f() writes memory[0..1]; { return; }",
             "fn f() decreases 1; { return; }",
             "fn f() where T: Copy { return; }",
             "struct Item { value: u64, invariant true; } fn f() { return; }",
@@ -1190,6 +1201,22 @@ mod tests {
             assert!(output.ast().is_none(), "{text}");
             assert!(output.hir().is_none(), "{text}");
             assert!(output.vir().is_none(), "{text}");
+        }
+    }
+
+    #[test]
+    fn unsupported_contract_forms_never_produce_validated_vir() {
+        // Contracts now parse independently; rejection can occur at syntax or
+        // elaboration rather than always at the function-clause keyword.
+        for text in [
+            "fn f() requires forall index in 0..1: true; { return; }",
+            "fn f() ensures old(0) == 0; { return; }",
+            "fn f() reads memory[0..1]; { return; }",
+            "fn f() writes memory[0..1]; { return; }",
+        ] {
+            let output = analyze(text);
+            assert!(output.vir().is_none(), "{text}");
+            assert!(!output.issues().is_empty(), "{text}");
         }
     }
 

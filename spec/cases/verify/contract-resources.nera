@@ -1,0 +1,18 @@
+fn main() -> u64 {
+    let mut values = [41, 7];
+    update(&mut values[0..2]);
+    return values[0];
+}
+
+fn update(p: &mut [u64])
+requires len(p) == 2usize;
+requires writable(p, 0..1);
+requires writable(p, 1..2);
+requires disjoint(p[0..1], p[1..2]);
+requires p[0] == 41;
+ensures readable(p, 0usize..len(p));
+ensures p[0] == old(p[0]) + 1;
+{
+    p[0] = 42;
+    return;
+}

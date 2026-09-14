@@ -16,6 +16,40 @@ use numeric::Number;
 pub(in crate::verifier) enum SnapshotValues<'a> {
     State(&'a ResourceState),
     Results(&'a [AbstractValue]),
+    Bound {
+        state: &'a ResourceState,
+        snapshots: &'a BTreeMap<VirSpecSnapshot, (AbstractValue, Option<crate::AffineExpression>)>,
+    },
+}
+
+impl<'a> SnapshotValues<'a> {
+    pub(in crate::verifier) fn state(self) -> Option<&'a ResourceState> {
+        match self {
+            Self::State(state) | Self::Bound { state, .. } => Some(state),
+            Self::Results(_) => None,
+        }
+    }
+}
+
+pub(in crate::verifier) fn evaluate_contract_bool(
+    arena: &VcArena,
+    root: VcTermId,
+    values: SnapshotValues<'_>,
+    budget: &mut VcQueryBudget,
+) -> Option<AbstractBool> {
+    evaluate_value(arena, root, &BTreeSet::new(), values, None, budget).map(bool_value)
+}
+
+pub(in crate::verifier) fn evaluate_contract_u64(
+    arena: &VcArena,
+    root: VcTermId,
+    values: SnapshotValues<'_>,
+    budget: &mut VcQueryBudget,
+) -> Option<u64> {
+    match evaluate_value(arena, root, &BTreeSet::new(), values, None, budget)? {
+        PureValue::U64(number) => number.interval.exact_value(),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,7 +106,7 @@ pub(in crate::verifier) fn evaluate_bool(
     function: &VirFunction,
     budget: &mut VcQueryBudget,
 ) -> Option<AbstractBool> {
-    evaluate_value(arena, root, trusted, values, function, budget).map(bool_value)
+    evaluate_value(arena, root, trusted, values, Some(function), budget).map(bool_value)
 }
 
 pub(in crate::verifier) fn evaluate_u64(
@@ -82,7 +116,14 @@ pub(in crate::verifier) fn evaluate_u64(
     function: &VirFunction,
     budget: &mut VcQueryBudget,
 ) -> Option<u64> {
-    match evaluate_value(arena, root, &BTreeSet::new(), values, function, budget)? {
+    match evaluate_value(
+        arena,
+        root,
+        &BTreeSet::new(),
+        values,
+        Some(function),
+        budget,
+    )? {
         PureValue::U64(number) => number.interval.exact_value(),
         _ => None,
     }
@@ -111,7 +152,7 @@ pub(in crate::verifier) fn validate_witness(
             VcTerm::Binder(_) => return None,
             VcTerm::Snapshot(snapshot)
                 if matches!(
-                    snapshot_value(*snapshot, values, function),
+                    snapshot_value(*snapshot, values, Some(function)),
                     PureValue::Unavailable
                 ) =>
             {
@@ -126,7 +167,14 @@ pub(in crate::verifier) fn validate_witness(
     }
     match (
         ty,
-        evaluate_value(arena, root, &BTreeSet::new(), values, function, budget)?,
+        evaluate_value(
+            arena,
+            root,
+            &BTreeSet::new(),
+            values,
+            Some(function),
+            budget,
+        )?,
     ) {
         (crate::VirSpecType::Bool, PureValue::Bool(_))
         | (crate::VirSpecType::U64, PureValue::U64(_)) => Some(()),
@@ -139,11 +187,11 @@ fn evaluate_value(
     root: VcTermId,
     trusted: &BTreeSet<VcTermId>,
     values: SnapshotValues<'_>,
-    function: &VirFunction,
+    function: Option<&VirFunction>,
     budget: &mut VcQueryBudget,
 ) -> Option<PureValue> {
     budget.begin_query()?;
-    if let SnapshotValues::State(state) = values
+    if let Some(state) = values.state()
         && state
             .relations()
             .precision_losses()
@@ -204,7 +252,7 @@ fn evaluate_node(
     term: &VcTerm,
     evaluated: &BTreeMap<VcTermId, PureValue>,
     values: SnapshotValues<'_>,
-    function: &VirFunction,
+    function: Option<&VirFunction>,
     budget: &mut VcQueryBudget,
 ) -> Option<PureValue> {
     let child = |id: VcTermId| evaluated.get(&id).copied();
@@ -301,8 +349,20 @@ fn evaluate_node(
 fn snapshot_value(
     snapshot: VirSpecSnapshot,
     values: SnapshotValues<'_>,
-    function: &VirFunction,
+    function: Option<&VirFunction>,
 ) -> PureValue {
+    if let SnapshotValues::Bound { snapshots, .. } = values {
+        return match snapshots.get(&snapshot) {
+            Some((AbstractValue::U64(interval), expression)) => {
+                PureValue::U64(Number::new(*interval, *expression))
+            }
+            Some((AbstractValue::Bool(value), _)) => PureValue::Bool(*value),
+            _ => PureValue::Unavailable,
+        };
+    }
+    let Some(function) = function else {
+        return PureValue::Unavailable;
+    };
     let value = match (snapshot, values) {
         (
             VirSpecSnapshot::Parameter {

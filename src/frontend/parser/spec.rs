@@ -23,15 +23,27 @@ impl Parser<'_, '_> {
         }
         let mut grouped = self.at_punctuation(Punctuation::LeftParen);
         let (mut left, mut height) = if self.at_punctuation(Punctuation::Bang) {
-            let start = self.bump().span().start();
-            let (operand, height) = self.logical(6, nesting + 1)?;
-            (
-                E {
+            // Count a prefix run without consuming a parser stack frame per
+            // token. Reject at the same nesting boundary before building AST.
+            let mut starts = Vec::new();
+            while self.at_punctuation(Punctuation::Bang) {
+                starts.push(self.bump().span().start());
+                if nesting + starts.len() >= MAX_EXPRESSION_NESTING {
+                    return Err(FrontendFailure::unsupported(
+                        self.current().span(),
+                        "logical expression nesting budget exceeded",
+                    ));
+                }
+            }
+            let (mut operand, height) = self.logical(6, nesting + starts.len())?;
+            let height = height + starts.len();
+            for start in starts.into_iter().rev() {
+                operand = E {
                     span: span(start, operand.span.end()),
                     kind: K::Not(Box::new(operand)),
-                },
-                height + 1,
-            )
+                };
+            }
+            (operand, height)
         } else if self.at_punctuation(Punctuation::LeftParen) {
             let start = self.bump().span().start();
             let (mut expression, height) = self.logical(0, nesting + 1)?;
@@ -41,6 +53,43 @@ impl Parser<'_, '_> {
                 .end();
             expression.span = span(start, end);
             (expression, height + 1)
+        } else if self.current().kind() == TokenKind::Identifier
+            && matches!(self.current().raw(self.source), b"disjoint" | b"len")
+            && self.nth_significant(1).kind() == TokenKind::Punctuation(Punctuation::LeftParen)
+        {
+            let callee = self.identifier_text(self.current());
+            let begin = self.bump().span().start();
+            self.bump();
+            let mut arguments = Vec::new();
+            for index in 0..if callee == "len" { 1 } else { 2 } {
+                if index != 0 {
+                    self.expect_punctuation(Punctuation::Comma, "disjoint requires two ranges")?;
+                }
+                let value = if self.current().kind() == TokenKind::Keyword(Keyword::Result) {
+                    self.parse_name_or_place(self.current(), nesting + 1, true)?
+                } else {
+                    self.parse_primary(nesting + 1, false)?
+                };
+                arguments.push(value);
+            }
+            let end = self
+                .expect_punctuation(
+                    Punctuation::RightParen,
+                    "expected `)` after disjoint ranges",
+                )?
+                .span()
+                .end();
+            let span = span(begin, end);
+            (
+                E {
+                    span,
+                    kind: K::Value(AstExpression {
+                        span,
+                        kind: AstExpressionKind::Call { callee, arguments },
+                    }),
+                },
+                1,
+            )
         } else if self.current().kind() == TokenKind::Identifier
             && self.current().raw(self.source) == b"alive"
             && self.nth_significant(1).kind() == TokenKind::Punctuation(Punctuation::LeftParen)
@@ -98,12 +147,20 @@ impl Parser<'_, '_> {
                 1,
             )
         } else if self.current().kind() == TokenKind::Identifier
-            && self.current().raw(self.source) == b"initialized"
+            && matches!(
+                self.current().raw(self.source),
+                b"initialized" | b"readable" | b"writable"
+            )
             && self.nth_significant(1).kind() == TokenKind::Punctuation(Punctuation::LeftParen)
         {
+            let builtin = self.current().raw(self.source).to_vec();
             let begin = self.bump().span().start();
             self.bump();
-            let pointer = self.parse_primary(nesting + 1, false)?;
+            let pointer = if self.current().kind() == TokenKind::Keyword(Keyword::Result) {
+                self.parse_name_or_place(self.current(), nesting + 1, true)?
+            } else {
+                self.parse_primary(nesting + 1, false)?
+            };
             if self.at_punctuation(Punctuation::Comma) {
                 self.bump();
                 let (start, a) = self.logical(0, nesting + 1)?;
@@ -122,15 +179,30 @@ impl Parser<'_, '_> {
                 (
                     E {
                         span: span(begin, finish),
-                        kind: K::InitializedRange {
-                            pointer,
-                            start: Box::new(start),
-                            end: Box::new(end),
+                        kind: if builtin == b"initialized" {
+                            K::InitializedRange {
+                                pointer,
+                                start: Box::new(start),
+                                end: Box::new(end),
+                            }
+                        } else {
+                            K::ResourceRange {
+                                writable: builtin == b"writable",
+                                pointer,
+                                start: Box::new(start),
+                                end: Box::new(end),
+                            }
                         },
                     },
                     a.max(b) + 1,
                 )
             } else {
+                if builtin != b"initialized" {
+                    return Err(FrontendFailure::unsupported(
+                        span(begin, pointer.span.end()),
+                        "readable/writable require an explicit half-open element range",
+                    ));
+                }
                 let finish = self
                     .expect_punctuation(
                         Punctuation::RightParen,
@@ -153,6 +225,33 @@ impl Parser<'_, '_> {
                     1,
                 )
             }
+        } else if self.current().kind() == TokenKind::Punctuation(Punctuation::Star)
+            && self.nth_significant(1).kind() == TokenKind::Keyword(Keyword::Result)
+        {
+            let start = self.bump().span().start();
+            let end = self.bump().span().end();
+            let span = super::span(start, end);
+            (
+                E {
+                    span,
+                    kind: K::Value(AstExpression {
+                        span,
+                        kind: AstExpressionKind::Load {
+                            pointer: "result".into(),
+                        },
+                    }),
+                },
+                1,
+            )
+        } else if self.current().kind() == TokenKind::Keyword(Keyword::Result) {
+            let value = self.parse_name_or_place(self.current(), nesting, true)?;
+            (
+                E {
+                    span: value.span,
+                    kind: K::Value(value),
+                },
+                1,
+            )
         } else {
             let value = self.parse_primary(nesting, false)?;
             (

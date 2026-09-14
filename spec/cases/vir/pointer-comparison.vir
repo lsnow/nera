@@ -1,4 +1,4 @@
-vir-unit-v21
+vir-unit-v25
 memory {
 target little pointer 8/8 usize 8/8
 type type0 = bool layout layout0 capabilities copy/trivial-drop/resource-free/sized

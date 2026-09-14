@@ -126,8 +126,8 @@ fn resource_schema_lowering_preserves_occurrences_origins_and_runtime() {
     let plain = lower_test(&hir_from_tables(plain).unwrap()).unwrap();
     let hir = hir_from_tables(tables).unwrap();
     let unit = lower_test(&hir).unwrap();
-    assert_eq!(hir.version(), crate::HirVersion::V16);
-    assert_eq!(unit.as_unit().version, crate::VirUnitVersion::V21);
+    assert_eq!(hir.version(), crate::HirVersion::V20);
+    assert_eq!(unit.as_unit().version, crate::VirUnitVersion::V25);
     assert_eq!(unit.runtime().stable_dump(), plain.runtime().stable_dump());
     assert_eq!(unit.as_unit().memory, plain.as_unit().memory);
     let specs = &unit.as_unit().specs;
@@ -297,7 +297,7 @@ fn vir_resource_schema_independently_rejects_mutations() {
 }
 
 #[test]
-fn resource_contracts_and_trust_are_not_opened_by_schema() {
+fn resource_contracts_are_representable_but_trust_is_not_forged() {
     let mut t = fixture();
     let function = t.specs.proves[0].function;
     let contract = t.functions[function.index()].contract;
@@ -309,7 +309,9 @@ fn resource_contracts_and_trust_are_not_opened_by_schema() {
         .clauses
         .push(HirSpecClauseId::new(0));
     t.specs.proves.clear();
-    assert!(hir_from_tables(t).is_err());
+    // 8.2 opens typed resource clauses; representation is not a proof that
+    // any caller satisfies the requirement.
+    assert!(hir_from_tables(t).is_ok());
     let unit = lower_test(&hir_from_tables(fixture()).unwrap()).unwrap();
     let mut t = unit.as_unit().clone();
     let clause = t.specs.assertions()[0].clause;
@@ -327,7 +329,7 @@ fn resource_contracts_and_trust_are_not_opened_by_schema() {
     };
     t.specs.contract_mut(contract).unwrap().clauses.push(clause);
     t.specs.proves_mut().clear();
-    assert!(t.validate().is_err());
+    assert!(t.validate().is_ok());
 
     let mut t = fixture();
     let prove = t.specs.proves.remove(0);

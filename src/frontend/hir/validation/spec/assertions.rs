@@ -8,23 +8,16 @@ pub(super) fn validate(program: &HirProgram) -> Result<(), HirProgramValidationE
     if specs.assertions.is_empty() {
         return Ok(());
     }
-    require(
-        matches!(
-            program.version(),
-            crate::HirVersion::V15 | crate::HirVersion::V16
-        ),
-        "spec assertion",
-        0,
-        "requires HIR V15",
-    )?;
     let mut nodes = Vec::new();
     for (index, assertion) in specs.assertions.iter().enumerate() {
         let clause = specs.clauses.get(assertion.clause.index());
         require(
             assertion.id.index() == index
                 && clause.is_some_and(|clause| {
-                    matches!(clause.owner, HirSpecClauseOwner::Prove(_))
-                        && span_contains(clause.span, assertion.span)
+                    matches!(
+                        clause.owner,
+                        HirSpecClauseOwner::Prove(_) | HirSpecClauseOwner::Contract { .. }
+                    ) && span_contains(clause.span, assertion.span)
                 }),
             "spec assertion",
             index,
@@ -41,7 +34,12 @@ pub(super) fn validate(program: &HirProgram) -> Result<(), HirProgramValidationE
                 matches!(
                     (program.type_kind(t.ty), bool_ty),
                     (Some(HirTypeKind::Bool), true)
-                        | (Some(HirTypeKind::Integer(HirIntegerType::U64)), false)
+                        | (
+                            Some(HirTypeKind::Integer(
+                                HirIntegerType::U64 | HirIntegerType::Usize
+                            )),
+                            false
+                        )
                 )
             })
         };
@@ -58,6 +56,52 @@ pub(super) fn validate(program: &HirProgram) -> Result<(), HirProgramValidationE
             binder: None,
         };
         let valid = match &assertion.kind {
+            SpecAssertionKind::Footprint { range, .. } => {
+                let owner = clause.is_some_and(|c| {
+                    matches!(
+                        c.owner,
+                        HirSpecClauseOwner::Contract {
+                            position: HirSpecContractPosition::Requires,
+                            ..
+                        }
+                    ) && c.root == HirSpecRoot::Assertion(assertion.id)
+                });
+                owner
+                    && range.as_ref().is_none_or(|r| {
+                        node.terms
+                            .extend([r.start_bytes.index(), r.end_bytes.index()]);
+                        scalar(r.start_bytes, false)
+                            && scalar(r.end_bytes, false)
+                            && is_spec_scalar_type(program, r.layout)
+                            && valid_pointer(
+                                program,
+                                assertion.clause,
+                                r.pointer,
+                                Some(r.layout),
+                                false,
+                            )
+                    })
+            }
+            SpecAssertionKind::Disjoint { left, right } => {
+                node.terms.extend([
+                    left.start_bytes.index(),
+                    left.end_bytes.index(),
+                    right.start_bytes.index(),
+                    right.end_bytes.index(),
+                ]);
+                [left, right].iter().all(|range| {
+                    scalar(range.start_bytes, false)
+                        && scalar(range.end_bytes, false)
+                        && is_spec_scalar_type(program, range.layout)
+                        && valid_pointer(
+                            program,
+                            assertion.clause,
+                            range.pointer,
+                            Some(range.layout),
+                            false,
+                        )
+                })
+            }
             SpecAssertionKind::Alive(pointer) => {
                 valid_pointer(program, assertion.clause, *pointer, None, false)
             }
@@ -210,6 +254,9 @@ fn valid_pointer(
     authority: bool,
 ) -> bool {
     let ty = match snapshot {
+        HirSpecSnapshot::EntryParameter { .. }
+        | HirSpecSnapshot::Memory { .. }
+        | HirSpecSnapshot::Length { .. } => return false,
         HirSpecSnapshot::Local { function, local } => program
             .function_by_id(function)
             .and_then(|f| f.body())
@@ -231,7 +278,12 @@ fn valid_pointer(
             | HirTypeKind::Reference { pointee, .. }
             | HirTypeKind::Own { pointee },
         ) => *pointee,
+        Some(HirTypeKind::Slice { element, .. }) => *element,
         _ => return false,
+    };
+    let pointee = match program.type_kind(pointee) {
+        Some(HirTypeKind::Slice { element, .. }) => *element,
+        _ => pointee,
     };
     layout.is_none_or(|layout| pointee == layout)
         && validate_spec_snapshot(

@@ -701,6 +701,16 @@ impl<'environment> TransferBuilder<'environment> {
                 && source_mask.possible_value_bytes == source_mask.guaranteed_value_bytes
                 && destination_mask.possible_value_bytes == destination_mask.guaranteed_value_bytes
                 && source_mask.possible_value_bytes == destination_mask.possible_value_bytes;
+        // Preserving initialized/valid bytes does not preserve their contents.
+        if let Some(id) = destination.allocation_id
+            && let Some(allocation) = self.state.allocation_mut(id)
+        {
+            if let Some(range) = destination.envelope {
+                allocation.forget_scalar_contents(range);
+            } else {
+                allocation.clear_scalar_contents();
+            }
+        }
         // A complete trivial replacement preserves initialization and validity
         // even when the destination offset is an interval: every possible
         // selected object was required to be valid before the operation and
@@ -737,6 +747,19 @@ impl<'environment> TransferBuilder<'environment> {
             &source_mask,
             effect.source_mode,
         )?;
+        if self.obligations.iter().all(|o| o.is_proven())
+            && let (Some(source_base), Some(destination_base), Some(original), Some(id)) = (
+                source.pointer.offset_bytes().exact_value(),
+                destination.pointer.offset_bytes().exact_value(),
+                source.allocation.as_ref(),
+                destination.allocation_id,
+            )
+            && let Ok(selected) =
+                ByteRange::from_start_and_length(source_base, source.shape.size_bytes())
+            && let Some(allocation) = self.state.allocation_mut(id)
+        {
+            allocation.copy_scalar_contents(original, selected, destination_base);
+        }
         if matches!(effect.source_mode, VirObjectSourceMode::Move) {
             self.apply_object_deinitialize(&source, &source_mask)?;
         }

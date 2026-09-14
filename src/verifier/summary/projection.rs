@@ -890,7 +890,7 @@ fn provenance(value: AbstractValue) -> AbstractProvenance {
 /// Only unconditional equalities: signature slots, literal definitions, and a
 /// block parameter whose EVERY incoming argument names the same expression.
 /// No path-refined constant is substituted into its own guard.
-fn aliases(function: &VirFunction) -> BTreeMap<VirValueId, ScalarTerm> {
+pub(crate) fn aliases(function: &VirFunction) -> BTreeMap<VirValueId, ScalarTerm> {
     let entry = function
         .blocks
         .iter()

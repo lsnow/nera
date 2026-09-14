@@ -61,7 +61,7 @@ const NATIVE_FILTERS: &[&str] = &[
     "spec_local_arena_preserves_native_storage_and_release_ledger",
 ];
 
-fn test_commands() -> Vec<Vec<&'static str>> {
+pub(super) fn test_commands() -> Vec<Vec<&'static str>> {
     let mut library = vec!["test", "--quiet", "--lib", "--"];
     library.extend(LIBRARY_FILTERS);
     let mut integrations = vec!["test", "--quiet"];

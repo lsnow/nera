@@ -4,6 +4,41 @@ use crate::Punctuation as P;
 use crate::frontend::{AstLogicalExpression, AstLogicalExpressionKind as L};
 
 impl Elaborator {
+    pub(super) fn elaborate_function_clauses(
+        &mut self,
+        clauses: &[super::super::AstFunctionClause],
+    ) -> Result<(), FrontendFailure> {
+        let function = self.current_function.expect("function contract");
+        let contract = self.function_declarations[function.index()].contract;
+        for clause in clauses {
+            let position = if clause.ensures {
+                HirSpecContractPosition::Ensures
+            } else {
+                HirSpecContractPosition::Requires
+            };
+            let id = HirSpecClauseId::new(self.specs.clauses.len() as u32);
+            self.contract_position = Some(position);
+            let root = if let Some(write) = clause.effect {
+                self.contract_footprint(id, &clause.expression, write)
+            } else {
+                self.contract_root(id, &clause.expression)
+            };
+            self.contract_position = None;
+            let root = root?;
+            self.specs.clauses.push(HirSpecClause {
+                id,
+                owner: HirSpecClauseOwner::Contract { contract, position },
+                location: if clause.ensures {
+                    HirSpecLocation::FunctionResult { function }
+                } else {
+                    HirSpecLocation::FunctionEntry { function }
+                },
+                root,
+                span: clause.span,
+            });
+        }
+        Ok(())
+    }
     pub(super) fn elaborate_assert(
         &mut self,
         expression: &AstLogicalExpression,
@@ -91,7 +126,7 @@ impl Elaborator {
         Ok(HirStatementKind::Prove { prove })
     }
 
-    fn spec_term(
+    pub(super) fn spec_term(
         &mut self,
         clause: HirSpecClauseId,
         ty: HirTypeId,
@@ -109,7 +144,7 @@ impl Elaborator {
         id
     }
 
-    fn logical_term(
+    pub(super) fn logical_term(
         &mut self,
         clause: HirSpecClauseId,
         expression: &AstLogicalExpression,
@@ -123,7 +158,7 @@ impl Elaborator {
             ));
         }
         let (ty, kind) = match &expression.kind {
-            L::InitializedRange { .. } => {
+            L::InitializedRange { .. } | L::ResourceRange { .. } => {
                 return Err(FrontendFailure::unsupported(
                     span,
                     "resource assertions cannot be operands of Bool connectives",
@@ -345,12 +380,12 @@ impl Elaborator {
         Ok((pointer, pointee))
     }
 
-    fn initialized_stride(
+    pub(super) fn initialized_stride(
         &self,
         pointee: HirTypeId,
         span: ByteSpan,
     ) -> Result<u64, FrontendFailure> {
-        if pointee == self.core_types.u64_ {
+        if pointee == self.core_types.u64_ || pointee == self.core_types.usize_ {
             Ok(8)
         } else if pointee == self.core_types.bool_ {
             Ok(1)
@@ -385,6 +420,29 @@ impl Elaborator {
                 (self.core_types.bool_, HirSpecTermKind::Bool(*value))
             }
             AstExpressionKind::Name(name) => {
+                if name == "result" {
+                    if self.contract_position != Some(HirSpecContractPosition::Ensures)
+                        || ![
+                            self.core_types.bool_,
+                            self.core_types.u64_,
+                            self.core_types.usize_,
+                        ]
+                        .contains(&self.return_type)
+                    {
+                        return Err(FrontendFailure::unsupported(
+                            span,
+                            "result requires a scalar function postcondition",
+                        ));
+                    }
+                    return Ok(self.spec_term(
+                        clause,
+                        self.return_type,
+                        HirSpecTermKind::Snapshot(HirSpecSnapshot::Result {
+                            function: self.current_function.unwrap(),
+                        }),
+                        span,
+                    ));
+                }
                 let binding = self.lookup(name, span)?;
                 if ![
                     self.core_types.bool_,
@@ -400,11 +458,83 @@ impl Elaborator {
                 }
                 (
                     binding.value.ty,
-                    HirSpecTermKind::Snapshot(HirSpecSnapshot::Local {
-                        function: self.current_function.unwrap(),
-                        local: binding.local,
+                    HirSpecTermKind::Snapshot(match self.contract_position {
+                        Some(HirSpecContractPosition::Ensures) => HirSpecSnapshot::EntryParameter {
+                            function: self.current_function.unwrap(),
+                            parameter: binding.local.get(),
+                        },
+                        None | Some(HirSpecContractPosition::Requires) => HirSpecSnapshot::Local {
+                            function: self.current_function.unwrap(),
+                            local: binding.local,
+                        },
                     }),
                 )
+            }
+            AstExpressionKind::Load { pointer } if self.contract_position.is_some() => {
+                return self.contract_memory_term(clause, pointer, &[], false, span);
+            }
+            AstExpressionKind::Place(place) if self.contract_position.is_some() => {
+                return self.contract_memory_term(
+                    clause,
+                    &place.base,
+                    &place.projections,
+                    false,
+                    span,
+                );
+            }
+            AstExpressionKind::Call { callee, arguments }
+                if callee == "len" && self.contract_position.is_some() =>
+            {
+                return self.contract_length(clause, arguments, span);
+            }
+            AstExpressionKind::Call { callee, arguments } if callee == "old" => {
+                if self.contract_position == Some(HirSpecContractPosition::Ensures)
+                    && let [
+                        AstExpression {
+                            kind: AstExpressionKind::Call { callee, arguments },
+                            ..
+                        },
+                    ] = arguments.as_slice()
+                    && callee == "len"
+                    && matches!(arguments.as_slice(), [AstExpression { kind: AstExpressionKind::Name(name), .. }] if name != "result")
+                {
+                    return self.contract_length(clause, arguments, span);
+                }
+                if self.contract_position == Some(HirSpecContractPosition::Ensures)
+                    && let [
+                        AstExpression {
+                            kind: AstExpressionKind::Load { pointer },
+                            ..
+                        },
+                    ] = arguments.as_slice()
+                {
+                    return self.contract_memory_term(clause, pointer, &[], true, span);
+                }
+                if self.contract_position == Some(HirSpecContractPosition::Ensures)
+                    && let [
+                        AstExpression {
+                            kind: AstExpressionKind::Place(place),
+                            ..
+                        },
+                    ] = arguments.as_slice()
+                {
+                    return self.contract_memory_term(
+                        clause,
+                        &place.base,
+                        &place.projections,
+                        true,
+                        span,
+                    );
+                }
+                if self.contract_position != Some(HirSpecContractPosition::Ensures)
+                    || !matches!(arguments.as_slice(), [AstExpression { kind: AstExpressionKind::Name(name), .. }] if name != "result")
+                {
+                    return Err(FrontendFailure::unsupported(
+                        span,
+                        "old requires one scalar input parameter in ensures",
+                    ));
+                }
+                return self.local_spec_term(clause, &arguments[0]);
             }
             _ => {
                 return Err(FrontendFailure::unsupported(
@@ -416,7 +546,7 @@ impl Elaborator {
         Ok(self.spec_term(clause, ty, kind, span))
     }
 
-    fn spec_words(
+    pub(super) fn spec_words(
         &self,
         left: HirSpecTermId,
         right: HirSpecTermId,
@@ -433,5 +563,89 @@ impl Elaborator {
                 "logical arithmetic requires U64 operands",
             ))
         }
+    }
+
+    fn contract_memory_term(
+        &mut self,
+        clause: HirSpecClauseId,
+        name: &str,
+        projections: &[crate::frontend::AstPlaceProjection],
+        old: bool,
+        span: ByteSpan,
+    ) -> Result<HirSpecTermId, FrontendFailure> {
+        let fail = || {
+            FrontendFailure::unsupported(
+                span,
+                "contract memory observations require a scalar pointer parameter or result; old(result) is not defined",
+            )
+        };
+        let (parameter, ty) = if name == "result" {
+            if old || self.contract_position != Some(HirSpecContractPosition::Ensures) {
+                return Err(fail());
+            }
+            (None, self.return_type)
+        } else {
+            let binding = self.lookup(name, span)?;
+            (Some(binding.local.get()), binding.value.ty)
+        };
+        let pointee = match self.type_definition(ty).map(|ty| &ty.kind) {
+            Some(HirTypeKind::Own { pointee } | HirTypeKind::Reference { pointee, .. }) => *pointee,
+            Some(HirTypeKind::Slice { .. }) => ty,
+            _ => return Err(fail()),
+        };
+        use crate::frontend::AstPlaceProjection as A;
+        use crate::{SpecMemoryIndex as I, SpecMemoryProjection as M};
+        let (pointee, projection) = match projections {
+            [] => (pointee, M::Cell),
+            [A::Field { name, .. }] => {
+                let field = self
+                    .fields
+                    .iter()
+                    .find(|f| f.owner == pointee && f.name == *name)
+                    .ok_or_else(fail)?;
+                (field.ty, M::Field(field.id))
+            }
+            [A::Index { index, .. }] => {
+                let element = match self.type_definition(pointee).map(|t| &t.kind) {
+                    Some(
+                        HirTypeKind::Array { element, .. } | HirTypeKind::Slice { element, .. },
+                    ) => *element,
+                    _ => return Err(fail()),
+                };
+                let index = match &index.kind {
+                    AstExpressionKind::Integer { value, .. } => I::Constant(*value),
+                    AstExpressionKind::Name(name) => {
+                        let binding = self.lookup(name, index.span)?;
+                        if binding.value.ty != self.core_types.usize_ {
+                            return Err(fail());
+                        }
+                        I::Parameter(binding.local.get())
+                    }
+                    _ => return Err(fail()),
+                };
+                (element, M::Index(index))
+            }
+            _ => return Err(fail()),
+        };
+        if ![
+            self.core_types.bool_,
+            self.core_types.u64_,
+            self.core_types.usize_,
+        ]
+        .contains(&pointee)
+        {
+            return Err(fail());
+        }
+        Ok(self.spec_term(
+            clause,
+            pointee,
+            HirSpecTermKind::Snapshot(HirSpecSnapshot::Memory {
+                function: self.current_function.unwrap(),
+                parameter,
+                old,
+                projection,
+            }),
+            span,
+        ))
     }
 }

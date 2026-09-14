@@ -20,6 +20,9 @@ use super::transfer::ObligationStatus;
 mod abi;
 #[cfg(test)]
 mod domain_tests;
+pub(super) mod frame;
+pub(super) mod pure;
+mod resources;
 
 /// Symbolic allocation name scoped to one function contract.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -186,6 +189,9 @@ impl ContractState {
 /// Checked, signature-bound function contract.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct InstantiatedContract {
+    pub(super) pure: Option<pure::PureContract>,
+    pub(super) resources: Option<resources::ResourceContract>,
+    has_frame: bool,
     id: VirContractId,
     signature: VirSignature,
     requires: ContractState,
@@ -194,6 +200,12 @@ pub(super) struct InstantiatedContract {
 }
 
 impl InstantiatedContract {
+    pub(super) fn has_explicit_contract(&self) -> bool {
+        self.pure.is_some() || self.resources.is_some() || self.has_frame
+    }
+    pub(super) fn observes_memory(&self) -> bool {
+        self.resources.is_some() || self.pure.as_ref().is_some_and(|p| p.observes_memory())
+    }
     pub(super) fn mapped_postcondition_instances(
         &self,
         mapping: &ResourceInstantiation,
@@ -213,6 +225,9 @@ impl InstantiatedContract {
         validate_state(&requires, &signature.parameters, ContractPosition::Requires)?;
         validate_state(&ensures, &signature.results, ContractPosition::Ensures)?;
         Ok(Self {
+            pure: None,
+            resources: None,
+            has_frame: false,
             id,
             signature,
             requires,
@@ -299,11 +314,24 @@ pub(super) fn instantiate_contracts(
                 VirContractPosition::Requires => &mut requires,
                 VirContractPosition::Ensures => &mut ensures,
             };
-            instantiate_clause(contract, clause, origin, state)?;
+            if !matches!(
+                clause.kind,
+                VirSpecClauseKind::Logic { .. } | VirSpecClauseKind::Assertion { .. }
+            ) {
+                instantiate_clause(contract, clause, origin, state)?;
+            }
         }
         abi::install_value_ranges(program, contract, &mut requires, &mut ensures)?;
         let mut instantiated =
             InstantiatedContract::new(contract.id, contract.signature.clone(), requires, ensures)?;
+        instantiated.pure = pure::PureContract::new(program, contract)?;
+        instantiated.resources = resources::ResourceContract::new(program, contract)?;
+        instantiated.has_frame = contract.clauses.iter().any(|id| {
+            matches!(program.as_unit().specs.clause(*id).unwrap().kind,
+                VirSpecClauseKind::Assertion { root } if matches!(
+                    program.as_unit().specs.assertions()[root.get() as usize].kind,
+                    crate::SpecAssertionKind::Footprint { .. }))
+        });
         instantiated.borrow_parameters = program
             .runtime()
             .borrows
@@ -612,6 +640,9 @@ pub(super) fn entry_state(
         };
         state.define_value(id, value)?;
     }
+    if let Some(pure) = &contract.pure {
+        pure.install_entry(&mut state, entry_parameters)?;
+    }
     Ok(state)
 }
 
@@ -619,12 +650,35 @@ pub(super) fn check_preconditions(
     state: &ResourceState,
     arguments: &[VirValueId],
     contract: &InstantiatedContract,
+    config: crate::CfgAnalysisConfig,
 ) -> (ResourceInstantiation, Vec<ContractCheck>) {
     let actual = arguments
         .iter()
         .map(|id| state.value(*id).copied())
         .collect::<Vec<_>>();
-    check_contract_state(state, &actual, &contract.requires, BTreeMap::new())
+    let (mapping, mut checks) =
+        check_contract_state(state, &actual, &contract.requires, BTreeMap::new());
+    if let Some(pure) = &contract.pure {
+        checks.extend(pure.check(
+            state,
+            state,
+            arguments,
+            &[],
+            VirContractPosition::Requires,
+            config.relation_limits,
+        ));
+    }
+    if let Some(resources) = &contract.resources {
+        checks.extend(resources.check(
+            state,
+            state,
+            arguments,
+            &[],
+            VirContractPosition::Requires,
+            config,
+        ));
+    }
+    (mapping, checks)
 }
 
 pub(super) fn apply_postconditions(

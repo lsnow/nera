@@ -130,6 +130,18 @@ pub struct VirSpecBinder {
 /// A one-way snapshot of a runtime signature slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum VirSpecSnapshot {
+    /// A scalar pointee of one typed ABI pointer binding. None selects result.
+    Memory {
+        function: VirFunctionId,
+        parameter: Option<u32>,
+        old: bool,
+        projection: crate::SpecMemoryProjection<super::VirFieldId>,
+    },
+    /// Immutable scalar entry value, owned only by a function ensures clause.
+    EntryParameter {
+        function: VirFunctionId,
+        slot: u32,
+    },
     Parameter {
         function: VirFunctionId,
         slot: u32,

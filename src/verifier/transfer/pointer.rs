@@ -805,6 +805,7 @@ impl<'environment> TransferBuilder<'environment> {
         );
 
         if matches!(effect, MemoryEffect::WriteValue) {
+            self.forget_uncertain_scalar_write(pointer, access_bytes);
             if let (Some(id), Some(possible)) = (allocation_id, envelope)
                 && let Some(allocation) = self.state.allocation_mut(id)
                 && possible.end() <= allocation.size_bytes()

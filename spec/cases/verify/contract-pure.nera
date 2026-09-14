@@ -1,0 +1,14 @@
+fn main() -> u64 {
+    let first = successor(40);
+    assert first == 41;
+    let second = successor(first);
+    assert second == 42;
+    return second;
+}
+
+fn successor(value: u64) -> u64
+requires value <= 41;
+ensures result == old(value) + 1;
+{
+    return value + 1;
+}

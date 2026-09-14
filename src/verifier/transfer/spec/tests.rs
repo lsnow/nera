@@ -70,6 +70,48 @@ fn check(state: &ResourceState, query: SpecMemoryQuery) -> ObligationStatus {
 }
 
 #[test]
+fn scalar_observation_is_bounded_and_does_not_restore_authority() {
+    let mut s = state();
+    let access = VirMemoryAccess::core_u64();
+    let bytes = ByteRange::new(0, 8).unwrap();
+    let a = s.allocation_mut(allocation_id()).unwrap();
+    a.mark_initialized(bytes).unwrap();
+    a.mark_valid(bytes).unwrap();
+    a.record_scalar_content(bytes, access, AbstractValue::U64(U64Interval::exact(42)));
+    let historical = s.clone();
+    let memory = VirMemorySchema::core_u64();
+    let q = query(true, true);
+    assert_eq!(check(&s, q), ObligationStatus::Proven);
+    assert_eq!(
+        spec_scalar_contents(&s, &memory, q, &mut VcQueryBudget::new(VcLimits::default())),
+        Some(vec![AbstractValue::U64(U64Interval::exact(42))])
+    );
+    let mut budget = VcQueryBudget::new(VcLimits {
+        max_query_steps: 0,
+        ..VcLimits::default()
+    });
+    assert_eq!(spec_scalar_contents(&s, &memory, q, &mut budget), None);
+    assert!(budget.exhausted);
+    let mut budget = VcQueryBudget::new(VcLimits {
+        max_queries: 0,
+        ..VcLimits::default()
+    });
+    assert_eq!(
+        query_contract_memory(&s, &memory, q, access, &mut budget),
+        None
+    );
+    assert!(budget.exhausted);
+    assert_eq!(s, historical, "observation cannot mutate state");
+    s.allocation_mut(allocation_id()).unwrap().mark_dead();
+    assert_eq!(check(&s, q), ObligationStatus::Refuted);
+    assert_eq!(
+        spec_scalar_contents(&s, &memory, q, &mut VcQueryBudget::new(VcLimits::default())),
+        None
+    );
+    assert_eq!(check(&historical, q), ObligationStatus::Proven);
+}
+
+#[test]
 fn state_observation_is_not_authority_or_valid_representation() {
     use ObligationStatus::{Proven as P, Refuted as R, Unknown as U};
     let mut s = state();

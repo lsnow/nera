@@ -1,14 +1,14 @@
 use nera::{
     ByteSpan, CfgAnalysisConfig, ObligationStatus, SpannedVirInstruction, SpannedVirTerminator,
-    VerificationError, VerifierDiagnosticKind, VerifierFindingSite, VerifierSpecEntity,
-    VirBasicBlock, VirBlockId, VirBlockTarget, VirConstant, VirContractId, VirContractPosition,
-    VirFunction, VirFunctionId, VirInstruction, VirLocation, VirMemorySchema, VirPredicate,
-    VirPredicateId, VirSignature, VirSpecBinder, VirSpecBinderId, VirSpecBinderOwner,
-    VirSpecClause, VirSpecClauseId, VirSpecClauseKind, VirSpecClauseOrigin, VirSpecClauseOwner,
-    VirSpecLocation, VirSpecLoopInvariant, VirSpecLoopInvariantId, VirSpecProve, VirSpecProveId,
-    VirSpecSnapshot, VirSpecTables, VirSpecTerm, VirSpecTermId, VirSpecTermKind, VirSpecType,
-    VirTerminator, VirTrustEntry, VirTrustEntryId, VirTrustPolicyKind, VirTrustScope, VirType,
-    VirUnit, VirValidationErrorKind, VirValue, VirValueId, verify_program,
+    VerifierDiagnosticKind, VerifierFindingSite, VerifierSpecEntity, VirBasicBlock, VirBlockId,
+    VirBlockTarget, VirConstant, VirContractId, VirContractPosition, VirFunction, VirFunctionId,
+    VirInstruction, VirLocation, VirMemorySchema, VirPredicate, VirPredicateId, VirSignature,
+    VirSpecBinder, VirSpecBinderId, VirSpecBinderOwner, VirSpecClause, VirSpecClauseId,
+    VirSpecClauseKind, VirSpecClauseOrigin, VirSpecClauseOwner, VirSpecLocation,
+    VirSpecLoopInvariant, VirSpecLoopInvariantId, VirSpecProve, VirSpecProveId, VirSpecSnapshot,
+    VirSpecTables, VirSpecTerm, VirSpecTermId, VirSpecTermKind, VirSpecType, VirTerminator,
+    VirTrustEntry, VirTrustEntryId, VirTrustPolicyKind, VirTrustScope, VirType, VirUnit,
+    VirValidationErrorKind, VirValue, VirValueId, verify_program,
 };
 
 fn span() -> ByteSpan {
@@ -710,19 +710,20 @@ fn trust_entries_are_scoped_audited_and_never_runtime_instructions() {
 }
 
 #[test]
-fn logical_contract_is_typed_but_fails_closed_until_contract_rules_exist() {
+fn logical_contract_is_checked_and_orphan_ownership_is_rejected() {
     let mut unit = raw_identity_unit();
     add_result_contract_clause(&mut unit);
     let validated = unit
         .into_validated()
         .expect("logical result clause validates");
 
-    assert_eq!(
-        verify_program(
+    assert!(
+        !verify_program(
             &validated.resolve().expect("verification input resolves"),
             CfgAnalysisConfig::default()
-        ),
-        Err(VerificationError::ContractInstantiation)
+        )
+        .unwrap()
+        .is_memory_checked_core0()
     );
 
     let mut orphan = validated.as_unit().clone();
@@ -739,6 +740,40 @@ fn logical_contract_is_typed_but_fails_closed_until_contract_rules_exist() {
             .kind(),
         VirValidationErrorKind::InvalidSpecClauseOwner(_)
     ));
+}
+
+#[test]
+fn entry_logic_cannot_borrow_a_legacy_scalar_assumption() {
+    let mut raw = raw_identity_unit();
+    add_result_contract_clause(&mut raw);
+    let binder = raw
+        .specs
+        .contract(VirContractId::new(0))
+        .unwrap()
+        .binder(VirContractPosition::Requires, 0)
+        .unwrap();
+    let origin = origin(&raw);
+    raw.specs
+        .add_contract_clause(
+            VirContractId::new(0),
+            VirContractPosition::Requires,
+            VirSpecClauseOrigin::Explicit { origin },
+            VirSpecClauseKind::U64Range {
+                binder,
+                lower: 10,
+                upper: 10,
+            },
+        )
+        .unwrap();
+    let unit = raw.into_validated().unwrap();
+    let report = verify_program(&unit.resolve().unwrap(), Default::default()).unwrap();
+    assert!(!report.is_memory_checked_core0());
+    assert!(
+        report
+            .diagnostics()
+            .iter()
+            .any(|d| d.message().contains("whole-program entry"))
+    );
 }
 
 #[test]

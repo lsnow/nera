@@ -43,8 +43,74 @@ fn analyze_one(
         error,
     })?;
     let mut postconditions = Vec::new();
+    let parameters = function
+        .blocks
+        .iter()
+        .find(|b| b.id == function.entry)
+        .unwrap()
+        .parameters
+        .iter()
+        .map(|p| p.id)
+        .collect::<Vec<_>>();
+    if function.id == program.runtime().entry {
+        let (_, checks) = super::contract::check_preconditions(
+            cfg.function_entry_state(),
+            &parameters,
+            contract,
+            config,
+        );
+        for check in checks {
+            postconditions.push(FunctionPostconditionCheck {
+                finding: VerifierFinding::clause(program, check.clause, None)
+                    .ok_or(VerificationError::InvalidFinding)?,
+                check,
+            });
+        }
+    }
+    for check in super::contract::frame::check(program, function, &cfg, &parameters, config) {
+        postconditions.push(FunctionPostconditionCheck {
+            finding: VerifierFinding::clause(program, check.clause, None)
+                .ok_or(VerificationError::InvalidFinding)?,
+            check,
+        });
+    }
     for returned in cfg.returns() {
-        for check in check_postconditions(returned.state(), returned.values(), contract) {
+        let mut checks = check_postconditions(returned.state(), returned.values(), contract);
+        if let Some(resources) = &contract.resources {
+            let block = function
+                .blocks
+                .iter()
+                .find(|b| b.id == returned.block())
+                .unwrap();
+            if let crate::VirTerminator::Return { values } = &block.terminator.terminator {
+                checks.extend(resources.check(
+                    returned.observation_state(),
+                    cfg.function_entry_state(),
+                    &parameters,
+                    values,
+                    crate::VirContractPosition::Ensures,
+                    config,
+                ));
+            }
+        }
+        if let Some(pure) = &contract.pure {
+            let block = function
+                .blocks
+                .iter()
+                .find(|b| b.id == returned.block())
+                .unwrap();
+            if let crate::VirTerminator::Return { values } = &block.terminator.terminator {
+                checks.extend(pure.check(
+                    returned.observation_state(),
+                    cfg.function_entry_state(),
+                    &parameters,
+                    values,
+                    crate::VirContractPosition::Ensures,
+                    config.relation_limits,
+                ));
+            }
+        }
+        for check in checks {
             let occurrence = VirLocation::Terminator {
                 function: function.id,
                 block: returned.block(),
@@ -328,7 +394,7 @@ pub fn verify_program(
                 .postconditions
                 .iter()
                 .filter(|record| !record.check.status.is_proven())
-                .map(|record| diagnostic_for_postcondition(*record)),
+                .map(|record| diagnostic_for_postcondition(*record, program)),
         );
         diagnostics.extend(
             verification
@@ -500,8 +566,36 @@ fn diagnostic_for_obligation(
     }
 }
 
-fn diagnostic_for_postcondition(record: FunctionPostconditionCheck) -> VerifierDiagnostic {
+fn diagnostic_for_postcondition(
+    record: FunctionPostconditionCheck,
+    program: &ResolvedVirUnit<'_>,
+) -> VerifierDiagnostic {
     let missing = record.check.status == ObligationStatus::Unknown;
+    if let Some(crate::VirSpecClause {
+        kind: crate::VirSpecClauseKind::Assertion { root },
+        ..
+    }) = program.as_unit().specs.clause(record.check.clause)
+        && let crate::SpecAssertionKind::Footprint { write, .. } =
+            program.as_unit().specs.assertions()[root.get() as usize].kind
+    {
+        let name = if write { "writes" } else { "reads" };
+        return VerifierDiagnostic {
+            relation_queries: Vec::new(), provenance_notes: Vec::new(),
+            kind: if missing { VerifierDiagnosticKind::MissingFact } else { VerifierDiagnosticKind::RefutedObligation },
+            severity: Severity::Error, finding: record.finding,
+            message: format!("{} `{name}` frame for clause {}", if missing { "cannot prove" } else { "actual effects exceed" }, record.check.clause.get()),
+            suggestion: Some("cover actual entry-bound effects, or omit this upper bound to use automatic effect inference; declarations do not grant memory access".into()),
+        };
+    }
+    if record.check.origin.position() == crate::VirContractPosition::Requires {
+        return VerifierDiagnostic {
+            relation_queries: Vec::new(), provenance_notes: Vec::new(),
+            kind: if missing { VerifierDiagnosticKind::MissingFact } else { VerifierDiagnosticKind::RefutedObligation },
+            severity: Severity::Error, finding: record.finding,
+            message: format!("whole-program entry cannot establish `requires` clause {} without a caller", record.check.clause.get()),
+            suggestion: Some("remove the entry assumption or establish the condition in the entry body before calling a contracted function".into()),
+        };
+    }
     VerifierDiagnostic {
         relation_queries: Vec::new(),
         provenance_notes: Vec::new(),
@@ -805,7 +899,7 @@ fn describe_obligation(obligation: ResourceObligation) -> String {
         ),
         ResourceObligationKind::CallContractAvailable { contract } => {
             format!(
-                "contract{} is registered and signature-checked",
+                "contract{} is signature-checked and explicit guarantees have a closed or scoped inductive interface",
                 contract.get()
             )
         }

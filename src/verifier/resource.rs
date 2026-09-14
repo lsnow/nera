@@ -8,6 +8,7 @@ use crate::{
 };
 
 mod bytes;
+mod contents;
 mod initialization;
 mod instance;
 mod loan;

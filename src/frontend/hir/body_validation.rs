@@ -343,19 +343,13 @@ impl Validator<'_> {
                     .get(local.index())
                     .filter(|candidate| candidate.id == *local);
                 require(
-                    self.program.version().supports_deferred_locals()
-                        && visible.contains(local)
+                    visible.contains(local)
                         && !state.parameters.contains(local)
                         && !state.pattern_bindings.contains(local)
                         && state.declared_locals.insert(*local)
                         && definition.is_some_and(|definition| {
                             definition.scope == scope
                                 && definition.mutable
-                                && (self.program.version().supports_deferred_resources()
-                                    || self
-                                        .program
-                                        .type_capabilities(definition.ty)
-                                        .is_some_and(|cap| !cap.contains_resource))
                                 && super::types::supports_deferred_local_shape(
                                     self.program.types(),
                                     self.program.fields(),
@@ -1314,19 +1308,6 @@ impl Validator<'_> {
                 "allocation element or result type is inconsistent",
             ),
             HirExpressionKind::Length { place } => {
-                require(
-                    matches!(
-                        self.program.version(),
-                        super::HirVersion::V12
-                            | super::HirVersion::V13
-                            | super::HirVersion::V14
-                            | super::HirVersion::V15
-                            | super::HirVersion::V16
-                    ),
-                    "expression",
-                    statement_index,
-                    "length metadata requires HIR V8",
-                )?;
                 let ty = self.resolve_place(
                     visible,
                     active_scopes,

@@ -226,10 +226,15 @@ pub struct FunctionReturnState {
     block: VirBlockId,
     source_span: ByteSpan,
     state: ResourceState,
+    /// Logical observation before the checked ABI return consumes authorities.
+    observation_state: Option<ResourceState>,
     values: Vec<AbstractValue>,
 }
 
 impl FunctionReturnState {
+    pub(super) fn observation_state(&self) -> &ResourceState {
+        self.observation_state.as_ref().unwrap_or(&self.state)
+    }
     /// Ordinal within this final block evaluation, not a cross-iteration ID.
     pub const fn case_ordinal(&self) -> usize {
         self.case_ordinal
@@ -649,6 +654,32 @@ pub(super) fn analyze_function_cfg_with_summaries(
         program.runtime().memory,
     )
     .ok_or(CfgAnalysisError::ContractInstantiation)?;
+    if function_id != program.runtime().entry
+        && let Some(resources) = &contract.resources
+    {
+        let ids = parameters.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+        if !resources
+            .check(
+                &supplied,
+                &supplied,
+                &ids,
+                &[],
+                crate::VirContractPosition::Requires,
+                config,
+            )
+            .iter()
+            .all(|c| c.status.is_proven())
+        {
+            return Err(CfgAnalysisError::ContractInstantiation);
+        }
+    }
+    if let Some(pure) = &contract.pure {
+        pure.install_memory_entry(
+            &mut supplied,
+            &parameters.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        )
+        .ok_or(CfgAnalysisError::ContractInstantiation)?;
+    }
     if supplied.loans().len() > config.max_active_loans_per_case || config.max_aliases_per_loan == 0
     {
         let loans = supplied.loans().keys().copied().collect::<Vec<_>>();
@@ -1582,6 +1613,10 @@ fn evaluate_block_step(
                     block: block.id,
                     source_span: span,
                     state: transfer.state,
+                    observation_state: contracts
+                        .and_then(|cs| cs.get(function.contract))
+                        .filter(|c| c.observes_memory())
+                        .map(|_| state.clone()),
                     values: transfer.values,
                 });
             }

@@ -49,12 +49,24 @@ impl TransferBuilder<'_> {
             .and_then(|context| context.contracts.get(target.contract));
         let contract_matches =
             contract.is_some_and(|contract| contract.signature() == &target.signature);
+        // Declarations are not callable certificates. Only the private registry
+        // supplies either a closed dependency or a scoped SCC hypothesis. Every
+        // candidate call still checks requires; final replay checks the body.
+        let interface_available = !contract.is_some_and(|c| c.has_explicit_contract())
+            || self
+                .contract_context
+                .and_then(|c| c.summary)
+                .and_then(|s| s.registry)
+                .and_then(|r| r.get(target))
+                .is_some();
         self.require(
             ResourceObligationKind::CallContractAvailable {
                 contract: target.contract,
             },
-            if contract_matches {
+            if contract_matches && interface_available {
                 ObligationStatus::Proven
+            } else if contract_matches {
+                ObligationStatus::Unknown
             } else if contract.is_some() {
                 ObligationStatus::Refuted
             } else {
@@ -67,6 +79,11 @@ impl TransferBuilder<'_> {
                 &self.state,
                 arguments,
                 contract.expect("matching contract exists"),
+                crate::CfgAnalysisConfig {
+                    relation_limits: self.relation_limits,
+                    max_region_pairs_per_instruction: self.relations.limit,
+                    ..Default::default()
+                },
             );
             for check in checks {
                 self.require(
@@ -706,7 +723,10 @@ impl TransferBuilder<'_> {
             return Ok(());
         }
         self.invalidate_opaque_frame(&before, arguments, target)?;
-        let summary_results = if body_failure {
+        let summary_results = if body_failure
+            || (contract.is_some_and(|c| c.has_explicit_contract())
+                && (!interface_available || !self.obligations.iter().all(|o| o.is_proven())))
+        {
             None
         } else if let (Some(contract), Some(mapping), Some(context)) =
             (contract, instantiation, self.contract_context)

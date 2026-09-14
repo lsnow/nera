@@ -9,13 +9,13 @@ use crate::verifier::{
     vc::VcQueryBudget,
 };
 
-pub(super) struct MatchLedger {
+pub(in crate::verifier) struct MatchLedger {
     used: Vec<SpecFootprint>,
     pairs_left: usize,
 }
 
 impl MatchLedger {
-    pub(super) fn new(pair_limit: usize) -> Self {
+    pub(in crate::verifier) fn new(pair_limit: usize) -> Self {
         Self {
             used: Vec::new(),
             pairs_left: pair_limit,
@@ -25,7 +25,7 @@ impl MatchLedger {
     /// Every entry has already passed the ordinary access/loan checks in this
     /// SAME state. Requested Read is duplicable; an overlapping Write is not.
     /// Different handles/nodes/types never stand in for physical disjointness.
-    pub(super) fn reserve(
+    pub(in crate::verifier) fn reserve(
         &mut self,
         state: &ResourceState,
         next: SpecFootprint,

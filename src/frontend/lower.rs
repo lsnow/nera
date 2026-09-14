@@ -151,20 +151,20 @@ fn lower_sources(
         functions,
         abis,
     };
+    let mut spec_sources = std::collections::BTreeMap::new();
     let source_map = if modules {
-        if !spec_source_spans(hir).is_empty() {
-            return Err(FrontendFailure::unsupported(
-                source_span,
-                "explicit multi-module specification origins are not supported yet",
-            ));
-        }
-        let used: std::collections::BTreeSet<_> =
-            hir.functions().iter().map(|f| f.module).collect();
         let mut files = Vec::new();
+        let used: std::collections::BTreeSet<_> = hir
+            .functions()
+            .iter()
+            .map(|f| f.module)
+            .chain(hir.predicates().iter().map(|p| p.module))
+            .collect();
         for module in used {
             let source = sources
                 .get(module.index())
                 .ok_or_else(|| invalid_hir(source_span))?;
+            spec_sources.insert(module, crate::VirSourceId::new(files.len() as u32));
             let entries = source_map_entries
                 .iter()
                 .copied()
@@ -180,22 +180,31 @@ fn lower_sources(
                     byte_len: source.len(),
                 },
                 entries,
+                spec_source_spans(hir, module),
             ));
         }
         VirSourceMap::from_module_lowering(files)
     } else {
+        spec_sources.insert(crate::HirModuleId::new(0), crate::VirSourceId::new(0));
         VirSourceMap::from_lowering(
             sources[0].path().to_string_lossy(),
             sources[0].len(),
             source_map_entries,
-            spec_source_spans(hir),
+            spec_source_spans(hir, crate::HirModuleId::new(0)),
         )
     };
     patch_lowered_loan_origins(&mut runtime, &source_map)?;
     let borrows = lower_borrow_environment(hir, &runtime, &source_map)?;
-    let specs = infer_contracts(hir, &memory, &runtime, &source_map, &local_specs)?;
+    let specs = infer_contracts(
+        hir,
+        &memory,
+        &runtime,
+        &source_map,
+        &local_specs,
+        &spec_sources,
+    )?;
     VirUnit {
-        version: VirUnitVersion::V21,
+        version: VirUnitVersion::V25,
         memory: memory.into_schema(),
         borrows,
         runtime,

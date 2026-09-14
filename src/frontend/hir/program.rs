@@ -46,65 +46,18 @@ pub enum HirVersion {
     V15,
     /// Lexical Prove statements and local snapshot anchors.
     V16,
+    /// Entry scalar observations in function postconditions.
+    V17,
+    /// Typed scalar heap observations in function contracts.
+    V18,
+    /// Resource contract roots and immutable slice length observations.
+    V19,
+    V20,
 }
 
 impl HirVersion {
-    /// Whether this HIR schema carries canonical borrow-region tables.
-    #[must_use]
-    pub const fn supports_borrow_regions(self) -> bool {
-        matches!(
-            self,
-            Self::V4
-                | Self::V5
-                | Self::V6
-                | Self::V7
-                | Self::V8
-                | Self::V9
-                | Self::V10
-                | Self::V11
-                | Self::V12
-                | Self::V13
-                | Self::V14
-                | Self::V15
-                | Self::V16
-        )
-    }
-
-    /// Whether this HIR schema separates storage declaration from values.
-    #[must_use]
-    pub const fn supports_deferred_locals(self) -> bool {
-        matches!(
-            self,
-            Self::V6
-                | Self::V7
-                | Self::V8
-                | Self::V9
-                | Self::V10
-                | Self::V11
-                | Self::V12
-                | Self::V13
-                | Self::V14
-                | Self::V15
-                | Self::V16
-        )
-    }
-
-    #[must_use]
-    pub const fn supports_deferred_resources(self) -> bool {
-        matches!(
-            self,
-            Self::V7
-                | Self::V8
-                | Self::V9
-                | Self::V10
-                | Self::V11
-                | Self::V12
-                | Self::V13
-                | Self::V14
-                | Self::V15
-                | Self::V16
-        )
-    }
+    /// The only supported in-memory schema. Older tags are not compatibility modes.
+    pub const CURRENT: Self = Self::V20;
 }
 
 /// Deterministic module path within one compilation unit.
@@ -456,7 +409,7 @@ impl HirProgram {
     /// structurally inconsistent reference before returning it.
     pub fn from_tables(tables: HirProgramTables) -> Result<Self, HirProgramValidationError> {
         let program = Self {
-            version: HirVersion::V16,
+            version: HirVersion::CURRENT,
             data_layout: tables.data_layout,
             entry_module: tables.entry_module,
             entry_function: tables.entry_function,
@@ -655,6 +608,12 @@ impl HirProgram {
     }
 
     pub fn validate_tables(&self) -> Result<(), HirProgramValidationError> {
+        require(
+            self.version == HirVersion::CURRENT,
+            "version",
+            0,
+            "unsupported HIR schema version",
+        )?;
         let mut next_node = 0;
         validate_dense("module", &self.modules, |item| item.id.get())?;
         validate_dense("type", &self.types, |item| item.id.get())?;
@@ -1951,3 +1910,45 @@ impl fmt::Display for HirProgramValidationError {
 }
 
 impl Error for HirProgramValidationError {}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+
+    #[test]
+    fn schema_version_is_checked_at_the_table_boundary() {
+        let output = crate::analyze(&crate::SourceFile::from_text(
+            "hir-version.nera",
+            "fn main() -> u64 { return 42; }",
+        ));
+        let mut program = output.hir().expect("valid fixture").clone();
+        assert_eq!(program.version(), HirVersion::CURRENT);
+        program.validate_tables().expect("current schema");
+        for old in [
+            HirVersion::V1,
+            HirVersion::V2,
+            HirVersion::V3,
+            HirVersion::V4,
+            HirVersion::V5,
+            HirVersion::V6,
+            HirVersion::V7,
+            HirVersion::V8,
+            HirVersion::V9,
+            HirVersion::V10,
+            HirVersion::V11,
+            HirVersion::V12,
+            HirVersion::V13,
+            HirVersion::V14,
+            HirVersion::V15,
+            HirVersion::V16,
+            HirVersion::V17,
+            HirVersion::V18,
+            HirVersion::V19,
+        ] {
+            program.version = old;
+            let error = program.validate_tables().expect_err("old schema rejected");
+            assert_eq!(error.table, "version");
+            assert_eq!(error.problem(), "unsupported HIR schema version");
+        }
+    }
+}

@@ -22,10 +22,11 @@ mod object;
 mod obligation;
 mod permission;
 mod pointer;
+mod scalar_memory;
 mod spec;
 pub(super) use spec::{
-    SpecFootprint, SpecMemoryQuery, query_spec_memory, spec_alive, spec_footprint,
-    spec_same_allocation,
+    SpecFootprint, SpecMemoryQuery, query_contract_memory, query_spec_disjoint, query_spec_memory,
+    spec_alive, spec_footprint, spec_range_footprint, spec_same_allocation, spec_scalar_contents,
 };
 #[cfg(test)]
 mod tests;
@@ -567,7 +568,9 @@ impl<'environment> TransferBuilder<'environment> {
                     InitializationRequirement::Uninitialized,
                     MemoryEffect::WriteValue,
                     *access,
-                )
+                )?;
+                self.record_scalar_write(*pointer, *value, *access);
+                Ok(())
             }
             VirInstruction::Write {
                 pointer,
@@ -583,7 +586,9 @@ impl<'environment> TransferBuilder<'environment> {
                     InitializationRequirement::None,
                     MemoryEffect::WriteValue,
                     *access,
-                )
+                )?;
+                self.record_scalar_write(*pointer, *value, *access);
+                Ok(())
             }
             VirInstruction::Load {
                 result,
@@ -608,6 +613,11 @@ impl<'environment> TransferBuilder<'environment> {
                     )) => AbstractValue::U64(U64Interval::unknown()),
                     _ => return Err(TransferError::InvalidValidatedMemoryAccess(*access)),
                 };
+                let value = if self.obligations.iter().all(|o| o.is_proven()) {
+                    self.scalar_read(*pointer, *access).unwrap_or(value)
+                } else {
+                    value
+                };
                 self.define(*result, value)
             }
             VirInstruction::EnumDiscriminant {
@@ -630,7 +640,9 @@ impl<'environment> TransferBuilder<'environment> {
                     InitializationRequirement::Initialized,
                     MemoryEffect::WriteValue,
                     *access,
-                )
+                )?;
+                self.record_scalar_write(*pointer, *value, *access);
+                Ok(())
             }
             VirInstruction::ResourceInitialize {
                 destination,

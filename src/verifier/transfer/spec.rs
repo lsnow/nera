@@ -18,6 +18,39 @@ pub(in crate::verifier) struct SpecMemoryQuery {
     pub valid: bool,
 }
 
+/// Contents only, never evidence that reading is permitted. The caller must
+/// first prove query_spec_memory for this exact selected range and authority.
+pub(in crate::verifier) fn spec_scalar_contents(
+    state: &ResourceState,
+    memory: &VirMemorySchema,
+    query: SpecMemoryQuery,
+    budget: &mut VcQueryBudget,
+) -> Option<Vec<AbstractValue>> {
+    let pointer = pointer_fact(state, query.pointer).ok()?;
+    let AbstractProvenance::Known(id) = pointer.provenance() else {
+        return None;
+    };
+    let allocation = state.allocation(id)?;
+    let width = memory.object_shape(query.layout).ok()?.size_bytes();
+    let length = query.end.checked_sub(query.start)?;
+    if width == 0 || length == 0 || length % width != 0 || length / width > 4096 {
+        return None;
+    }
+    let start = pointer
+        .offset_bytes()
+        .exact_value()?
+        .checked_add(query.start)?;
+    let mut values = Vec::new();
+    for i in 0..length / width {
+        budget.charge(1)?;
+        let range =
+            ByteRange::from_start_and_length(start.checked_add(i.checked_mul(width)?)?, width)
+                .ok()?;
+        values.push(allocation.scalar_content(range, query.layout)?);
+    }
+    Some(values)
+}
+
 /// A successfully checked claim's selected bytes, never its authority's entire
 /// envelope. Used only in the per-Prove resource-use ledger.
 #[derive(Clone, Copy, Debug)]
@@ -32,6 +65,13 @@ pub(in crate::verifier) fn spec_footprint(
     query: SpecMemoryQuery,
 ) -> Option<SpecFootprint> {
     query.authority?;
+    spec_range_footprint(state, query)
+}
+
+pub(in crate::verifier) fn spec_range_footprint(
+    state: &ResourceState,
+    query: SpecMemoryQuery,
+) -> Option<SpecFootprint> {
     let pointer = pointer_fact(state, query.pointer).ok()?;
     let length = query.end.checked_sub(query.start)?;
     let low = pointer.offset_bytes().lower().checked_add(query.start)?;
@@ -43,6 +83,46 @@ pub(in crate::verifier) fn spec_footprint(
         range: crate::verifier::relation::range::access_range(selected, length),
         access: query.access,
     })
+}
+
+/// Geometry of two independently well-defined ranges. Does not read contents
+/// or consume an access occurrence, even when both ranges use the same owner.
+pub(in crate::verifier) fn query_spec_disjoint(
+    state: &ResourceState,
+    memory: &VirMemorySchema,
+    left: SpecMemoryQuery,
+    right: SpecMemoryQuery,
+    config: crate::CfgAnalysisConfig,
+    budget: &mut VcQueryBudget,
+) -> Option<ObligationStatus> {
+    for query in [left, right] {
+        let status = query_spec_memory(state, memory, query, config, budget)?;
+        if !status.is_proven() {
+            return Some(status);
+        }
+    }
+    let left = spec_range_footprint(state, left)?;
+    let right = spec_range_footprint(state, right)?;
+    // Borrow entry identities name symbolic views, not necessarily distinct
+    // backing allocations. Until cross-input alias premises are represented,
+    // their different names cannot establish physical disjointness.
+    if let (
+        AbstractProvenance::Known(a @ AbstractAllocationId::AbiEntryPayload { leaf: u32::MAX, .. }),
+        AbstractProvenance::Known(b @ AbstractAllocationId::AbiEntryPayload { leaf: u32::MAX, .. }),
+    ) = (left.provenance, right.provenance)
+        && a != b
+    {
+        return Some(ObligationStatus::Unknown);
+    }
+    budget.begin_query()?;
+    Some(budget.relations.disjoint(
+        state,
+        left.provenance,
+        left.range,
+        right.provenance,
+        right.range,
+        budget.relation_limits,
+    ))
 }
 
 pub(in crate::verifier) fn spec_alive(
@@ -94,17 +174,60 @@ pub(in crate::verifier) fn query_spec_memory(
     config: crate::CfgAnalysisConfig,
     budget: &mut VcQueryBudget,
 ) -> Option<ObligationStatus> {
+    let pointer = pointer_fact(state, query.pointer).ok()?;
+    query_spec_memory_pointer(state, memory, query, pointer, config, budget)
+}
+
+/// Typed ABI/field/index resolution must establish the selected access and
+/// offset before calling this adapter. It retains provenance, domain and loan
+/// identity; all ordinary bounds/alignment/authority checks still run.
+pub(in crate::verifier) fn query_contract_memory(
+    state: &ResourceState,
+    memory: &VirMemorySchema,
+    query: SpecMemoryQuery,
+    source: VirMemoryAccess,
+    budget: &mut VcQueryBudget,
+) -> Option<ObligationStatus> {
+    let pointer = pointer_fact(state, query.pointer).ok()?;
+    if pointer.memory_access() != Some(source) {
+        return None;
+    }
+    query_spec_memory_pointer(
+        state,
+        memory,
+        query,
+        pointer.with_memory_access(Some(query.layout)),
+        crate::CfgAnalysisConfig {
+            relation_limits: budget.relation_limits,
+            ..Default::default()
+        },
+        budget,
+    )
+}
+
+fn query_spec_memory_pointer(
+    state: &ResourceState,
+    memory: &VirMemorySchema,
+    query: SpecMemoryQuery,
+    pointer: AbstractPointer,
+    config: crate::CfgAnalysisConfig,
+    budget: &mut VcQueryBudget,
+) -> Option<ObligationStatus> {
     budget.begin_query()?;
     if !state.path_condition().is_reachable() {
         return None;
     }
-    let pointer = pointer_fact(state, query.pointer).ok()?;
     let shape = memory.object_shape(query.layout).ok()?;
     // First points-to profile: repeated Bool/U64 scalar cells. No padding,
     // enum payload, resource leaf, arbitrary ghost load, or unbounded unfolding.
     if !matches!(
         memory.kind(query.layout.ty),
-        Some(VirMemoryTypeKind::Bool | VirMemoryTypeKind::Integer(crate::VirIntegerType::U64))
+        Some(
+            VirMemoryTypeKind::Bool
+                | VirMemoryTypeKind::Integer(
+                    crate::VirIntegerType::U64 | crate::VirIntegerType::Usize
+                )
+        )
     ) {
         return None;
     }
@@ -187,6 +310,11 @@ pub(in crate::verifier) fn query_spec_memory(
                     shape: shape.clone(),
                 }
             };
+            if query.authority.is_none() {
+                // Geometry/initialization observations have no authority, but
+                // still cannot escape a slice or subobject's declared domain.
+                builder.require_domain_access(query.pointer, selected, width);
+            }
             if length == 0 {
                 // An empty claim has no cell to load/initialize, but is not a
                 // source of authority: check the live in-bounds point and the

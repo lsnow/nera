@@ -294,6 +294,15 @@ fn spec_proofs_trust_and_contract_analysis_error_have_distinct_accounting() {
         .push(clause);
     let report = verify_unit(unsupported_contract, Default::default());
     preview_checks::observe(&report);
+    // Pure ensures is now supported; do not use it as an analysis-error stub.
+    assert_eq!(report.outcome(), PreviewOutcome::Checked);
+    let report = verify_source(
+        &source(
+            "fn main()->u64 {return f(1);} fn f(x:u64)->u64 requires x==1 || x==2; {return x;}",
+        ),
+        Default::default(),
+    );
+    preview_checks::observe(&report);
     assert_eq!(report.outcome(), PreviewOutcome::AnalysisFailed);
     assert!(report.is_resolved());
     assert!(matches!(

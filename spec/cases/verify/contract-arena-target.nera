@@ -1,0 +1,51 @@
+// 8.2 target, not a verified arena library. Storage is already initialized.
+fn main() -> u64 {
+    let mut backing = [0, 0, 0, 0, 0, 7];
+    let parent = &mut backing[..];
+    let remaining = &mut parent[4usize..];
+    let mut cursor = 0usize;
+    let begin = cursor;
+    if reserve(&mut cursor, len(parent), 2usize) {
+        let left = take(&mut parent[begin..cursor]);
+        left[0] = 12;
+        let next = cursor;
+        if reserve(&mut cursor, len(parent), 4usize) {
+            let middle = take(&mut parent[next..cursor]);
+            middle[0] = 30;
+            // Capacity failure must keep cursor and outstanding slices intact.
+            if reserve(&mut cursor, len(parent), 7usize) {
+                return 99;
+            }
+            return left[0] + middle[0] + remaining[1];
+        }
+    }
+    return 0;
+}
+
+fn reserve(cursor: &mut usize, capacity: usize, end: usize) -> bool
+requires *cursor <= capacity;
+reads *cursor;
+writes *cursor;
+ensures !result || (*cursor == end && old(*cursor) <= end && end <= capacity);
+ensures result || *cursor == old(*cursor);
+{
+    if *cursor <= end {
+        if end <= capacity {
+            *cursor = end;
+            return true;
+        }
+    }
+    return false;
+}
+
+fn take(storage: &mut [u64]) -> &mut [u64]
+requires writable(storage, 0usize..len(storage));
+requires initialized(storage, 0usize..len(storage));
+reads ();
+writes ();
+ensures len(result) == old(len(storage));
+ensures writable(result, 0usize..len(result));
+ensures initialized(result, 0usize..len(result));
+{
+    return storage;
+}

@@ -88,10 +88,12 @@ fn bool_points_to_checks_current_typed_representation_without_reading_the_heap()
                 layout: access,
                 access: SpecAccess::Write,
             },
-            value: None,
+            value: Some(t[2]),
         }
     });
     unit.specs.terms_mut()[1].kind = VirSpecTermKind::U64(1);
+    unit.specs.terms_mut()[2].ty = VirSpecType::Bool;
+    unit.specs.terms_mut()[2].kind = VirSpecTermKind::Bool(false);
     let unit = unit.into_validated().unwrap();
     let report = verify_program(&unit.resolve().unwrap(), CfgAnalysisConfig::default()).unwrap();
     assert!(
@@ -151,7 +153,7 @@ fn proofs(unit: VirUnit) -> Vec<ObligationStatus> {
 
 #[test]
 fn queries_observe_current_writes_deinitialization_and_free_without_heap_value_guessing() {
-    use ObligationStatus::{Proven as P, Refuted as R, Unknown as U};
+    use ObligationStatus::{Proven as P, Refuted as R};
     use SpecAssertionKind as A;
     let mut unit = unit();
     let runtime = unit
@@ -189,7 +191,7 @@ fn queries_observe_current_writes_deinitialization_and_free_without_heap_value_g
             memory: claim(t),
             value: Some(t[2]),
         });
-        expected.push(if init == P { U } else { R });
+        expected.push(if point == 3 { P } else { R });
         add(&mut unit, location(point), |_| A::SameAllocation {
             left: snapshot(1),
             right: snapshot(1),

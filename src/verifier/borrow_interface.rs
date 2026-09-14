@@ -87,12 +87,20 @@ pub(super) fn install_entry(
                 .id;
             let stride = memory.object_shape(pointee).ok()?.size_bytes();
             let interval = U64Interval::new(0, u64::MAX / stride).ok()?;
+            let interval = match state.value(length)? {
+                AbstractValue::U64(current) => current.intersection(interval)?,
+                _ => return None,
+            };
             *state.value_mut(length)? = AbstractValue::U64(interval);
             AbstractByteRange::from_bounds(
                 SymbolicRangeBound::constant(0),
                 SymbolicRangeBound::new(
                     AffineExpression::identity(length).checked_scale(stride)?,
-                    U64Interval::new(0, size).ok()?,
+                    U64Interval::new(
+                        interval.lower().checked_mul(stride)?,
+                        interval.upper().checked_mul(stride)?,
+                    )
+                    .ok()?,
                 ),
             )
         } else {

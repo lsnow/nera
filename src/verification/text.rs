@@ -266,9 +266,31 @@ impl Renderer<'_> {
                 if self.explain || !obligation.status().is_proven() {
                     let (layer, reason) = match obligation.evidence {
                         ObligationEvidence::Cfg(c) => ("CFG", condition(c.obligation().kind())),
-                        ObligationEvidence::Postcondition(_) => (
+                        ObligationEvidence::Postcondition(check) => (
                             "postcondition",
-                            "return satisfies the declared or type-induced postcondition".into(),
+                            self.preview
+                                .validated_unit()
+                                .and_then(|unit| {
+                                    let specs = &unit.as_unit().specs;
+                                    let crate::VirSpecClauseKind::Assertion { root } =
+                                        specs.clause(check.check().clause)?.kind
+                                    else {
+                                        return None;
+                                    };
+                                    let crate::SpecAssertionKind::Footprint { write, .. } =
+                                        specs.assertions()[root.get() as usize].kind
+                                    else {
+                                        return None;
+                                    };
+                                    Some(format!(
+                                        "actual effects fit the entry-bound `{}` frame",
+                                        if write { "writes" } else { "reads" }
+                                    ))
+                                })
+                                .unwrap_or_else(|| {
+                                    "return satisfies the declared or type-induced postcondition"
+                                        .into()
+                                }),
                         ),
                         ObligationEvidence::Proof(proof) => (
                             "Spec",

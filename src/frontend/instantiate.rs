@@ -511,6 +511,9 @@ impl Instantiator<'_> {
             self.ty(module, &mut p.ty, env, p.span, 0)?;
         }
         self.ty(module, &mut f.return_type, env, f.span, 0)?;
+        for clause in &mut f.clauses {
+            self.logical_expression(module, &mut clause.expression, env, 0)?;
+        }
         self.block(module, &mut f.body, env, 0)
     }
     fn block(
@@ -616,6 +619,12 @@ impl Instantiator<'_> {
                 pointer,
                 start,
                 end,
+            }
+            | super::AstLogicalExpressionKind::ResourceRange {
+                pointer,
+                start,
+                end,
+                ..
             } => {
                 self.expression(module, pointer, env, depth + 1)?;
                 self.logical_expression(module, start, env, depth + 1)?;

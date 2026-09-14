@@ -41,8 +41,7 @@ pub(super) fn le(
     values: SnapshotValues<'_>,
     budget: &mut VcQueryBudget,
 ) -> Option<AbstractBool> {
-    if let (Some(ae), Some(be), SnapshotValues::State(state)) = (a.expression, b.expression, values)
-    {
+    if let (Some(ae), Some(be), Some(state)) = (a.expression, b.expression, values.state()) {
         budget.begin_query()?;
         budget.charge(1)?;
         return Some(

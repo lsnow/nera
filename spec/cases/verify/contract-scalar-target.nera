@@ -1,0 +1,11 @@
+// Historical 8.2.1 target; scalar contracts and empty frames are now parsed.
+fn main() -> u64 { return successor(41); }
+
+fn successor(value: u64) -> u64
+requires value < 18446744073709551615;
+reads ();
+writes ();
+ensures result == old(value) + 1;
+{
+    return value + 1;
+}

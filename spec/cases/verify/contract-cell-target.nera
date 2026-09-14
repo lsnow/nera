@@ -1,0 +1,16 @@
+// Historical 8.2.1 target; parsing is not a claim of general heap-value proof.
+fn main() -> u64 {
+    let mut value = 41;
+    increment(&mut value);
+    return value;
+}
+
+fn increment(value: &mut u64)
+requires *value < 18446744073709551615;
+reads *value;
+writes *value;
+ensures *value == old(*value) + 1;
+{
+    *value = *value + 1;
+    return;
+}

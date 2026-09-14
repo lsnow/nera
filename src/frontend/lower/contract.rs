@@ -20,6 +20,7 @@ pub(super) fn infer_contracts(
     runtime: &RuntimeVirProgram,
     source_map: &VirSourceMap,
     local_specs: &[super::local_spec::LocalSpec],
+    spec_sources: &std::collections::BTreeMap<crate::HirModuleId, VirSourceId>,
 ) -> Result<VirSpecEnvironment, FrontendFailure> {
     let mut specs = VirSpecEnvironment::implicit(runtime);
     for function in hir
@@ -145,7 +146,14 @@ pub(super) fn infer_contracts(
             )?;
         }
     }
-    lower_hir_specs(hir, memory, source_map, &mut specs, local_specs)?;
+    lower_hir_specs(
+        hir,
+        memory,
+        source_map,
+        &mut specs,
+        local_specs,
+        spec_sources,
+    )?;
     Ok(specs)
 }
 
@@ -336,12 +344,15 @@ fn lower_hir_specs(
     source_map: &VirSourceMap,
     specs: &mut VirSpecEnvironment,
     local_specs: &[super::local_spec::LocalSpec],
+    spec_sources: &std::collections::BTreeMap<crate::HirModuleId, VirSourceId>,
 ) -> Result<(), FrontendFailure> {
+    let spec_source_origin =
+        |module, span| source_map.user_origin(*spec_sources.get(&module)?, span);
     let clause_base =
         u32::try_from(specs.clauses().len()).map_err(|_| invalid_hir(hir.entry_function().span))?;
 
     for predicate in hir.predicates() {
-        let origin = spec_source_origin(source_map, predicate.span)
+        let origin = spec_source_origin(predicate.module, predicate.span)
             .ok_or_else(|| invalid_hir(predicate.span))?;
         specs.predicates_mut().push(VirPredicate {
             id: VirPredicateId::new(predicate.id.get()),
@@ -363,8 +374,8 @@ fn lower_hir_specs(
     }
 
     for binder in &hir.specs().binders {
-        let origin =
-            spec_source_origin(source_map, binder.span).ok_or_else(|| invalid_hir(binder.span))?;
+        let origin = spec_source_origin(binder_module(hir, binder.owner), binder.span)
+            .ok_or_else(|| invalid_hir(binder.span))?;
         specs.binders_mut().push(VirSpecBinder {
             id: VirSpecBinderId::new(binder.id.get()),
             owner: match binder.owner {
@@ -383,8 +394,8 @@ fn lower_hir_specs(
     }
 
     for term in &hir.specs().terms {
-        let origin =
-            spec_source_origin(source_map, term.span).ok_or_else(|| invalid_hir(term.span))?;
+        let origin = spec_source_origin(clause_module(hir, term.clause), term.span)
+            .ok_or_else(|| invalid_hir(term.span))?;
         specs.terms_mut().push(VirSpecTerm {
             id: VirSpecTermId::new(term.id.get()),
             clause: shifted_clause_id(clause_base, term.clause)
@@ -433,14 +444,14 @@ fn lower_hir_specs(
                     None
                 },
             )?,
-            origin: spec_source_origin(source_map, assertion.span)
+            origin: spec_source_origin(clause_module(hir, assertion.clause), assertion.span)
                 .ok_or_else(|| invalid_hir(assertion.span))?,
         });
     }
 
     for clause in &hir.specs().clauses {
-        let origin =
-            spec_source_origin(source_map, clause.span).ok_or_else(|| invalid_hir(clause.span))?;
+        let origin = spec_source_origin(clause_module(hir, clause.id), clause.span)
+            .ok_or_else(|| invalid_hir(clause.span))?;
         specs.clauses_mut().push(VirSpecClause {
             id: shifted_clause_id(clause_base, clause.id)
                 .ok_or_else(|| invalid_hir(clause.span))?,
@@ -491,8 +502,8 @@ fn lower_hir_specs(
     }
 
     for prove in &hir.specs().proves {
-        let origin =
-            spec_source_origin(source_map, prove.span).ok_or_else(|| invalid_hir(prove.span))?;
+        let origin = spec_source_origin(clause_module(hir, prove.clause), prove.span)
+            .ok_or_else(|| invalid_hir(prove.span))?;
         specs.proves_mut().push(VirSpecProve {
             id: VirSpecProveId::new(prove.id.get()),
             function: VirFunctionId::new(prove.function.get()),
@@ -504,8 +515,8 @@ fn lower_hir_specs(
         });
     }
     for entry in &hir.specs().trust_entries {
-        let origin =
-            spec_source_origin(source_map, entry.span).ok_or_else(|| invalid_hir(entry.span))?;
+        let origin = spec_source_origin(clause_module(hir, entry.clause), entry.span)
+            .ok_or_else(|| invalid_hir(entry.span))?;
         specs.trust_entries_mut().push(VirTrustEntry {
             id: VirTrustEntryId::new(entry.id.get()),
             scope: match entry.scope {
@@ -531,32 +542,74 @@ fn lower_hir_specs(
     Ok(())
 }
 
-pub(super) fn spec_source_spans(hir: &HirProgram) -> Vec<ByteSpan> {
+fn clause_module(hir: &HirProgram, clause: crate::HirSpecClauseId) -> crate::HirModuleId {
+    hir.function_by_id(hir.specs().clauses[clause.index()].location.function())
+        .expect("validated clause owner")
+        .module
+}
+
+fn binder_module(hir: &HirProgram, owner: HirSpecBinderOwner) -> crate::HirModuleId {
+    match owner {
+        HirSpecBinderOwner::Clause(clause) => clause_module(hir, clause),
+        HirSpecBinderOwner::Predicate(predicate) => hir.predicates()[predicate.index()].module,
+    }
+}
+
+pub(super) fn spec_source_spans(hir: &HirProgram, module: crate::HirModuleId) -> Vec<ByteSpan> {
     hir.predicates()
         .iter()
+        .filter(|predicate| predicate.module == module)
         .map(|predicate| predicate.span)
-        .chain(hir.specs().binders.iter().map(|binder| binder.span))
-        .chain(hir.specs().terms.iter().map(|term| term.span))
+        .chain(
+            hir.specs()
+                .binders
+                .iter()
+                .filter(|binder| binder_module(hir, binder.owner) == module)
+                .map(|binder| binder.span),
+        )
+        .chain(
+            hir.specs()
+                .terms
+                .iter()
+                .filter(|term| clause_module(hir, term.clause) == module)
+                .map(|term| term.span),
+        )
         .chain(
             hir.specs()
                 .assertions
                 .iter()
+                .filter(|assertion| clause_module(hir, assertion.clause) == module)
                 .map(|assertion| assertion.span),
         )
-        .chain(hir.specs().clauses.iter().map(|clause| clause.span))
-        .chain(hir.specs().proves.iter().map(|prove| prove.span))
-        .chain(hir.specs().trust_entries.iter().map(|entry| entry.span))
+        .chain(
+            hir.specs()
+                .clauses
+                .iter()
+                .filter(|clause| clause_module(hir, clause.id) == module)
+                .map(|clause| clause.span),
+        )
+        .chain(
+            hir.specs()
+                .proves
+                .iter()
+                .filter(|prove| clause_module(hir, prove.clause) == module)
+                .map(|prove| prove.span),
+        )
+        .chain(
+            hir.specs()
+                .trust_entries
+                .iter()
+                .filter(|entry| clause_module(hir, entry.clause) == module)
+                .map(|entry| entry.span),
+        )
         .chain(
             hir.specs()
                 .loop_invariants
                 .iter()
+                .filter(|invariant| clause_module(hir, invariant.clause) == module)
                 .map(|invariant| invariant.span),
         )
         .collect()
-}
-
-fn spec_source_origin(source_map: &VirSourceMap, span: ByteSpan) -> Option<crate::VirOriginId> {
-    source_map.user_origin(VirSourceId::new(0), span)
 }
 
 fn shifted_clause_id(
@@ -607,6 +660,39 @@ fn lower_assertion(
         })
     };
     Ok(match kind {
+        A::Footprint { write, range } => A::Footprint {
+            write: *write,
+            range: range
+                .as_ref()
+                .map(|r| {
+                    Ok::<_, FrontendFailure>(crate::SpecMemoryRange {
+                        pointer: snapshot(r.pointer, false)?,
+                        start_bytes: term(r.start_bytes),
+                        end_bytes: term(r.end_bytes),
+                        layout: memory.access(r.layout, span)?,
+                    })
+                })
+                .transpose()?,
+        },
+        A::Disjoint { left, right } => {
+            let range = |r: &crate::SpecMemoryRange<
+                HirSpecSnapshot,
+                crate::HirSpecTermId,
+                HirTypeId,
+            >|
+             -> Result<_, FrontendFailure> {
+                Ok(crate::SpecMemoryRange {
+                    pointer: snapshot(r.pointer, false)?,
+                    start_bytes: term(r.start_bytes),
+                    end_bytes: term(r.end_bytes),
+                    layout: memory.access(r.layout, span)?,
+                })
+            };
+            A::Disjoint {
+                left: range(left)?,
+                right: range(right)?,
+            }
+        }
         A::Alive(pointer) => A::Alive(snapshot(*pointer, false)?),
         A::SameAllocation { left, right } => A::SameAllocation {
             left: snapshot(*left, false)?,
@@ -648,18 +734,46 @@ fn lower_authority_snapshot(
     snapshot: HirSpecSnapshot,
     span: ByteSpan,
 ) -> Result<VirSpecSnapshot, FrontendFailure> {
+    let ty = match snapshot {
+        HirSpecSnapshot::Local { function, local } => hir
+            .function_by_id(function)
+            .and_then(|f| f.body())
+            .and_then(|b| b.locals.get(local.get() as usize))
+            .map(|l| l.ty),
+        HirSpecSnapshot::Result { function } => hir
+            .function_by_id(function)
+            .map(|f| f.signature.return_type),
+        _ => None,
+    }
+    .ok_or_else(|| invalid_hir(span))?;
+    let target = match hir.type_kind(ty) {
+        Some(crate::HirTypeKind::Reference { pointee, .. }) => *pointee,
+        _ => ty,
+    };
+    let offset = if matches!(
+        hir.type_kind(target),
+        Some(crate::HirTypeKind::Slice { .. })
+    ) {
+        2
+    } else {
+        1
+    };
     // Validated sized Own/reference ABI is exactly [pointer, permission]. Raw
     // pointers cannot supply authority; HIR validation rejects that case.
     Ok(match lower_snapshot(hir, memory, snapshot, span)? {
         VirSpecSnapshot::Parameter { function, slot } => VirSpecSnapshot::Parameter {
             function,
-            slot: slot.checked_add(1).ok_or_else(|| invalid_hir(span))?,
+            slot: slot.checked_add(offset).ok_or_else(|| invalid_hir(span))?,
         },
         VirSpecSnapshot::Result { function, slot } => VirSpecSnapshot::Result {
             function,
-            slot: slot.checked_add(1).ok_or_else(|| invalid_hir(span))?,
+            slot: slot.checked_add(offset).ok_or_else(|| invalid_hir(span))?,
         },
-        VirSpecSnapshot::Value { .. } => return Err(invalid_hir(span)),
+        VirSpecSnapshot::Value { .. }
+        | VirSpecSnapshot::EntryParameter { .. }
+        | VirSpecSnapshot::Memory { .. } => {
+            return Err(invalid_hir(span));
+        }
     })
 }
 
@@ -670,6 +784,65 @@ fn lower_snapshot(
     span: ByteSpan,
 ) -> Result<VirSpecSnapshot, FrontendFailure> {
     Ok(match snapshot {
+        HirSpecSnapshot::Length {
+            function,
+            parameter,
+            entry,
+        } => {
+            let Some(parameter) = parameter else {
+                return Ok(VirSpecSnapshot::Result {
+                    function: VirFunctionId::new(function.get()),
+                    slot: 1,
+                });
+            };
+            let local = *hir
+                .function_by_id(function)
+                .and_then(|f| f.body())
+                .and_then(|b| b.parameters.get(parameter as usize))
+                .ok_or_else(|| invalid_hir(span))?;
+            let slot = hir_parameter_abi_slot(hir, memory, function, local, span)?
+                .checked_add(1)
+                .ok_or_else(|| invalid_hir(span))?;
+            let function = VirFunctionId::new(function.get());
+            if entry {
+                VirSpecSnapshot::EntryParameter { function, slot }
+            } else {
+                VirSpecSnapshot::Parameter { function, slot }
+            }
+        }
+        HirSpecSnapshot::Memory {
+            function,
+            parameter,
+            old,
+            projection,
+        } => VirSpecSnapshot::Memory {
+            function: VirFunctionId::new(function.get()),
+            parameter,
+            old,
+            projection: match projection {
+                crate::SpecMemoryProjection::Cell => crate::SpecMemoryProjection::Cell,
+                crate::SpecMemoryProjection::Field(field) => {
+                    crate::SpecMemoryProjection::Field(memory.field(field, span)?)
+                }
+                crate::SpecMemoryProjection::Index(index) => {
+                    crate::SpecMemoryProjection::Index(index)
+                }
+            },
+        },
+        HirSpecSnapshot::EntryParameter {
+            function,
+            parameter,
+        } => {
+            let local = *hir
+                .function_by_id(function)
+                .and_then(|f| f.body())
+                .and_then(|body| body.parameters.get(parameter as usize))
+                .ok_or_else(|| invalid_hir(span))?;
+            VirSpecSnapshot::EntryParameter {
+                function: VirFunctionId::new(function.get()),
+                slot: hir_parameter_abi_slot(hir, memory, function, local, span)?,
+            }
+        }
         HirSpecSnapshot::Local { function, local } => VirSpecSnapshot::Parameter {
             function: VirFunctionId::new(function.get()),
             slot: hir_parameter_abi_slot(hir, memory, function, local, span)?,

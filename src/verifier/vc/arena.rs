@@ -93,7 +93,7 @@ pub(in crate::verifier) enum VcLimitError {
     MalformedValidatedInput,
 }
 
-#[derive(Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(in crate::verifier) struct VcArena {
     nodes: Vec<VcTerm>,
     interned: BTreeMap<VcTerm, VcTermId>,

@@ -64,7 +64,7 @@ pub(in crate::regression) fn check_phase7_hir_borrow_regions_regression(
     let program = fs::read_to_string(root.join("src/frontend/hir/program.rs"))?;
     if !regions.contains("pub enum HirRegionOrigin")
         || !regions.contains("pub struct HirRegionConstraint")
-        || !program.contains("version: HirVersion::V16")
+        || !program.contains("version: HirVersion::CURRENT")
         || !program.contains("validate_region_constraints")
     {
         return Err("canonical HIR borrow-region schema or validation is missing".into());
@@ -429,8 +429,8 @@ pub(in crate::regression) fn check_phase7_reference_aggregate_regression(
     if !regions.contains("AggregateErased")
         || !vir.contains("LoanAliasAuthority")
         || !vir.contains("LoanEndAuthority")
-        || !hir_program.contains("version: HirVersion::V16")
-        || !vir.contains("version: VirUnitVersion::V21")
+        || !hir_program.contains("version: HirVersion::CURRENT")
+        || !vir.contains("version: VirUnitVersion::V25")
         || !dump.contains("runtime-vir-v17")
         || !resource.contains("Stored {")
         || !transfer.contains("move_authority_to_storage")
@@ -472,7 +472,7 @@ pub(in crate::regression) fn check_phase7_safe_slice_regression(
         || !hir.contains("intern_slice_type")
         || !lower.contains("lower_slice_borrow")
         || !vir.contains("SliceAddress")
-        || !vir.contains("version: VirUnitVersion::V21")
+        || !vir.contains("version: VirUnitVersion::V25")
         || !dump.contains("runtime-vir-v17")
         || !transfer.contains("pointer_within_slice_range_status")
         || !shadow.contains("range.start_bytes == range.end_bytes")

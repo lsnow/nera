@@ -10,6 +10,239 @@ mod cli_process;
 use cli_process::{Fixture, run};
 
 #[test]
+fn arena_contract_cli_distinguishes_normal_capacity_failure_from_bad_contracts() {
+    let fixture = Fixture::new();
+    let source = include_str!("../spec/cases/verify/contract-arena.nera");
+    for (name, text, code) in [
+        ("arena", source.to_owned(), 0),
+        (
+            "arena-bad",
+            source.replace("return false;", "return true;"),
+            1,
+        ),
+    ] {
+        let path = fixture.file(format!("{name}.nera"), text);
+        let output = run(fixture.command().arg("verify").arg(&path));
+        assert_eq!(output.status.code(), Some(code), "{output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains(if code == 0 {
+                "Checked"
+            } else {
+                "postcondition"
+            }),
+            "{output:?}"
+        );
+        if code == 0 {
+            let execution = run(fixture.command().arg("run").arg(&path));
+            assert!(execution.status.success(), "{execution:?}");
+            assert!(String::from_utf8_lossy(&execution.stdout).contains("49"));
+        }
+    }
+}
+
+#[test]
+fn composed_contract_cli_keeps_module_diagnostics_and_exit_status() {
+    #[path = "support/contract_composition.rs"]
+    mod cases;
+    let fixture = Fixture::new();
+    // Also exercises the same source-snapshot builder used by verifier/native tests.
+    assert!(
+        cases::session(&[
+            ("app", cases::APP),
+            ("left", cases::LEFT),
+            ("right", cases::RIGHT)
+        ])
+        .verify("app")
+        .unwrap()
+        .is_checked()
+    );
+    fixture.file("app.nera", cases::APP);
+    fixture.file("left.nera", cases::LEFT);
+    let args = [
+        "--module",
+        "app=app.nera",
+        "--module",
+        "left=left.nera",
+        "--module",
+        "right=right.nera",
+        "--entry",
+        "app::main",
+    ];
+    for (right, code) in [
+        (cases::RIGHT.to_owned(), 0),
+        (
+            cases::RIGHT.replace("len(result)==N", "len(result)==2usize"),
+            1,
+        ),
+    ] {
+        fixture.file("right.nera", right);
+        let output = run(fixture.command().arg("verify").args(args));
+        assert_eq!(output.status.code(), Some(code), "{output:?}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains(if code == 0 { "Checked" } else { "right.nera" }),
+            "{output:?}"
+        );
+        let execution = run(fixture.command().arg("run").args(args));
+        assert!(execution.status.success(), "{execution:?}");
+        assert!(String::from_utf8_lossy(&execution.stdout).contains("42"));
+    }
+}
+
+#[test]
+fn recursive_contract_cli_requires_closed_component_evidence() {
+    let fixture = Fixture::new();
+    let source = include_str!("../spec/cases/verify/contract-recursive.nera");
+    for (name, text, code) in [
+        ("recursive-ok", source.to_owned(), 0),
+        ("recursive-bad", source.replace("return 42", "return 41"), 1),
+    ] {
+        let path = fixture.file(format!("{name}.nera"), text);
+        let output = run(fixture.command().arg("verify").arg(&path));
+        assert_eq!(output.status.code(), Some(code), "{output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains(if code == 0 {
+                "Checked"
+            } else {
+                "Unproved"
+            }),
+            "{output:?}"
+        );
+    }
+}
+
+#[test]
+fn frame_contract_cli_reports_declared_effect_failures() {
+    let fixture = Fixture::new();
+    let source = include_str!("../spec/cases/verify/contract-frame.nera");
+    for (name, text, code, message) in [
+        ("frame-ok", source.to_owned(), 0, "Checked"),
+        (
+            "frame-bad",
+            source.replace("writes p[1..2];", "writes ();"),
+            1,
+            "writes` frame",
+        ),
+    ] {
+        let path = fixture.file(format!("{name}.nera"), text);
+        let output = run(fixture.command().arg("verify").arg(&path));
+        assert_eq!(output.status.code(), Some(code), "{output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains(message),
+            "{output:?}"
+        );
+        let execution = run(fixture.command().arg("run").arg(&path));
+        assert!(execution.status.success(), "{execution:?}");
+        assert!(String::from_utf8_lossy(&execution.stdout).contains("unverified"));
+    }
+}
+
+#[test]
+fn resource_contract_cli_checks_calls_and_returns_without_runtime_checks() {
+    let fixture = Fixture::new();
+    let source = include_str!("../spec/cases/verify/contract-resources.nera");
+    for (name, text, code, message) in [
+        ("resources-ok", source.to_owned(), 0, "Checked"),
+        (
+            "resources-call",
+            source.replace("[0..2]", "[0..1]"),
+            1,
+            "requires",
+        ),
+        (
+            "resources-return",
+            source.replace("0usize..len(p)", "0usize..3usize"),
+            1,
+            "postcondition",
+        ),
+    ] {
+        let path = fixture.file(format!("{name}.nera"), text);
+        let output = run(fixture.command().arg("verify").arg(&path));
+        assert_eq!(output.status.code(), Some(code), "{output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains(message),
+            "{output:?}"
+        );
+        if code != 0 {
+            let execution = run(fixture.command().arg("run").arg(&path));
+            assert!(execution.status.success(), "{execution:?}");
+            assert!(String::from_utf8_lossy(&execution.stdout).contains("unverified"));
+        }
+    }
+}
+
+#[test]
+fn memory_contract_cli_reports_source_call_and_return_failures() {
+    let fixture = Fixture::new();
+    let source = include_str!("../spec/cases/verify/contract-memory.nera");
+    for (name, text, code, message) in [
+        ("memory-ok", source.to_owned(), 0, "Checked"),
+        (
+            "memory-caller",
+            source.replace("value = 41", "value = 40"),
+            1,
+            "requires",
+        ),
+        (
+            "memory-callee",
+            source.replace("before + 1", "before + 2"),
+            1,
+            "postcondition",
+        ),
+    ] {
+        let path = fixture.file(format!("{name}.nera"), text);
+        let output = run(fixture.command().arg("verify").arg(&path));
+        assert_eq!(output.status.code(), Some(code), "{output:?}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains(message) && stdout.contains(name),
+            "{output:?}"
+        );
+    }
+}
+
+#[test]
+fn pure_contract_cli_checks_calls_and_bodies_but_run_build_remain_unverified() {
+    let fixture = Fixture::new();
+    let source = include_str!("../spec/cases/verify/contract-pure.nera");
+    for (name, text, code, message) in [
+        ("valid", source.to_owned(), 0, "Checked"),
+        (
+            "caller",
+            source.replace("successor(40)", "successor(42)"),
+            1,
+            "requires",
+        ),
+        (
+            "callee",
+            source.replace("return value + 1;", "return value;"),
+            1,
+            "postcondition",
+        ),
+    ] {
+        let path = fixture.file(format!("{name}.nera"), text);
+        let output = run(fixture.command().arg("verify").arg(&path));
+        assert_eq!(output.status.code(), Some(code), "{output:?}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains(message), "{output:?}");
+        assert!(stdout.contains(&format!("{name}.nera")), "{output:?}");
+        if name == "callee" {
+            let output = run(fixture.command().arg("run").arg(&path));
+            assert!(output.status.success(), "{output:?}");
+            assert!(String::from_utf8_lossy(&output.stdout).contains("unverified"));
+            let output = run(fixture
+                .command()
+                .args(["build", "--emit", "asm"])
+                .arg(&path)
+                .arg("-o")
+                .arg(fixture.0.join("contract.s")));
+            assert!(output.status.success(), "{output:?}");
+            assert!(String::from_utf8_lossy(&output.stdout).contains("built (unverified)"));
+        }
+    }
+}
+
+#[test]
 fn local_arena_cli_checks_the_whole_program_not_just_prove_status() {
     let fixture = Fixture::new();
     let source = include_str!("../spec/cases/verify/spec-arena-local.nera");

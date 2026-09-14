@@ -122,6 +122,305 @@ mod summary_cases;
 #[path = "support/auto_memory_cases.rs"]
 mod auto_memory_cases;
 
+#[path = "support/contract_baseline.rs"]
+#[allow(dead_code)] // Arena stays unproved; this native check uses admitted baselines only.
+mod contract_baseline;
+
+#[test]
+fn contract_baseline_runtime_and_raw_scalar_match_native() {
+    for (name, source) in [
+        ("contract-scalar-erased", contract_baseline::SCALAR),
+        ("contract-cell-erased", contract_baseline::CELL),
+    ] {
+        let source = contract_baseline::erased(source);
+        let output = analyze(&SourceFile::from_text(name, &source));
+        let unit = output.vir().unwrap();
+        assert!(
+            verify_program(&unit.resolve().unwrap(), Default::default())
+                .unwrap()
+                .is_memory_checked_core0()
+        );
+        assert_interpreter_matches_native(name, unit);
+        assert_resource_ledger(&source, 0, None);
+    }
+    let raw = contract_baseline::scalar_unit(1, false)
+        .into_validated()
+        .unwrap();
+    assert!(
+        verify_program(&raw.resolve().unwrap(), Default::default())
+            .unwrap()
+            .is_memory_checked_core0()
+    );
+    assert_interpreter_matches_native("contract-raw-scalar", &raw);
+}
+
+#[test]
+fn entry_contract_snapshots_are_checked_and_erased_by_native() {
+    use nera::{
+        VirContractPosition, VirSpecClauseId, VirSpecClauseKind, VirSpecClauseOrigin,
+        VirSpecSnapshot, VirSpecTerm, VirSpecTermId, VirSpecTermKind, VirSpecType,
+    };
+    let mut raw = contract_baseline::scalar_unit(1, false);
+    let before = raw.clone().into_validated().unwrap();
+    let function = VirFunctionId::new(1);
+    let origin = raw
+        .source_map
+        .origin_at(nera::VirLocation::FunctionEntry { function })
+        .unwrap()
+        .id;
+    let clause = VirSpecClauseId::new(raw.specs.clauses().len() as u32);
+    for (index, ty, kind) in [
+        (
+            0,
+            VirSpecType::U64,
+            VirSpecTermKind::Snapshot(VirSpecSnapshot::EntryParameter { function, slot: 0 }),
+        ),
+        (
+            1,
+            VirSpecType::U64,
+            VirSpecTermKind::Snapshot(VirSpecSnapshot::Result { function, slot: 0 }),
+        ),
+        (
+            2,
+            VirSpecType::Bool,
+            VirSpecTermKind::Equal {
+                left: VirSpecTermId::new(0),
+                right: VirSpecTermId::new(1),
+            },
+        ),
+    ] {
+        raw.specs.terms_mut().push(VirSpecTerm {
+            id: VirSpecTermId::new(index),
+            clause,
+            ty,
+            kind,
+            origin,
+        });
+    }
+    raw.specs
+        .add_contract_clause(
+            VirContractId::new(1),
+            VirContractPosition::Ensures,
+            VirSpecClauseOrigin::Explicit { origin },
+            VirSpecClauseKind::Logic {
+                root: VirSpecTermId::new(2),
+            },
+        )
+        .unwrap();
+    let after = raw.into_validated().unwrap();
+    assert_eq!(
+        before.runtime().stable_dump(),
+        after.runtime().stable_dump()
+    );
+    assert!(
+        verify_program(&after.resolve().unwrap(), Default::default())
+            .unwrap()
+            .is_memory_checked_core0()
+    );
+    assert_interpreter_matches_native("entry-contract-snapshot", &after);
+}
+
+#[test]
+fn pure_source_contracts_share_interpreter_and_native_execution() {
+    let output = analyze(&SourceFile::from_text(
+        "contract-pure.nera",
+        include_str!("../spec/cases/verify/contract-pure.nera"),
+    ));
+    let unit = output.vir().unwrap();
+    assert!(
+        verify_program(&unit.resolve().unwrap(), Default::default())
+            .unwrap()
+            .is_memory_checked_core0()
+    );
+    assert_interpreter_matches_native("contract-pure", unit);
+}
+
+#[test]
+fn heap_contract_observations_preserve_native_execution() {
+    let source = include_str!("../spec/cases/verify/contract-memory.nera");
+    let output = analyze(&SourceFile::from_text("contract-memory.nera", source));
+    let unit = output.vir().unwrap();
+    assert!(
+        verify_program(&unit.resolve().unwrap(), Default::default())
+            .unwrap()
+            .is_memory_checked_core0()
+    );
+    assert_interpreter_matches_native("contract-memory", unit);
+    let plain = source
+        .replace(
+            "requires *p == 41;",
+            &" ".repeat("requires *p == 41;".len()),
+        )
+        .replace(
+            "ensures *p == old(*p) + 1;",
+            &" ".repeat("ensures *p == old(*p) + 1;".len()),
+        );
+    let plain = analyze(&SourceFile::from_text("contract-memory.nera", &plain));
+    // Ghost clauses add source-map origins, so numeric origin IDs can move.
+    // Preserve every runtime instruction, operand, span and ABI component.
+    let without_origin_ids = |dump: String| {
+        dump.split_whitespace()
+            .map(|token| {
+                if token.strip_prefix("origin").is_some_and(|suffix| {
+                    !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit())
+                }) {
+                    "origin#"
+                } else {
+                    token
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    assert_eq!(
+        without_origin_ids(unit.runtime().stable_dump()),
+        without_origin_ids(plain.vir().unwrap().runtime().stable_dump())
+    );
+    assert_interpreter_matches_native("contract-memory-erased", plain.vir().unwrap());
+}
+
+#[test]
+fn arena_contracts_restore_backing_and_match_the_resource_ledger() {
+    let source = include_str!("../spec/cases/verify/contract-arena.nera");
+    // This pilot uses initialized stack backing, not heap allocation per slice.
+    assert_resource_ledger(source, 0, None);
+}
+
+#[test]
+fn composed_module_contracts_and_erasure_preserve_native_execution() {
+    #[path = "support/contract_composition.rs"]
+    mod fixture;
+    let compiler = fixture::session(&[
+        ("app", fixture::APP),
+        ("left", fixture::LEFT),
+        ("right", fixture::RIGHT),
+    ]);
+    assert!(compiler.verify("app").unwrap().is_checked());
+    let analysis = compiler.analyze("app").unwrap();
+    assert_interpreter_matches_native("contract-composition", analysis.frontend().vir().unwrap());
+    let erase = |source: &str| {
+        source
+            .lines()
+            .map(|line| {
+                if ["requires ", "ensures ", "reads ", "writes "]
+                    .iter()
+                    .any(|prefix| line.trim_start().starts_with(prefix))
+                {
+                    " ".repeat(line.len())
+                } else {
+                    line.to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let left = erase(fixture::LEFT);
+    let right = erase(fixture::RIGHT);
+    let plain = fixture::session(&[("app", fixture::APP), ("left", &left), ("right", &right)])
+        .analyze("app")
+        .unwrap();
+    assert_interpreter_matches_native(
+        "contract-composition-erased",
+        plain.frontend().vir().unwrap(),
+    );
+}
+
+#[test]
+fn recursive_contracts_use_the_ordinary_native_call_path() {
+    let source = include_str!("../spec/cases/verify/contract-recursive.nera");
+    let output = analyze(&SourceFile::from_text("contract-recursive.nera", source));
+    let unit = output.vir().unwrap();
+    assert!(
+        verify_program(&unit.resolve().unwrap(), Default::default())
+            .unwrap()
+            .is_memory_checked_core0()
+    );
+    assert_interpreter_matches_native("contract-recursive", unit);
+}
+
+#[test]
+fn frame_contracts_are_erased_before_native_execution() {
+    let source = include_str!("../spec/cases/verify/contract-frame.nera");
+    let output = analyze(&SourceFile::from_text("contract-frame.nera", source));
+    let unit = output.vir().unwrap();
+    assert!(
+        verify_program(&unit.resolve().unwrap(), Default::default())
+            .unwrap()
+            .is_memory_checked_core0()
+    );
+    assert_interpreter_matches_native("contract-frame", unit);
+    let erased = source
+        .lines()
+        .map(|line| {
+            if ["reads ", "writes ", "requires "]
+                .iter()
+                .any(|p| line.starts_with(p))
+            {
+                " ".repeat(line.len())
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let plain = analyze(&SourceFile::from_text("contract-frame.nera", &erased));
+    assert_interpreter_matches_native("contract-frame-erased", plain.vir().unwrap());
+}
+
+#[test]
+fn resource_contracts_preserve_interpreter_and_native_execution() {
+    let source = include_str!("../spec/cases/verify/contract-resources.nera");
+    let output = analyze(&SourceFile::from_text("contract-resources.nera", source));
+    let unit = output.vir().unwrap();
+    assert!(
+        verify_program(&unit.resolve().unwrap(), Default::default())
+            .unwrap()
+            .is_memory_checked_core0()
+    );
+    assert_interpreter_matches_native("contract-resources", unit);
+    let plain = source
+        .lines()
+        .map(|line| {
+            if line.starts_with("requires ") || line.starts_with("ensures ") {
+                " ".repeat(line.len())
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let plain = analyze(&SourceFile::from_text("contract-resources.nera", &plain));
+    assert_interpreter_matches_native("contract-resources-erased", plain.vir().unwrap());
+}
+
+#[test]
+fn multifile_spec_origins_preserve_native_execution() {
+    use nera::session::CompilerSession;
+    use nera::source::{SourceDatabase, SourceInput};
+    let inputs = [
+        (
+            "app",
+            "module app; use lib::answer; fn main()->u64 {assert true; return answer();}",
+        ),
+        (
+            "lib",
+            "module lib; pub fn answer()->u64 {let x=42; assert x == 42; return x;}",
+        ),
+    ]
+    .into_iter()
+    .map(|(name, text)| SourceInput::new(name, SourceFile::from_text(format!("{name}.nera"), text)))
+    .collect();
+    let session = CompilerSession::modules(
+        SourceDatabase::new(inputs).unwrap(),
+        Default::default(),
+        "app::main",
+    )
+    .unwrap();
+    let analysis = session.analyze("app").unwrap();
+    assert!(session.verify("app").unwrap().is_checked());
+    assert_interpreter_matches_native("multifile-spec-origins", analysis.frontend().vir().unwrap());
+}
+
 #[test]
 fn ordinary_memory_corpus_matches_native_and_independent_resource_ledgers() {
     for case in auto_memory_cases::cases() {

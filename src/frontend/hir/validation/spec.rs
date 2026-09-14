@@ -56,14 +56,10 @@ pub(super) fn validate_specs(program: &HirProgram) -> Result<(), HirProgramValid
             .filter(|clause| clause.id == term.clause);
         require(
             !term.kind.is_checked_numeric()
-                || (matches!(
-                    program.version(),
-                    crate::HirVersion::V14 | crate::HirVersion::V15 | crate::HirVersion::V16
-                ) && clause
-                    .is_some_and(|c| !matches!(c.owner, HirSpecClauseOwner::TrustEntry(_)))),
+                || clause.is_some_and(|c| !matches!(c.owner, HirSpecClauseOwner::TrustEntry(_))),
             "spec term",
             term.id.index(),
-            "checked numeric terms require V14 and cannot enter trust clauses",
+            "checked numeric terms cannot enter trust clauses",
         )?;
         require(
             clause.is_some_and(|clause| span_contains(clause.span, term.span))
@@ -180,11 +176,13 @@ pub(super) fn validate_specs(program: &HirProgram) -> Result<(), HirProgramValid
                     && matches!(program.type_kind(term.ty), Some(HirTypeKind::Bool))
             }),
             crate::HirSpecRoot::Assertion(id) => {
-                matches!(clause.owner, HirSpecClauseOwner::Prove(_))
-                    && specs
-                        .assertions
-                        .get(id.index())
-                        .is_some_and(|item| item.id == id && item.clause == clause.id)
+                matches!(
+                    clause.owner,
+                    HirSpecClauseOwner::Prove(_) | HirSpecClauseOwner::Contract { .. }
+                ) && specs
+                    .assertions
+                    .get(id.index())
+                    .is_some_and(|item| item.id == id && item.clause == clause.id)
             }
         };
         let owner_valid = match clause.owner {
@@ -307,8 +305,7 @@ fn is_spec_word_type(program: &HirProgram, ty: HirTypeId) -> bool {
     matches!(
         program.type_kind(ty),
         Some(HirTypeKind::Integer(HirIntegerType::U64))
-    ) || (program.version() == crate::HirVersion::V16
-        && program.data_layout().usize_size_bytes == 8
+    ) || (program.data_layout().usize_size_bytes == 8
         && matches!(
             program.type_kind(ty),
             Some(HirTypeKind::Integer(HirIntegerType::Usize))
@@ -324,6 +321,67 @@ fn validate_spec_snapshot(
         return false;
     };
     match snapshot {
+        HirSpecSnapshot::Length { function, parameter, entry } => program.function_by_id(function).is_some_and(|f| {
+            if parameter.is_none() && entry { return false; }
+            let post = entry || parameter.is_none();
+            let position = if post { HirSpecContractPosition::Ensures } else { HirSpecContractPosition::Requires };
+            let ty = if let Some(i) = parameter { f.body().and_then(|b| b.parameters.get(i as usize).and_then(|id| b.locals.get(id.index()))).map(|l| l.ty) } else { Some(f.signature.return_type) };
+            clause.owner == HirSpecClauseOwner::Contract { contract: f.contract, position }
+                && clause.location == if post { HirSpecLocation::FunctionResult { function } } else { HirSpecLocation::FunctionEntry { function } }
+                && program.data_layout().usize_size_bytes == 8
+                && matches!(program.type_kind(term.ty), Some(HirTypeKind::Integer(HirIntegerType::Usize)))
+                && ty.is_some_and(|ty| matches!(program.type_kind(ty), Some(HirTypeKind::Reference { pointee, .. }) if matches!(program.type_kind(*pointee), Some(HirTypeKind::Slice { .. }))))
+        }),
+        HirSpecSnapshot::Memory { function, parameter, old, projection } => {
+            program.function_by_id(function).is_some_and(|f| {
+                let position = match clause.owner {
+                    HirSpecClauseOwner::Contract { contract, position } if contract == f.contract => position,
+                    _ => return false,
+                };
+                let expected = match position {
+                    HirSpecContractPosition::Requires => HirSpecLocation::FunctionEntry { function },
+                    HirSpecContractPosition::Ensures => HirSpecLocation::FunctionResult { function },
+                };
+                if clause.location != expected || (old || parameter.is_none()) && position != HirSpecContractPosition::Ensures || old && parameter.is_none() {
+                    return false;
+                }
+                let ty = if let Some(parameter) = parameter {
+                    f.body().and_then(|body| body.parameters.get(parameter as usize).and_then(|id| body.locals.get(id.index()))).map(|local| local.ty)
+                } else { Some(f.signature.return_type) };
+                let Some(ty) = ty else { return false; };
+                use super::super::HirTypeKind as K;
+                use crate::{SpecMemoryIndex as I, SpecMemoryProjection as M};
+                let pointee = match program.type_kind(ty) {
+                    Some(K::Own { pointee } | K::Reference { pointee, .. }) => *pointee,
+                    Some(K::Slice { .. }) => ty,
+                    _ => return false,
+                };
+                let selected = match projection {
+                    M::Cell => Some(pointee),
+                    M::Field(id) => program.fields().get(id.get() as usize).filter(|field| field.id == id && field.owner == pointee).map(|field| field.ty),
+                    M::Index(index) => {
+                        if let I::Parameter(i) = index {
+                            let index_ty = f.body().and_then(|b| b.parameters.get(i as usize).and_then(|id| b.locals.get(id.index()))).map(|l| l.ty);
+                            if !index_ty.is_some_and(|ty| matches!(program.type_kind(ty), Some(K::Integer(HirIntegerType::Usize)))) { return false; }
+                        }
+                        match program.type_kind(pointee) {
+                            Some(K::Array { element, length }) if !matches!(index, I::Constant(i) if i >= *length) => Some(*element),
+                            Some(K::Slice { element, .. }) => Some(*element),
+                            _ => None,
+                        }
+                    }
+                };
+                selected == Some(term.ty) && is_spec_scalar_type(program, term.ty)
+            })
+        }
+        HirSpecSnapshot::EntryParameter { function, parameter } => {
+            program.function_by_id(function).is_some_and(|f| {
+                is_spec_scalar_type(program, term.ty)
+                    && clause.owner == HirSpecClauseOwner::Contract { contract: f.contract, position: HirSpecContractPosition::Ensures }
+                    && clause.location == HirSpecLocation::FunctionResult { function }
+                    && f.body().and_then(|body| body.parameters.get(parameter as usize).and_then(|id| body.locals.get(id.index()))).is_some_and(|local| local.ty == term.ty)
+            })
+        }
         HirSpecSnapshot::Local { function, local } => program
             .function_by_id(function)
             .and_then(|function| function.body.as_ref().map(|body| (function, body)))
@@ -333,6 +391,10 @@ fn validate_spec_snapshot(
                         function: function.id,
                     }
                     && body.parameters.contains(&local)
+                    || clause.location == HirSpecLocation::FunctionResult { function: function.id }
+                        && matches!(clause.root, crate::HirSpecRoot::Assertion(_))
+                        && matches!(clause.owner, HirSpecClauseOwner::Contract { contract, .. } if contract == function.contract)
+                        && body.parameters.contains(&local)
                     || matches!(clause.location, HirSpecLocation::Statement { function: owner, .. } if owner == function.id))
                     && body
                         .locals
@@ -350,6 +412,9 @@ fn validate_spec_snapshot(
         }
     }
 }
+
+#[cfg(test)]
+mod memory_snapshot_tests;
 
 fn unary_depth(depths: &[usize], operand: HirSpecTermId) -> usize {
     depths

@@ -26,12 +26,18 @@ fn witness_theory_and_budget_failures_are_distinct_and_do_not_grant_authority() 
                     *witness = None;
                 }
             }
-            1 => spec_memory::add(&mut unit, spec_memory::location(3), |terms| {
-                SpecAssertionKind::PointsTo {
-                    memory: spec_memory::claim(terms),
-                    value: Some(terms[2]),
-                }
-            }),
+            1 => {
+                spec_memory::add(&mut unit, spec_memory::location(3), |terms| {
+                    SpecAssertionKind::PointsTo {
+                        memory: spec_memory::claim(terms),
+                        value: Some(terms[2]),
+                    }
+                });
+                // Single-cell value observations are supported since 8.2.
+                // A scalar value over a partial-cell range is still outside
+                // that theory; keep testing a genuinely unsupported shape.
+                unit.specs.terms_mut()[1].kind = VirSpecTermKind::U64(4);
+            }
             _ => {
                 spec_separation::add(
                     &mut unit,

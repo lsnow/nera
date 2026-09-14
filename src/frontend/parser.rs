@@ -329,6 +329,66 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
                 "explicit lifetime where clauses were removed; borrow dependencies are inferred, and stronger interface constraints require a stage 8 contract",
             ));
         }
+        let mut clauses = Vec::new();
+        while matches!(
+            self.current().kind(),
+            TokenKind::Keyword(
+                Keyword::Requires | Keyword::Ensures | Keyword::Reads | Keyword::Writes
+            )
+        ) {
+            let keyword = self.bump();
+            let expression = if matches!(
+                keyword.kind(),
+                TokenKind::Keyword(Keyword::Reads | Keyword::Writes)
+            ) {
+                if self.current().kind() == TokenKind::Keyword(Keyword::Result) {
+                    return Err(FrontendFailure::unsupported(
+                        self.current().span(),
+                        "effect footprints use entry parameters, not result",
+                    ));
+                }
+                if self.at_punctuation(Punctuation::LeftParen)
+                    && self.nth_significant(1).kind()
+                        == TokenKind::Punctuation(Punctuation::RightParen)
+                {
+                    let start = self.bump().span().start();
+                    let end = self.bump().span().end();
+                    let value = AstExpression {
+                        span: span(start, end),
+                        kind: AstExpressionKind::Unit,
+                    };
+                    super::AstLogicalExpression {
+                        span: value.span,
+                        kind: super::AstLogicalExpressionKind::Value(value),
+                    }
+                } else {
+                    let value = self.parse_primary(0, false)?;
+                    super::AstLogicalExpression {
+                        span: value.span,
+                        kind: super::AstLogicalExpressionKind::Value(value),
+                    }
+                }
+            } else {
+                self.parse_logical_expression()?
+            };
+            let end = self
+                .expect_punctuation(
+                    Punctuation::Semicolon,
+                    "expected `;` after function contract",
+                )?
+                .span()
+                .end();
+            clauses.push(super::AstFunctionClause {
+                ensures: keyword.kind() == TokenKind::Keyword(Keyword::Ensures),
+                effect: match keyword.kind() {
+                    TokenKind::Keyword(Keyword::Reads) => Some(false),
+                    TokenKind::Keyword(Keyword::Writes) => Some(true),
+                    _ => None,
+                },
+                expression,
+                span: span(keyword.span().start(), end),
+            });
+        }
         if matches!(
             self.current().kind(),
             TokenKind::Keyword(
@@ -342,7 +402,7 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
         ) {
             return Err(FrontendFailure::unsupported(
                 self.current().span(),
-                "contracts and where clauses are not supported by Core0",
+                "effect clauses and where clauses are not supported yet",
             ));
         }
         let body = self.parse_block(0, 0)?;
@@ -365,6 +425,7 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
                 generics,
                 parameters,
                 return_type,
+                clauses,
                 body: body.ast,
                 span: function_span,
             },

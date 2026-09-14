@@ -1,0 +1,14 @@
+fn main() -> u64 {
+    let mut value = 41;
+    increment(&mut value);
+    return value;
+}
+
+fn increment(p: &mut u64)
+requires *p == 41;
+ensures *p == old(*p) + 1;
+{
+    let before = *p;
+    *p = before + 1;
+    return;
+}

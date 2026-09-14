@@ -5,7 +5,7 @@ use crate::verifier::{
     resource::ResourceState,
     transfer::{
         SpecFootprint, SpecMemoryQuery, query_spec_memory, spec_alive, spec_footprint,
-        spec_same_allocation,
+        spec_same_allocation, spec_scalar_contents,
     },
     vc::{evaluate_u64, validate_witness},
 };
@@ -231,6 +231,38 @@ impl MatchContext<'_, '_> {
             return None;
         }
         let snapshot = |s| snapshot_id(s, function);
+        if let A::Disjoint { left, right } = kind {
+            let mut range = |r: &crate::SpecMemoryRange<
+                VirSpecSnapshot,
+                crate::VirSpecTermId,
+                crate::VirMemoryAccess,
+            >|
+             -> Option<SpecMemoryQuery> {
+                Some(SpecMemoryQuery {
+                    pointer: snapshot(r.pointer)?,
+                    authority: None,
+                    start: self.number(r.start_bytes, bindings, normalizer, budget)?,
+                    end: self.number(r.end_bytes, bindings, normalizer, budget)?,
+                    layout: r.layout,
+                    access: crate::AccessPermission::Read,
+                    initialized: false,
+                    valid: false,
+                })
+            };
+            let left = range(left)?;
+            let right = range(right)?;
+            return Some((
+                crate::verifier::transfer::query_spec_disjoint(
+                    state,
+                    &unit.as_unit().memory,
+                    left,
+                    right,
+                    config,
+                    budget,
+                )?,
+                None,
+            ));
+        }
         budget.begin_query()?;
         budget.charge(1)?;
         let query = match kind {
@@ -271,12 +303,41 @@ impl MatchContext<'_, '_> {
             },
             _ => return None,
         };
-        let status = query_spec_memory(state, &unit.as_unit().memory, query, config, budget)?;
-        // Current ResourceState stores initialization/representation, not scalar
-        // heap contents. A previous store or diagnostic is NOT a value fact.
-        if status.is_proven() && matches!(kind, A::PointsTo { value: Some(_), .. }) {
-            Some((ObligationStatus::Unknown, None))
-        } else {
+        let mut status = query_spec_memory(state, &unit.as_unit().memory, query, config, budget)?;
+        if status.is_proven()
+            && let A::PointsTo {
+                value: Some(value), ..
+            } = kind
+        {
+            let contents = spec_scalar_contents(state, &unit.as_unit().memory, query, budget);
+            let root = normalizer.normalize_bound(unit, *value, bindings).ok()?;
+            let expected = match unit.as_unit().memory.kind(query.layout.ty) {
+                Some(crate::VirMemoryTypeKind::Bool) => evaluate_bool(
+                    normalizer.arena(),
+                    root,
+                    &BTreeSet::new(),
+                    self.values()?,
+                    function,
+                    budget,
+                )
+                .filter(|b| *b != AbstractBool::Unknown)
+                .map(crate::AbstractValue::Bool),
+                _ => evaluate_u64(normalizer.arena(), root, self.values()?, function, budget)
+                    .map(|v| crate::AbstractValue::U64(crate::U64Interval::exact(v))),
+            };
+            status = match (contents, expected) {
+                (Some(values), Some(expected)) if values.iter().all(|v| *v == expected) => {
+                    ObligationStatus::Proven
+                }
+                (Some(values), Some(expected))
+                    if values.iter().any(|v| scalar_disjoint(*v, expected)) =>
+                {
+                    ObligationStatus::Refuted
+                }
+                _ => ObligationStatus::Unknown,
+            };
+        }
+        {
             let footprint = if status.is_proven() && query.authority.is_some() {
                 Some(spec_footprint(state, query)?)
             } else {
@@ -300,6 +361,16 @@ impl MatchContext<'_, '_> {
             self.function,
             budget,
         )
+    }
+}
+
+fn scalar_disjoint(a: crate::AbstractValue, b: crate::AbstractValue) -> bool {
+    match (a, b) {
+        (crate::AbstractValue::U64(a), crate::AbstractValue::U64(b)) => a.intersection(b).is_none(),
+        (crate::AbstractValue::Bool(a), crate::AbstractValue::Bool(b)) => {
+            a != AbstractBool::Unknown && b != AbstractBool::Unknown && a != b
+        }
+        _ => false,
     }
 }
 

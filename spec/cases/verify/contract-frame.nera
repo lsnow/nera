@@ -1,0 +1,16 @@
+fn main() -> u64 {
+    let mut data = [1, 2];
+    update(&mut data[0..2]);
+    return data[0] + data[1];
+}
+
+fn update(p: &mut [u64])
+requires len(p) == 2usize;
+reads ();
+writes p[0..1];
+writes p[1..2];
+{
+    p[0] = 12;
+    p[1] = 30;
+    return;
+}

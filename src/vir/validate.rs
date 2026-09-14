@@ -206,7 +206,7 @@ pub enum VirValidationErrorKind {
 }
 
 pub(super) fn validate(unit: &VirUnit) -> Result<(), VirValidationError> {
-    if unit.version != VirUnitVersion::V21 {
+    if unit.version != VirUnitVersion::V25 {
         return Err(program_error(
             VirValidationErrorKind::UnsupportedUnitVersion(unit.version),
         ));

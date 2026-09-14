@@ -479,8 +479,8 @@ refuted, or unknown. Only proven conditions contribute to a successful
 closed.
 
 The language does not require explicit contracts for ordinary safe code in this
-release. Local assertions are supported as described below. General function
-contracts and proof blocks remain reserved and unsupported.
+release. Local assertions and bounded function contracts are supported as
+described below. Proof blocks remain reserved and unsupported.
 
 ### 17.1 Static local assertions
 
@@ -542,9 +542,9 @@ values that reside in addressable storage, or whose values were not retained
 across a control-flow join, cannot yet be observed; the compiler rejects these
 cases explicitly. Assertions do not extend a borrow's lifetime.
 
-Only single-file programs currently support explicit assertions. General
-function preconditions/postconditions, `old`, `result`, loop invariants,
-`proof`/`ghost`, and source quantifiers remain unsupported.
+Assertions and contracts can occur in closed multi-file programs and concrete
+generic instances. Loop invariants, `proof`/`ghost`, and source quantifiers
+remain unsupported.
 
 `verify` exits with status 0 for a checked program, 1 for an unproved program,
 and 2 for rejected source. Failed conditions distinguish insufficient facts,
@@ -554,6 +554,67 @@ boundary.
 
 `run` and `build` erase assertions and remain unverified, even if an assertion
 is false. A static assertion is not a runtime bounds check or trap.
+
+### 17.2 Function contracts and frames
+
+Clauses appear between a function signature and its body, each ending in `;`:
+
+```nera
+fn successor(value: u64) -> u64
+requires value <= 41;
+ensures result == old(value) + 1;
+reads ();
+writes ();
+{
+    return value + 1;
+}
+```
+
+Every caller must establish `requires` for the actual arguments. The body must
+establish `ensures` at every reachable normal return before callers may rely
+on it. Repeated clauses are conjunctive. An entry function cannot assume an
+arbitrary precondition without a caller. Allocation failure does not establish
+a normal-return guarantee.
+
+Pure clauses support `bool`, `u64`, and 64-bit `usize`. Parameter names in a
+postcondition denote entry values; `result` denotes the returned value and
+`old(parameter)` explicitly denotes its entry value. Parameters are immutable;
+use a local variable for updates. Importing preconditions is limited to
+supported boolean conditions and conjunctions of parameter/constant comparisons.
+General disjunctive preconditions are not supported.
+
+Bounded scalar memory observations include supported dereferences, fields and
+indices, with `old` referring to the entry observation. `len` observes slice
+length. These observations require real access authority and tracked contents;
+they are not a general logical heap or unrestricted pointer-valued snapshot.
+
+Resource clauses use `readable(p, begin..end)` or `writable(p, begin..end)`
+over half-open element ranges. They check and transfer existing resources,
+never manufacture permission. Conflicting exclusive claims cannot be combined.
+Return resources must agree with the actual result and inferred borrow source;
+contracts cannot authorize a dangling reference or upgrade a shared borrow.
+
+`reads` and `writes` bound observable effects independently. Supported targets
+include scalar dereferences and bounded parameter-relative ranges. `reads ();`
+and `writes ();` explicitly declare empty footprints. Omitting a clause instead
+uses inferred effects; it is not equivalent to an empty declaration. A frame
+does not itself grant permission to access or free memory. Range checks and
+old observations bind to entry state, not arbitrary post-call heap identities.
+
+Recursive functions may use checked contracts within the bounded recursive
+analysis. All affected bodies and recursive calls must pass before guarantees
+are published. This is not a termination proof and does not support arbitrary
+input/output relations. Modules still form one closed source set; contracts
+are not standalone proof artifacts that can be imported without implementations.
+
+The current arena example separates scalar capacity checks from exclusive
+slice transfers. General heap-cursor postconditions, some newly returned
+subslice combinations, and early restoration of a parent after a returned
+borrow's last use remain unsupported or conservatively rejected. Such failures
+must not be interpreted as a successful memory-safety proof.
+
+Contracts, like assertions, are erased by `run` and `build`; native artifacts
+remain unverified. A `Checked` result does not formally prove the compiler.
 
 ## 18. Compact grammar
 
@@ -577,7 +638,14 @@ variant       = identifier
 
 function      = "fn" identifier [ generics ]
                 "(" [ parameter { "," parameter } [ "," ] ] ")"
-                [ "->" type ] block ;
+                [ "->" type ] { contract-clause } block ;
+contract-clause = ( "requires" | "ensures" ) contract-expression ";"
+                | ( "reads" | "writes" ) footprint ";" ;
+contract-expression = logical-expression | resource-claim ;
+resource-claim = ( "readable" | "writable" ) "(" identifier ","
+                 logical-expression ".." logical-expression ")" ;
+footprint     = "(" ")" | place | place "[" logical-expression ".."
+                logical-expression "]" ;
 parameter     = identifier ":" type ;
 generics      = "<" generic { "," generic } ">" ;
 generic       = identifier | "const" identifier ":" "usize" ;

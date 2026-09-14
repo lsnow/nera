@@ -619,6 +619,7 @@ impl ObjectState {
 /// An allocation's immutable shape and path-sensitive resource facts.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct AbstractAllocation {
+    pub(super) scalar_contents: super::contents::ScalarContents,
     pub(super) region: Option<VirRegionId>,
     pub(super) size_bytes: u64,
     pub(super) alignment: GuaranteedAlignment,
@@ -658,6 +659,7 @@ impl AbstractAllocation {
             .map_err(|error| AbstractAllocationError::InvalidAlignment(error.bytes))?;
         Ok(Self {
             region,
+            scalar_contents: Default::default(),
             size_bytes,
             alignment,
             liveness: LivenessState::Live,
@@ -710,11 +712,15 @@ impl AbstractAllocation {
     }
 
     pub fn mark_dead(&mut self) {
+        self.scalar_contents.clear();
         self.liveness = LivenessState::Dead;
         self.ownership = OwnershipState::Unowned;
     }
 
     pub fn set_liveness(&mut self, liveness: LivenessState) {
+        if liveness != LivenessState::Live {
+            self.scalar_contents.clear();
+        }
         self.liveness = liveness;
     }
 
@@ -723,6 +729,7 @@ impl AbstractAllocation {
     }
 
     pub fn mark_initialized(&mut self, range: ByteRange) -> Result<(), AbstractAllocationError> {
+        self.scalar_contents.forget(range);
         self.check_range(range)?;
         self.initialization_prefixes.invalidate(range);
         self.initialization.mark_initialized(range);
@@ -736,6 +743,7 @@ impl AbstractAllocation {
     }
 
     pub fn mark_uninitialized(&mut self, range: ByteRange) -> Result<(), AbstractAllocationError> {
+        self.scalar_contents.forget(range);
         self.check_range(range)?;
         self.initialization_prefixes.invalidate(range);
         self.initialization.mark_uninitialized(range);
@@ -750,6 +758,7 @@ impl AbstractAllocation {
         range: ByteRange,
     ) -> Result<(), AbstractAllocationError> {
         self.check_range(range)?;
+        self.scalar_contents.forget(range);
         self.initialization_prefixes.invalidate(range);
         self.initialization.forget(range);
         self.valid_value_bytes.remove(range);
@@ -758,6 +767,7 @@ impl AbstractAllocation {
     }
 
     pub fn forget_validity(&mut self, range: ByteRange) -> Result<(), AbstractAllocationError> {
+        self.scalar_contents.forget(range);
         self.check_range(range)?;
         self.initialization_prefixes.invalidate(range);
         self.valid_value_bytes.remove(range);
@@ -774,6 +784,7 @@ impl AbstractAllocation {
         key: ObjectStateKey,
         state: ActiveVariantState,
     ) -> Result<bool, AbstractAllocationError> {
+        self.scalar_contents.clear();
         let range = ByteRange::from_start_and_length(key.offset_bytes(), 1).map_err(|_| {
             AbstractAllocationError::RangeOutOfBounds {
                 range: ByteRange {
@@ -811,6 +822,7 @@ impl AbstractAllocation {
     }
 
     pub fn forget_object_state(&mut self, range: ByteRange) -> Result<(), AbstractAllocationError> {
+        self.scalar_contents.forget(range);
         self.check_range(range)?;
         self.object_state.forget_range(range);
         Ok(())
@@ -825,6 +837,7 @@ impl AbstractAllocation {
         range: ByteRange,
     ) -> Result<(), AbstractAllocationError> {
         self.check_range(range)?;
+        self.scalar_contents.forget(range);
         self.initialization_prefixes.invalidate(range);
         self.initialization.forget_uninitialized(range);
         Ok(())
@@ -856,6 +869,7 @@ impl AbstractAllocation {
         }
         Ok(Self {
             region: self.region,
+            scalar_contents: self.scalar_contents.join(&other.scalar_contents),
             size_bytes: self.size_bytes,
             alignment: self.alignment,
             liveness: self.liveness.join(other.liveness),

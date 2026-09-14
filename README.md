@@ -16,6 +16,8 @@ the verifier, and the direct x86_64 Linux backend, but it is not production-read
 - Path-sensitive checks across branches and loops.
 - Static local assertions with bounded logic, checked arithmetic, and
   allocation-liveness and initialization observations.
+- Function preconditions, postconditions, bounded memory observations, and
+  explicit read/write frames, checked together with inferred borrow permissions.
 - Detection of use-after-free, double free, conflicting aliases,
   uninitialized access, out-of-bounds access, and invalid pointer use.
 - Partial initialization and partial moves for structs, tuples, arrays, and
@@ -49,6 +51,33 @@ profile and trust boundary. The compiler and native backend are not formally
 proved, and native executables are currently reported as **unverified**.
 
 ## Examples
+
+### Function contracts
+
+```nera
+fn successor(value: u64) -> u64
+requires value <= 41;
+ensures result == old(value) + 1;
+{
+    return value + 1;
+}
+
+fn main() -> u64 {
+    return successor(41);
+}
+```
+
+Callers prove the precondition; the implementation proves the postcondition
+on each normal return. Contracts do not create memory permissions. Explicit
+`reads ();` or `writes ();` restricts that effect to an empty footprint;
+omitting a frame lets the compiler infer the corresponding effects.
+Recursive and multi-file contracts are supported within the bounded profile,
+not as independently importable proofs.
+
+See `spec/cases/verify/contract-arena.nera` for two disjoint reservations from
+one backing array, capacity failure, and borrow restoration on function return.
+It uses separate scalar reservation checks and slice transfers, not a general
+heap-cursor allocator abstraction.
 
 ### Ownership and explicit allocation
 
@@ -214,10 +243,13 @@ For the focused local-assertion and memory-proof regression suite:
 
 ```sh
 cargo run -p xtask -- check-spec-local
+cargo run -p xtask -- check-contracts
 ```
 
 This runs the related tests, native checks, formatting, snapshots, compilation,
 and Clippy. It does not replace the full release gate.
+`check-contracts` includes the local-assertion suite and the function-contract
+regressions; running both is unnecessary when testing all these features.
 
 ## Command-line interface
 
@@ -240,8 +272,9 @@ the program. `run` uses the interpreter, and `build` emits native artifacts.
 - Runtime arithmetic is intentionally small: addition and comparisons are
   supported. Static assertions additionally support bounded logical operators,
   checked subtraction, and multiplication by literal constants.
-- Local assertions currently require a single-file program. General function
-  contracts, proof blocks, ghost code, and source quantifiers are not available.
+- Function contracts support a bounded scalar/resource/frame profile. General
+  heap relations, arbitrary recursive relations, loop invariants, opaque
+  predicates, proof blocks, ghost code, and source quantifiers are unavailable.
 - Modules form one closed source set; package discovery and separate linking are
   not implemented.
 - Generic code is checked through concrete instances; traits are not available.

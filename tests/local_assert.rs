@@ -207,9 +207,17 @@ fn loop_local_assertions_and_parser_budgets_are_bounded() {
         "fn main()->u64 { let mut i=0; while i<3 { assert i<3; i=i+1; } assert i>=3; return i; }";
     assert!(proofs(source).iter().all(|p| p.0.is_proven()));
     let source = format!("fn main() {{ assert {}true; }}", "!".repeat(130));
-    let output = analyze(&SourceFile::from_text("bounded.nera", source));
-    assert_eq!(output.status(), FrontendStatus::Unsupported);
-    assert!(output.vir().is_none());
+    std::thread::Builder::new()
+        .name("logical-prefix-budget".into())
+        .stack_size(2 * 1024 * 1024)
+        .spawn(move || {
+            let output = analyze(&SourceFile::from_text("bounded.nera", source));
+            assert_eq!(output.status(), FrontendStatus::Unsupported);
+            assert!(output.vir().is_none());
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 #[test]

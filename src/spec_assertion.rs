@@ -1,5 +1,20 @@
 //! Shared syntax only. These claims neither allocate nor supply authority.
 
+/// Bounded, entry-bound index in a contract memory observation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SpecMemoryIndex {
+    Constant(u64),
+    Parameter(u32),
+}
+
+/// One canonical projection; nested pointer chasing is deliberately absent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SpecMemoryProjection<F> {
+    Cell,
+    Field(F),
+    Index(SpecMemoryIndex),
+}
+
 /// Requested access, to be matched against existing runtime authority.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SpecAccess {
@@ -20,11 +35,29 @@ pub struct SpecMemoryClaim<S, T, L> {
     pub access: SpecAccess,
 }
 
+/// Geometry only; this descriptor carries no access authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpecMemoryRange<S, T, L> {
+    pub pointer: S,
+    pub start_bytes: T,
+    pub end_bytes: T,
+    pub layout: L,
+}
+
 /// Assertion syntax is separate from Bool terms. Separation edges are ordered
 /// occurrences: `[a, a]` must remain two uses even when the node is shared.
 /// Exists binds one clause-owned scalar binder in `body`, never in `witness`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SpecAssertionKind<T, A, B, S, L> {
+    /// Entry-bound public effect upper bound, never an access capability.
+    Footprint {
+        write: bool,
+        range: Option<SpecMemoryRange<S, T, L>>,
+    },
+    Disjoint {
+        left: SpecMemoryRange<S, T, L>,
+        right: SpecMemoryRange<S, T, L>,
+    },
     Pure(T),
     /// State observations, not authority. Identity includes allocation instance.
     Alive(S),
@@ -56,6 +89,8 @@ impl<T, A, B, S, L> SpecAssertionKind<T, A, B, S, L> {
     /// Direct runtime observations; child assertions are visited separately.
     pub(crate) fn snapshots(&self) -> impl Iterator<Item = &S> {
         let snapshots = match self {
+            Self::Footprint { range, .. } => [range.as_ref().map(|r| &r.pointer), None],
+            Self::Disjoint { left, right } => [Some(&left.pointer), Some(&right.pointer)],
             Self::Alive(pointer) | Self::Initialized { pointer, .. } => [Some(pointer), None],
             Self::SameAllocation { left, right } => [Some(left), Some(right)],
             Self::Permission(memory) | Self::PointsTo { memory, .. } => {

@@ -8,6 +8,8 @@ use super::{
     VirFunctionId, VirInstruction, VirUnit,
 };
 use crate::ByteSpan;
+mod contract;
+pub use contract::VirContractCallBinding;
 
 /// Runtime-only resolved view consumed by execution and code generation.
 ///

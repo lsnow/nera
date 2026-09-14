@@ -2,6 +2,7 @@
 
 mod body_validation;
 mod borrow_inference;
+mod contract_resources;
 mod ids;
 mod lifetimes;
 mod local_spec;
@@ -437,6 +438,7 @@ enum SurfaceVariantStyle {
 }
 
 struct Elaborator {
+    contract_position: Option<HirSpecContractPosition>,
     specs: HirSpecEnvironment,
     graph: super::modules::ModuleGraph,
     current_module: usize,
@@ -587,6 +589,7 @@ impl Elaborator {
             next_loop: 0,
             next_node: 0,
             specs: HirSpecEnvironment::empty(),
+            contract_position: None,
             active_loops: Vec::new(),
             current_function: None,
             return_type: core_types.unit,
@@ -737,7 +740,7 @@ impl Elaborator {
             self.current_function = Some(declaration.id);
             self.return_type = declaration.signature.return_type;
             let (root, parameters) =
-                self.elaborate_root_block(&function.body, &function.parameters)?;
+                self.elaborate_root_block(&function.body, &function.parameters, &function.clauses)?;
             self.current_function = None;
             let locals = std::mem::take(&mut self.locals);
             let mut body = HirBody {
@@ -764,8 +767,10 @@ impl Elaborator {
             contracts.push(HirContract {
                 id: declaration.contract,
                 function: declaration.id,
-                is_implicit: true,
-                clauses: Vec::new(),
+                is_implicit: function.clauses.is_empty(),
+                clauses: self.specs.clauses.iter().filter_map(|clause| {
+                    matches!(clause.owner, HirSpecClauseOwner::Contract { contract, .. } if contract == declaration.contract).then_some(clause.id)
+                }).collect(),
                 span: function.span,
             });
             modules[*module]
@@ -1635,6 +1640,7 @@ impl Elaborator {
         &mut self,
         block: &AstBlock,
         parameters: &[super::AstParameter],
+        clauses: &[super::AstFunctionClause],
     ) -> Result<(HirBlock, Vec<HirLocalId>), FrontendFailure> {
         self.scopes.push(ScopeFrame {
             id: ROOT_SCOPE,
@@ -1673,6 +1679,7 @@ impl Elaborator {
                 parameter.span,
             )?);
         }
+        self.elaborate_function_clauses(clauses)?;
         let result = self.elaborate_statements(&block.statements);
         let frame = self.scopes.pop().expect("root scope was pushed");
         let statements = result?;

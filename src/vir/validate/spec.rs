@@ -644,12 +644,15 @@ fn validate_pure_specs(
         }
         match clause.kind {
             VirSpecClauseKind::Assertion { root } => {
-                if !matches!(clause.owner, crate::VirSpecClauseOwner::Prove(_))
-                    || !unit
-                        .specs
-                        .assertions()
-                        .get(root.get() as usize)
-                        .is_some_and(|a| a.id == root && a.clause == clause.id)
+                if !matches!(
+                    clause.owner,
+                    crate::VirSpecClauseOwner::Prove(_)
+                        | crate::VirSpecClauseOwner::Contract { .. }
+                ) || !unit
+                    .specs
+                    .assertions()
+                    .get(root.get() as usize)
+                    .is_some_and(|a| a.id == root && a.clause == clause.id)
                 {
                     return Err(program_error(
                         VirValidationErrorKind::InvalidSpecClauseOwner(clause.id),
@@ -878,6 +881,101 @@ fn validate_snapshot_type(
     matches_type: impl Fn(VirType) -> bool + Copy,
 ) -> bool {
     match snapshot {
+        crate::VirSpecSnapshot::Memory {
+            function,
+            parameter,
+            old,
+            projection,
+        } => {
+            let Some(f) = unit.runtime.functions.iter().find(|f| f.id == function) else {
+                return false;
+            };
+            let position = match clause.owner {
+                crate::VirSpecClauseOwner::Contract { contract, position }
+                    if contract == f.contract =>
+                {
+                    position
+                }
+                _ => return false,
+            };
+            let expected = match position {
+                crate::VirContractPosition::Requires => {
+                    crate::VirSpecLocation::FunctionEntry { function }
+                }
+                crate::VirContractPosition::Ensures => {
+                    crate::VirSpecLocation::FunctionResult { function }
+                }
+            };
+            if clause.location != expected
+                || (old || parameter.is_none()) && position != crate::VirContractPosition::Ensures
+                || old && parameter.is_none()
+            {
+                return false;
+            }
+            let Some(abi) = unit.runtime.abis.function(function) else {
+                return false;
+            };
+            let binding = if let Some(i) = parameter {
+                abi.signature.parameters().get(i as usize)
+            } else {
+                if abi.signature.results().len() != 1 {
+                    return false;
+                }
+                abi.signature.results().first()
+            };
+            use crate::{SpecMemoryIndex as I, SpecMemoryProjection as M, VirMemoryTypeKind as K};
+            let (base, slice) = match binding.map(|b| b.value()) {
+                Some(crate::VirAbiValue::Pointer { pointee, .. }) => (*pointee, false),
+                Some(crate::VirAbiValue::Slice { element, .. }) => (*element, true),
+                _ => return false,
+            };
+            let selected = match projection {
+                M::Cell if !slice => Some(base.ty),
+                M::Field(id) if !slice => unit
+                    .memory
+                    .field(id)
+                    .filter(|f| f.owner == base.ty)
+                    .map(|f| f.ty),
+                M::Index(index) => {
+                    if let I::Parameter(i) = index
+                        && !abi.signature.parameters().get(i as usize).is_some_and(|b| matches!(b.value(), crate::VirAbiValue::Scalar { access, ty: VirType::U64 } if matches!(unit.memory.kind(access.ty), Some(K::Integer(crate::VirIntegerType::Usize))))) { return false; }
+                    if slice {
+                        Some(base.ty)
+                    } else {
+                        match unit.memory.kind(base.ty) {
+                            Some(K::Array { element, length }) if !matches!(index, I::Constant(i) if i >= *length) => {
+                                Some(*element)
+                            }
+                            _ => None,
+                        }
+                    }
+                }
+                _ => None,
+            };
+            match selected.and_then(|ty| unit.memory.kind(ty)) {
+                Some(crate::VirMemoryTypeKind::Bool) => matches_type(VirType::Bool),
+                Some(crate::VirMemoryTypeKind::Integer(
+                    crate::VirIntegerType::U64 | crate::VirIntegerType::Usize,
+                )) => matches_type(VirType::U64),
+                _ => false,
+            }
+        }
+        crate::VirSpecSnapshot::EntryParameter { function, slot } => unit
+            .runtime
+            .functions
+            .iter()
+            .find(|f| f.id == function)
+            .is_some_and(|f| {
+                clause.owner
+                    == crate::VirSpecClauseOwner::Contract {
+                        contract: f.contract,
+                        position: crate::VirContractPosition::Ensures,
+                    }
+                    && clause.location == crate::VirSpecLocation::FunctionResult { function }
+                    && f.signature.parameters.get(slot as usize).is_some_and(|ty| {
+                        matches!(ty, VirType::Bool | VirType::U64) && matches_type(*ty)
+                    })
+            }),
         crate::vir::VirSpecSnapshot::Parameter { function, slot } => unit
             .runtime
             .functions
@@ -885,7 +983,10 @@ fn validate_snapshot_type(
             .find(|candidate| candidate.id == function)
             .and_then(|function| function.signature.parameters.get(slot as usize))
             .is_some_and(|runtime_ty| {
-                clause.location == crate::vir::VirSpecLocation::FunctionEntry { function }
+                (clause.location == crate::vir::VirSpecLocation::FunctionEntry { function }
+                    || clause.location == crate::VirSpecLocation::FunctionResult { function }
+                        && matches!(clause.kind, crate::VirSpecClauseKind::Assertion { .. })
+                        && matches!(clause.owner, crate::VirSpecClauseOwner::Contract { .. }))
                     && matches_type(*runtime_ty)
             }),
         crate::vir::VirSpecSnapshot::Result { function, slot } => unit

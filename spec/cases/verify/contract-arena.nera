@@ -1,0 +1,52 @@
+// Initialized backing; endpoint reservation does not mutate hidden heap state.
+fn main() -> u64 {
+    let mut backing = [0, 0, 0, 0, 0, 7];
+    let total = exercise(&mut backing[..]);
+    backing[0] = 5;
+    return total;
+}
+
+fn exercise(parent: &mut [u64]) -> u64
+requires len(parent) >= 6usize;
+{
+    let remaining = &mut parent[4usize..];
+    let mut cursor = 0usize;
+    let begin = cursor;
+    if reserve(cursor, len(parent), 2usize) {
+        cursor = 2usize;
+        let left = take(&mut parent[begin..cursor]);
+        left[0] = 12;
+        let next = cursor;
+        if reserve(cursor, len(parent), 4usize) {
+            cursor = 4usize;
+            let middle = take(&mut parent[next..cursor]);
+            middle[0] = 30;
+            if reserve(cursor, len(parent), 7usize) {
+                return 99;
+            }
+            let total = left[0] + middle[0] + remaining[1];
+            if cursor == 4usize { return total; }
+            return 99;
+        }
+    }
+    return 0;
+}
+
+fn reserve(cursor: usize, capacity: usize, end: usize) -> bool
+reads ();
+writes ();
+ensures !result || (cursor <= end && end <= capacity);
+{
+    if cursor <= end {
+        if end <= capacity { return true; }
+    }
+    return false;
+}
+
+fn take(storage: &mut [u64]) -> &mut [u64]
+reads ();
+writes ();
+ensures len(result) == old(len(storage));
+{
+    return storage;
+}
