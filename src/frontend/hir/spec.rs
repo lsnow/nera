@@ -114,6 +114,12 @@ pub enum HirSpecSnapshot {
         function: HirFunctionId,
         parameter: u32,
     },
+    /// Scalar value at activation of this lexical loop, not its next iteration.
+    LoopEntry {
+        function: HirFunctionId,
+        loop_id: HirLoopId,
+        local: HirLocalId,
+    },
     Local {
         function: HirFunctionId,
         local: HirLocalId,
@@ -275,7 +281,7 @@ pub struct HirTrustEntry {
     pub span: ByteSpan,
 }
 
-/// Typed loop-invariant identity. Non-trivial entries remain gated in 6.4.5.
+/// Typed loop-invariant identity. Scalar scopes are validated; induction is gated.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HirSpecLoopInvariant {
     pub id: HirSpecLoopInvariantId,

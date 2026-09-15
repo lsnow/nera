@@ -5,11 +5,15 @@
 use super::*;
 use crate::{VirIntegerType, VirMemoryAccess, VirMemorySchema, VirMemoryTypeKind, VirObjectShape};
 
+mod partition;
+#[cfg(test)]
+mod range_tests;
+
 const MAX_PREFIXES: usize = 64;
 const MAX_EQUIVALENT_COUNTS: usize = 16;
 const MAX_PREFIX_RELATION_QUERIES: usize = 256;
 
-/// Every fact denotes valid, initialized scalar elements [0, count) at one
+/// Every fact denotes valid, initialized scalar elements [begin, cursor) at one
 /// canonical allocation-relative array. No padding, tags or resource authority.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct ArrayKey {
@@ -17,11 +21,19 @@ struct ArrayKey {
     stride: u64,
     length: u64,
     element: VirMemoryAccess,
+    begin: AffineExpression,
 }
 
 impl ArrayKey {
     fn extent(self) -> Option<ByteRange> {
         ByteRange::from_start_and_length(self.base, self.stride.checked_mul(self.length)?).ok()
+    }
+
+    fn fully_materialized(self, allocation: &AbstractAllocation) -> bool {
+        self.extent().is_some_and(|range| {
+            allocation.initialization().classify(range) == InitializationClass::Initialized
+                && allocation.valid_value_bytes().contains(range)
+        })
     }
 }
 
@@ -34,7 +46,7 @@ impl InitializationPrefixes {
     pub(super) fn invalidate(&mut self, range: ByteRange) {
         for (key, counts) in &mut self.facts {
             if key.extent().is_none_or(|extent| overlaps(extent, range)) {
-                *counts = empty_prefix();
+                *counts = BTreeSet::from([key.begin]);
             }
         }
     }
@@ -59,7 +71,14 @@ impl InitializationPrefixes {
     ) -> Self {
         let mut result = Self::default();
         for (key, counts) in &self.facts {
-            let mut projected = empty_prefix();
+            let Some(begin) = remapper.expression(key.begin).or_else(|| {
+                interval(key.begin, values)
+                    .and_then(U64Interval::exact_value)
+                    .map(AffineExpression::constant)
+            }) else {
+                continue;
+            };
+            let mut projected = BTreeSet::from([begin]);
             let mut normalized = counts.clone();
             for count in counts {
                 if let Some(value) = interval(*count, values).and_then(U64Interval::exact_value) {
@@ -91,8 +110,13 @@ impl InitializationPrefixes {
                     }
                 }
             }
-            limit_counts(&mut projected);
-            result.facts.insert(*key, projected);
+            limit_counts_from(&mut projected, begin);
+            // Two origins may become the same SSA expression on this edge.
+            // Both sets are established on this predecessor, so union here is
+            // sound; predecessor joins below still use intersection only.
+            let destination = result.facts.entry(ArrayKey { begin, ..*key }).or_default();
+            destination.extend(projected);
+            limit_counts_from(destination, begin);
         }
         result
     }
@@ -102,9 +126,14 @@ fn empty_prefix() -> BTreeSet<AffineExpression> {
     BTreeSet::from([AffineExpression::constant(0)])
 }
 
+#[cfg(test)]
 fn limit_counts(counts: &mut BTreeSet<AffineExpression>) {
+    limit_counts_from(counts, AffineExpression::constant(0));
+}
+
+fn limit_counts_from(counts: &mut BTreeSet<AffineExpression>, begin: AffineExpression) {
     if counts.len() > MAX_EQUIVALENT_COUNTS {
-        *counts = empty_prefix();
+        *counts = BTreeSet::from([begin]);
     }
 }
 
@@ -163,6 +192,7 @@ impl AbstractAllocation {
                 stride: array.stride_bytes(),
                 length: array.length(),
                 element,
+                begin: AffineExpression::constant(0),
             };
             if key.stride == 0
                 || key
@@ -182,6 +212,103 @@ impl AbstractAllocation {
 }
 
 impl ResourceState {
+    /// Only facts whose scalar roots are syntactically unchanged survive an
+    /// inner induction cut. Actual scalar writes preserve their valid bytes.
+    pub(in crate::verifier) fn inherit_loop_initialization_frame(
+        &mut self,
+        entry: &Self,
+        retained: &BTreeSet<VirValueId>,
+    ) {
+        let stable = |e: AffineExpression| {
+            e.terms()
+                .into_iter()
+                .flatten()
+                .all(|(id, _)| retained.contains(&id))
+        };
+        for (id, before) in &entry.allocations {
+            let Some(after) = self.allocations.get_mut(id) else {
+                continue;
+            };
+            after.initialization_prefixes.facts = before
+                .initialization_prefixes
+                .facts
+                .iter()
+                .filter(|(key, _)| stable(key.begin))
+                .map(|(key, counts)| {
+                    (
+                        *key,
+                        counts.iter().copied().filter(|e| stable(*e)).collect(),
+                    )
+                })
+                .collect();
+        }
+    }
+    /// Provisional loop-local initialization, guarded by entry/backedge proof.
+    /// Caller has checked geometry and matched the existing live instance.
+    /// This creates neither allocation nor authority.
+    pub(in crate::verifier) fn assume_loop_initialized(
+        &mut self,
+        pointer: AbstractPointer,
+        element: VirMemoryAccess,
+        bounds: (AffineExpression, AffineExpression),
+        stride: u64,
+        length: u64,
+    ) -> bool {
+        let AbstractProvenance::Known(id) = pointer.provenance() else {
+            return false;
+        };
+        let Some(base) = pointer.offset_bytes().exact_value() else {
+            return false;
+        };
+        let index = |e: AffineExpression| {
+            if stride == 0
+                || !e.scale().is_multiple_of(stride)
+                || !e.addend().is_multiple_of(stride)
+                || (!e.is_constant() && e.root().is_none())
+            {
+                return None;
+            }
+            Some(AffineExpression {
+                root: e.root(),
+                scale: e.scale() / stride,
+                addend: e.addend() / stride,
+                second: None,
+            })
+        };
+        let (Some(begin), Some(cursor)) = (index(bounds.0), index(bounds.1)) else {
+            return false;
+        };
+        let key = ArrayKey {
+            base,
+            stride,
+            length,
+            element,
+            begin,
+        };
+        let Some(allocation) = self.allocations.get_mut(&id) else {
+            return false;
+        };
+        if allocation.liveness() != LivenessState::Live
+            || key
+                .extent()
+                .is_none_or(|r| r.end() > allocation.size_bytes())
+            || allocation.initialization_prefixes.facts.len() >= MAX_PREFIXES
+                && !allocation.initialization_prefixes.facts.contains_key(&key)
+        {
+            return false;
+        }
+        let counts = allocation
+            .initialization_prefixes
+            .facts
+            .entry(key)
+            .or_default();
+        if counts.len() >= MAX_EQUIVALENT_COUNTS {
+            return false;
+        }
+        counts.insert(cursor);
+        true
+    }
+
     /// Query established scalar-prefix facts without materializing the access
     /// envelope as initialized bytes. Numeric containment supplies neither
     /// authority nor liveness; those remain independent transfer obligations.
@@ -193,47 +320,16 @@ impl ResourceState {
         limits: DifferenceLimits,
         queries: &super::super::relation::audit::QueryLog,
     ) -> bool {
-        let Some(allocation) = self.allocation(allocation) else {
-            return false;
-        };
-        if allocation.liveness() != LivenessState::Live {
-            return false;
-        }
-        let mut count_queries = 0;
-        for (key, counts) in &allocation.initialization_prefixes.facts {
-            if key.element != access {
-                continue;
-            }
-            for count in counts {
-                let Some(indices) = interval(*count, &self.values) else {
-                    continue;
-                };
-                if indices.upper() > key.length {
-                    continue;
-                }
-                let Some(end) = count
-                    .checked_scale(key.stride)
-                    .and_then(|e| e.checked_add_constant(key.base))
-                else {
-                    continue;
-                };
-                let Some(bytes) = end.interval(|id| match self.value(id)? {
-                    AbstractValue::U64(value) => Some(*value),
-                    _ => None,
-                }) else {
-                    continue;
-                };
-                let prefix = AbstractByteRange::from_bounds(
-                    SymbolicRangeBound::constant(key.base),
-                    SymbolicRangeBound::new(end, bytes),
-                );
-                count_queries += 1;
-                if count_queries > MAX_PREFIX_RELATION_QUERIES {
-                    return false;
-                }
-                if queries.contained(self, prefix, range, limits).is_proven() {
-                    return true;
-                }
+        for partition in self
+            .initialization_partitions(allocation, access)
+            .into_iter()
+            .take(MAX_PREFIX_RELATION_QUERIES)
+        {
+            if queries
+                .contained(self, partition.initialized, range, limits)
+                .is_proven()
+            {
+                return true;
             }
         }
         false
@@ -248,18 +344,98 @@ impl ResourceState {
         projected: &mut Self,
         limits: DifferenceLimits,
         queries: &super::super::relation::audit::QueryLog,
+        seed_empty: bool,
     ) {
         let mut count_queries = 0;
+        let remapper = ExpressionRemapper::new(self, renames);
         for (id, allocation) in &self.allocations {
             if allocation.liveness() != LivenessState::Live {
                 continue;
             }
             for (key, counts) in &allocation.initialization_prefixes.facts {
+                // Ordinary byte facts already cover every element. Additional
+                // relational candidates are redundant (especially for updates
+                // to nested fully-constructed arrays with many scalar inputs).
+                if key.fully_materialized(allocation) {
+                    continue;
+                }
+                let Some(begin) = remapper.expression(key.begin).or_else(|| {
+                    interval(key.begin, &self.values)
+                        .and_then(U64Interval::exact_value)
+                        .map(AffineExpression::constant)
+                }) else {
+                    continue;
+                };
+                let projected_key = ArrayKey { begin, ..*key };
                 for &(source, target) in renames {
                     let Some(AbstractValue::U64(value)) = self.value(source) else {
                         continue;
                     };
                     if value.upper() > key.length {
+                        continue;
+                    }
+                    // An empty interval is true at any in-bounds index. Seed
+                    // it on actual edges, not from a source invariant. This
+                    // lets a nonzero/dynamic start survive the zero-iteration
+                    // predecessor without granting initialized bytes.
+                    if seed_empty
+                        && key.begin == AffineExpression::constant(0)
+                        && let Some(destination) = projected.allocations.get_mut(id)
+                    {
+                        for begin in [
+                            Some(AffineExpression::identity(source)),
+                            value.exact_value().map(AffineExpression::constant),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        {
+                            let empty = InitializationPrefixes {
+                                facts: BTreeMap::from([(
+                                    ArrayKey { begin, ..*key },
+                                    BTreeSet::from([begin]),
+                                )]),
+                            }
+                            .project(&remapper, &self.values);
+                            for (empty_key, aliases) in empty.facts {
+                                let facts = &mut destination.initialization_prefixes.facts;
+                                if facts.contains_key(&empty_key) || facts.len() < MAX_PREFIXES {
+                                    let counts = facts.entry(empty_key).or_default();
+                                    for alias in aliases {
+                                        if counts.len() < MAX_EQUIVALENT_COUNTS {
+                                            counts.insert(alias);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Structural projection already retained this conclusion.
+                    // Do not replay every alias through the numeric solver.
+                    if projected
+                        .allocations
+                        .get(id)
+                        .and_then(|a| a.initialization_prefixes.facts.get(&projected_key))
+                        .is_some_and(|counts| counts.contains(&AffineExpression::identity(target)))
+                        || counts.iter().all(|count| *count == key.begin)
+                    {
+                        continue;
+                    }
+                    let Some(start) = interval(key.begin, &self.values) else {
+                        continue;
+                    };
+                    count_queries += 1;
+                    if count_queries > MAX_PREFIX_RELATION_QUERIES {
+                        return;
+                    }
+                    if !queries
+                        .ordered(
+                            self,
+                            SymbolicRangeBound::new(key.begin, start),
+                            SymbolicRangeBound::new(AffineExpression::identity(source), *value),
+                            limits,
+                        )
+                        .is_proven()
+                    {
                         continue;
                     }
                     for count in counts {
@@ -279,10 +455,10 @@ impl ResourceState {
                             )
                             .is_proven()
                         {
-                            let Some(destination) = projected
-                                .allocations
-                                .get_mut(id)
-                                .and_then(|a| a.initialization_prefixes.facts.get_mut(key))
+                            let Some(destination) =
+                                projected.allocations.get_mut(id).and_then(|a| {
+                                    a.initialization_prefixes.facts.get_mut(&projected_key)
+                                })
                             else {
                                 continue;
                             };
@@ -317,15 +493,20 @@ impl ResourceState {
         before: &AbstractAllocation,
         pointer: AbstractPointer,
         access: VirMemoryAccess,
+        limits: DifferenceLimits,
+        queries: &super::super::relation::audit::QueryLog,
     ) {
         let AbstractProvenance::Known(id) = pointer.provenance() else {
             return;
         };
-        let Some(allocation) = self.allocations.get_mut(&id) else {
+        if before.liveness() != LivenessState::Live || !self.allocations.contains_key(&id) {
             return;
-        };
+        }
+        let mut changes = BTreeMap::new();
+        let mut covered_arrays = BTreeSet::new();
+        let mut count_queries = 0;
         for (key, counts) in &before.initialization_prefixes.facts {
-            if key.element != access {
+            if key.element != access || key.fully_materialized(before) {
                 continue;
             }
             let Some(offset) = pointer.offset_expression().or_else(|| {
@@ -358,18 +539,80 @@ impl ResourceState {
                 continue;
             }
             let mut after = counts.clone();
-            if counts.iter().any(|count| {
+            // Retain the original identity/exact-value fast path. Relational
+            // queries are needed only for a genuinely different symbolic root.
+            let mut adjacent = counts.iter().any(|count| {
                 *count == index
                     || interval(*count, &self.values)
                         .and_then(U64Interval::exact_value)
                         .zip(indices.exact_value())
                         .is_some_and(|(a, b)| a == b)
-            }) && let Some(next) = index.checked_add_constant(1)
-            {
-                after.insert(next);
+            });
+            for count in counts {
+                if adjacent {
+                    break;
+                }
+                let Some(bound) = interval(*count, &self.values) else {
+                    continue;
+                };
+                // Disjoint numeric intervals cannot be adjacent. This is
+                // candidate rejection, not unrecorded positive evidence.
+                if bound.intersection(indices).is_none() {
+                    continue;
+                }
+                if count_queries + 2 > MAX_PREFIX_RELATION_QUERIES {
+                    break;
+                }
+                count_queries += 2;
+                let a = SymbolicRangeBound::new(*count, bound);
+                let b = SymbolicRangeBound::new(index, indices);
+                if queries.ordered(self, a, b, limits).is_proven()
+                    && queries.ordered(self, b, a, limits).is_proven()
+                {
+                    adjacent = true;
+                    break;
+                }
             }
-            limit_counts(&mut after);
-            allocation.initialization_prefixes.facts.insert(*key, after);
+            if adjacent && let Some(next) = index.checked_add_constant(1) {
+                after.insert(next);
+                covered_arrays.insert(ArrayKey {
+                    begin: AffineExpression::constant(0),
+                    ..*key
+                });
+            }
+            limit_counts_from(&mut after, key.begin);
+            changes.insert(*key, after);
+            // A successful non-frontier write establishes just its own
+            // singleton, never the skipped gap. Existing adjacent prefixes
+            // were advanced above; no union across predecessors is involved.
+            if let Some(next) = index.checked_add_constant(1) {
+                changes
+                    .entry(ArrayKey {
+                        begin: index,
+                        ..*key
+                    })
+                    .or_insert_with(|| BTreeSet::from([index, next]));
+            }
+        }
+        let allocation = self.allocations.get_mut(&id).expect("tracked above");
+        // Restore established keys first. Optional singleton precision must
+        // not evict an existing inductive prefix at the key budget.
+        for (key, counts) in changes {
+            if !before.initialization_prefixes.facts.contains_key(&key)
+                && covered_arrays.contains(&ArrayKey {
+                    begin: AffineExpression::constant(0),
+                    ..key
+                })
+            {
+                // An existing prefix already proves this write; do not keep
+                // a redundant singleton for every initialized element.
+                continue;
+            }
+            if allocation.initialization_prefixes.facts.contains_key(&key)
+                || allocation.initialization_prefixes.facts.len() < MAX_PREFIXES
+            {
+                allocation.initialization_prefixes.facts.insert(key, counts);
+            }
         }
     }
 }
@@ -383,6 +626,12 @@ impl AbstractAllocation {
             return;
         }
         for (key, counts) in &self.initialization_prefixes.facts {
+            let Some(begin) = interval(key.begin, values)
+                .and_then(|value| value.upper().checked_mul(key.stride))
+                .and_then(|offset| key.base.checked_add(offset))
+            else {
+                continue;
+            };
             let count = counts
                 .iter()
                 .filter_map(|count| interval(*count, values))
@@ -396,7 +645,7 @@ impl AbstractAllocation {
             else {
                 continue;
             };
-            let Ok(range) = ByteRange::new(key.base, end) else {
+            let Ok(range) = ByteRange::new(begin, end) else {
                 continue;
             };
             if range.is_empty() || end > self.size_bytes {
@@ -410,274 +659,4 @@ impl AbstractAllocation {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn key() -> ArrayKey {
-        ArrayKey {
-            base: 8,
-            stride: 8,
-            length: 4,
-            element: VirMemoryAccess::core_u64(),
-        }
-    }
-
-    #[test]
-    fn relational_prefix_queries_match_a_concrete_byte_oracle_without_mutating_state() {
-        let n = VirValueId::new(0);
-        let j = VirValueId::new(1);
-        let id = AbstractAllocationId::new(0);
-        for predicate in [
-            VirIntegerPredicate::LessThan,
-            VirIntegerPredicate::LessOrEqual,
-            VirIntegerPredicate::NotEqual,
-        ] {
-            let mut state = ResourceState::new();
-            state
-                .define_value(n, AbstractValue::U64(U64Interval::new(1, 4).unwrap()))
-                .unwrap();
-            state
-                .define_value(j, AbstractValue::U64(U64Interval::new(0, 3).unwrap()))
-                .unwrap();
-            state.conjoin_path_fact(PathFact::comparison(predicate, j, n));
-            let mut allocation = AbstractAllocation::new_local(40, 8).unwrap();
-            allocation.initialization_prefixes = prefixes([AffineExpression::identity(n)]);
-            state.define_allocation(id, allocation).unwrap();
-            for width in [0, 8, 16] {
-                let start = SymbolicRangeBound::new(
-                    AffineExpression::identity(j)
-                        .checked_scale(8)
-                        .unwrap()
-                        .checked_add_constant(8)
-                        .unwrap(),
-                    U64Interval::new(8, 32).unwrap(),
-                );
-                let range = AbstractByteRange::from_bounds(
-                    start,
-                    start.checked_add_constant(width).unwrap(),
-                );
-                let before = state.clone();
-                let proven = state.initialized_prefix_covers(
-                    id,
-                    key().element,
-                    range,
-                    Default::default(),
-                    &Default::default(),
-                );
-                assert_eq!(state, before);
-                if predicate == VirIntegerPredicate::LessThan && width <= 8 {
-                    assert!(proven);
-                }
-                for count in 1..=4 {
-                    for index in 0..4 {
-                        let premise = match predicate {
-                            VirIntegerPredicate::LessThan => index < count,
-                            VirIntegerPredicate::LessOrEqual => index <= count,
-                            _ => index != count,
-                        };
-                        if premise && proven {
-                            assert!(8 + 8 * index + width <= 8 + 8 * count);
-                        }
-                    }
-                }
-            }
-            let range = AbstractByteRange::Exact(ByteRange::new(8, 16).unwrap());
-            assert!(state.initialized_prefix_covers(
-                id,
-                key().element,
-                range,
-                Default::default(),
-                &Default::default()
-            ));
-            state
-                .allocation_mut(id)
-                .unwrap()
-                .forget_validity(ByteRange::new(8, 16).unwrap())
-                .unwrap();
-            assert!(!state.initialized_prefix_covers(
-                id,
-                key().element,
-                range,
-                Default::default(),
-                &Default::default()
-            ));
-        }
-    }
-
-    #[test]
-    fn edge_prefix_export_requires_a_relation_on_that_predecessor() {
-        let i = VirValueId::new(0);
-        let n = VirValueId::new(1);
-        let target = VirValueId::new(2);
-        let id = AbstractAllocationId::new(0);
-        let mut state = ResourceState::new();
-        for value in [i, n] {
-            state
-                .define_value(value, AbstractValue::U64(U64Interval::new(0, 4).unwrap()))
-                .unwrap();
-        }
-        let mut allocation = AbstractAllocation::new_local(40, 8).unwrap();
-        allocation.initialization_prefixes = prefixes([AffineExpression::identity(i)]);
-        state.define_allocation(id, allocation).unwrap();
-        let renames = [(n, target)];
-        let project = |state: &ResourceState| {
-            let mut projected = state.project_cfg_edge(&renames);
-            state.project_initialization_prefix_relations(
-                &renames,
-                &mut projected,
-                Default::default(),
-                &Default::default(),
-            );
-            projected
-        };
-        let missing = project(&state);
-        assert!(
-            !missing.allocations[&id].initialization_prefixes.facts[&key()]
-                .contains(&AffineExpression::identity(target))
-        );
-        state.conjoin_path_fact(PathFact::comparison(VirIntegerPredicate::LessOrEqual, n, i));
-        let proved = project(&state);
-        assert!(
-            proved.allocations[&id].initialization_prefixes.facts[&key()]
-                .contains(&AffineExpression::identity(target))
-        );
-        let joined = proved.join(&missing).unwrap();
-        assert!(
-            !joined.allocations[&id].initialization_prefixes.facts[&key()]
-                .contains(&AffineExpression::identity(target))
-        );
-    }
-
-    fn prefixes(counts: impl IntoIterator<Item = AffineExpression>) -> InitializationPrefixes {
-        InitializationPrefixes {
-            facts: BTreeMap::from([(key(), counts.into_iter().collect())]),
-        }
-    }
-
-    #[test]
-    fn joins_keep_only_predecessor_independent_facts() {
-        for a in 0..=4 {
-            for b in 0..=4 {
-                let left = prefixes((0..=a).map(AffineExpression::constant));
-                let right = prefixes((0..=b).map(AffineExpression::constant));
-                let joined = left.join(&right);
-                assert_eq!(joined, right.join(&left));
-                assert_eq!(left.join(&left), left);
-                assert_eq!(
-                    joined.facts[&key()]
-                        .iter()
-                        .map(|count| count.addend())
-                        .max(),
-                    Some(a.min(b))
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn projection_preserves_latch_equalities_without_trusting_loop_metadata() {
-        let source = VirValueId::new(1);
-        let target = VirValueId::new(2);
-        for value in 0..4 {
-            let mut state = ResourceState::default();
-            state
-                .define_value(source, AbstractValue::U64(U64Interval::exact(value)))
-                .unwrap();
-            let remapper = ExpressionRemapper::new(&state, &[(source, target)]);
-            let fact = prefixes([AffineExpression::constant(value + 1)]);
-            let projected = fact.project(&remapper, &state.values);
-            assert!(
-                projected.facts[&key()].contains(
-                    &AffineExpression::identity(target)
-                        .checked_add_constant(1)
-                        .unwrap()
-                )
-            );
-            let values = BTreeMap::from([(target, AbstractValue::U64(U64Interval::exact(value)))]);
-            for count in &projected.facts[&key()] {
-                assert!(interval(*count, &values).unwrap().lower() <= value + 1);
-            }
-        }
-    }
-
-    #[test]
-    fn invalidation_cannot_resurrect_valid_or_initialized_bytes() {
-        for kind in 0..4 {
-            let mut allocation = AbstractAllocation::new_local(40, 8).unwrap();
-            allocation.initialization_prefixes = prefixes([AffineExpression::constant(4)]);
-            allocation.reduce_initialization_prefixes(&BTreeMap::new());
-            let range = ByteRange::new(16, 24).unwrap();
-            match kind {
-                0 => allocation.mark_uninitialized(range).unwrap(),
-                1 => allocation.forget_initialization(range).unwrap(),
-                2 => allocation.forget_validity(range).unwrap(),
-                _ => allocation.forget_uninitialized(range).unwrap(),
-            }
-            assert_eq!(
-                allocation.initialization_prefixes.facts[&key()],
-                empty_prefix()
-            );
-            let before = allocation.clone();
-            allocation.reduce_initialization_prefixes(&BTreeMap::new());
-            assert_eq!(allocation, before);
-        }
-        let mut facts = prefixes([AffineExpression::constant(4)]);
-        facts.invalidate(ByteRange::new(0, 8).unwrap());
-        assert!(facts.facts[&key()].contains(&AffineExpression::constant(4)));
-    }
-
-    #[test]
-    fn overflow_and_alias_budget_only_lose_precision() {
-        let root = VirValueId::new(1);
-        let count = AffineExpression::identity(root)
-            .checked_add_constant(1)
-            .unwrap();
-        let values = BTreeMap::from([(root, AbstractValue::U64(U64Interval::exact(u64::MAX)))]);
-        assert!(interval(count, &values).is_none());
-        let mut counts = (0..=MAX_EQUIVALENT_COUNTS as u64)
-            .map(AffineExpression::constant)
-            .collect();
-        limit_counts(&mut counts);
-        assert_eq!(counts, empty_prefix());
-    }
-
-    #[test]
-    fn prefix_key_budget_does_not_initialize_untracked_arrays() {
-        let length = MAX_PREFIXES + 1;
-        let output = crate::analyze(&crate::SourceFile::from_text(
-            "prefix-budget.nera",
-            format!("fn main() -> u64 {{ let mut arrays: [[u64; 1]; {length}]; return 0; }}"),
-        ));
-        let unit = output.vir().unwrap().as_unit();
-        let access = unit.runtime.functions[0]
-            .blocks
-            .iter()
-            .flat_map(|b| &b.instructions)
-            .find_map(|i| match i.instruction {
-                crate::VirInstruction::StorageReset { access, .. } => Some(access),
-                _ => None,
-            })
-            .unwrap();
-        let shape = unit.memory.object_shape(access).unwrap();
-        let mut allocation =
-            AbstractAllocation::new_local(shape.size_bytes(), shape.alignment()).unwrap();
-        allocation.seed_initialization_prefixes(&unit.memory, &shape);
-        assert_eq!(allocation.initialization_prefixes.facts.len(), MAX_PREFIXES);
-        for counts in allocation.initialization_prefixes.facts.values_mut() {
-            *counts = BTreeSet::from([AffineExpression::constant(1)]);
-        }
-        allocation.reduce_initialization_prefixes(&BTreeMap::new());
-        assert_eq!(
-            allocation
-                .initialization()
-                .classify(ByteRange::new(0, (MAX_PREFIXES * 8) as u64).unwrap()),
-            InitializationClass::Initialized
-        );
-        let untracked = ByteRange::new((MAX_PREFIXES * 8) as u64, (length * 8) as u64).unwrap();
-        assert_eq!(
-            allocation.initialization().classify(untracked),
-            InitializationClass::Uninitialized
-        );
-        assert!(!allocation.valid_value_bytes().contains(untracked));
-    }
-}
+mod tests;

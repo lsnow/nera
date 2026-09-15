@@ -10,6 +10,74 @@ mod cli_process;
 use cli_process::{Fixture, run};
 
 #[test]
+fn loop_arena_cli_distinguishes_initialization_from_remaining_storage() {
+    let fixture = Fixture::new();
+    let source = include_str!("../spec/cases/verify/loop-arena-initialize.nera");
+    for (text, code) in [
+        (source.to_owned(), 0),
+        (source.replace("let value = p[1];", "let value = p[6];"), 1),
+    ] {
+        let path = fixture.file("loop-arena.nera", text);
+        let output = run(fixture.command().arg("verify").arg("--explain").arg(path));
+        assert_eq!(output.status.code(), Some(code), "{output:?}");
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(text.contains("loop-arena.nera"), "{text}");
+        assert!(
+            text.contains(if code == 0 { "Checked" } else { "initialized" }),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn loop_contract_cli_reports_callee_and_iteration_obligations() {
+    #[path = "support/loop_composition.rs"]
+    mod cases;
+    let fixture = Fixture::new();
+    let args = [
+        "--module",
+        "app=app.nera",
+        "--module",
+        "ops=ops.nera",
+        "--entry",
+        "app::main",
+    ];
+    for (app, ops, code) in [
+        (cases::APP.to_owned(), cases::OPS.to_owned(), 0),
+        (
+            cases::erase_invariants(cases::APP),
+            cases::OPS.to_owned(),
+            0,
+        ),
+        (
+            cases::APP.to_owned(),
+            cases::OPS.replace("readable(result,0..1)", "readable(result,0..2)"),
+            1,
+        ),
+    ] {
+        assert_eq!(
+            cases::session(&app, &ops)
+                .verify("app")
+                .unwrap()
+                .is_checked(),
+            code == 0
+        );
+        fixture.file("app.nera", app);
+        fixture.file("ops.nera", ops);
+        let out = run(fixture.command().arg("verify").arg("--explain").args(args));
+        assert_eq!(out.status.code(), Some(code), "{out:?}");
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            text.contains(if code == 0 { "Checked" } else { "ops.nera" }),
+            "{text}"
+        );
+        if code == 0 {
+            assert!(text.contains("loop invariant"), "{text}");
+        }
+    }
+}
+
+#[test]
 fn arena_contract_cli_distinguishes_normal_capacity_failure_from_bad_contracts() {
     let fixture = Fixture::new();
     let source = include_str!("../spec/cases/verify/contract-arena.nera");

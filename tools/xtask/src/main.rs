@@ -5,6 +5,7 @@ use std::process::{Command, ExitCode};
 
 mod contracts;
 mod gate;
+mod loops;
 mod regression;
 mod spec_local;
 mod stage4;
@@ -307,6 +308,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         "check-vir" => stage4::check(&root),
         "check-spec-local" => spec_local::run(&root),
         "check-contracts" => contracts::run(&root),
+        "check-loops" => loops::run(&root),
         "stage4" => {
             stage4::check(&root)?;
             run_frontend_regression(&root)
@@ -830,6 +832,7 @@ fn print_help() {
            check-vir Check checked-in VIR corpus snapshots\n\
            check-spec-local Run the stage 8.1 focused Spec/VC acceptance union\n\
            check-contracts Run the stage 8.2 contract/frame acceptance union\n\
+           check-loops Run the stage 8.3 loop acceptance union\n\
            generate-vir Refresh checked-in VIR corpus snapshots\n\
            stage4    Run VIR regression and frontend fuzz\n\
            check-verifier Run verifier tests and the deterministic verifier fuzz gate\n\

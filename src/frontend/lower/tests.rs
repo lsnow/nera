@@ -1,6 +1,7 @@
 use super::FrontendFailure;
 mod contract_snapshots;
 mod local_assert;
+mod loop_schema;
 mod spec_arithmetic;
 mod spec_assertions;
 mod spec_exists;

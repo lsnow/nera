@@ -1,0 +1,8 @@
+// Allocation starts uninitialized. Write before reading, then release it.
+fn main() -> u64 {
+    let p = alloc<u64>(1);
+    *p = 42;
+    let answer = *p;
+    free(p);
+    return answer;
+}

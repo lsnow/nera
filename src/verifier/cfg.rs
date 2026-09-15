@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
+mod loops;
+pub use loops::LoopCandidateAttempt;
 
 use crate::{
     ByteSpan, ResolvedVirUnit, VirBasicBlock, VirBlockId, VirBlockTarget, VirFunction,
@@ -33,6 +35,12 @@ use super::transfer::{
 /// Deterministic limits and widening policy for CFG analysis.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CfgAnalysisConfig {
+    /// Maximum untrusted loop candidates selected for one function.
+    pub max_loop_candidates: usize,
+    /// Bounded induction/elimination attempts after ordinary analysis fails.
+    pub max_loop_candidate_rounds: u32,
+    /// Total block-transfer budget across candidate attempts, separate from baseline.
+    pub max_loop_candidate_block_visits: u64,
     /// Weighted call evidence per body, including provisional CFG evaluations.
     /// Exhaustion prevents summary publication, never grants missing effects.
     pub max_summary_evidence: usize,
@@ -71,6 +79,9 @@ pub struct CfgAnalysisConfig {
 impl Default for CfgAnalysisConfig {
     fn default() -> Self {
         Self {
+            max_loop_candidates: 32,
+            max_loop_candidate_rounds: 4,
+            max_loop_candidate_block_visits: 2_000,
             max_summary_evidence: 65_536,
             summary_limits: super::summary::SccLimits::default(),
             max_relation_evidence: 65_536,
@@ -149,6 +160,10 @@ impl CfgObligation {
     pub const fn location(&self) -> VirLocation {
         match self.finding.site() {
             VerifierFindingSite::Runtime(location) => location,
+            VerifierFindingSite::Spec {
+                occurrence: Some(location),
+                ..
+            } => location,
             VerifierFindingSite::Spec { .. } => unreachable!(),
         }
     }
@@ -267,6 +282,7 @@ impl FunctionReturnState {
 /// Final CFG result for one structurally validated VIR function.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FunctionCfgAnalysis {
+    loop_candidate_attempts: Vec<LoopCandidateAttempt>,
     pub(crate) summary_events: super::summary::EffectJournal,
     /// Historical non-Proven observations cannot justify summary closure just
     /// because a later transfer removed their path. Not used as new premises.
@@ -289,6 +305,10 @@ pub struct FunctionCfgAnalysis {
 }
 
 impl FunctionCfgAnalysis {
+    /// Discovery failures are diagnostics, never assumptions or trusted evidence.
+    pub fn loop_candidate_attempts(&self) -> &[LoopCandidateAttempt] {
+        &self.loop_candidate_attempts
+    }
     pub fn summary_pending(&self) -> &[CfgObligation] {
         &self.summary_pending
     }
@@ -387,6 +407,8 @@ impl FunctionCfgAnalysis {
 /// during CFG analysis.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CfgAnalysisError {
+    LoopInvariantResourceStateUnsupported,
+    LoopInvariantBudgetExceeded(crate::VirSpecLoopInvariantId),
     MissingFunction(VirFunctionId),
     MissingBlock(VirBlockId),
     InvalidEdgeShape {
@@ -443,6 +465,13 @@ pub enum CfgAnalysisError {
 impl fmt::Display for CfgAnalysisError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::LoopInvariantResourceStateUnsupported => write!(
+                formatter,
+                "loop induction requires stable allocation identities, fixed resource ranges and supported entry state"
+            ),
+            Self::LoopInvariantBudgetExceeded(id) => {
+                write!(formatter, "loop invariant {id:?} proof budget exhausted")
+            }
             Self::RelationEvidenceBudgetExceeded { block, limit } => write!(
                 formatter,
                 "relation evidence budget {limit} exhausted in {block:?}"
@@ -542,7 +571,9 @@ impl Error for CfgAnalysisError {
             Self::InstructionTransfer { error, .. } => Some(error),
             Self::ResourceJoin { error, .. } => Some(error),
             Self::ContractApplication(error) => Some(error),
-            Self::MissingFunction(_)
+            Self::LoopInvariantResourceStateUnsupported
+            | Self::LoopInvariantBudgetExceeded(_)
+            | Self::MissingFunction(_)
             | Self::MissingBlock(_)
             | Self::InvalidEdgeShape { .. }
             | Self::InvalidReturnShape { .. }
@@ -740,6 +771,25 @@ fn analyze_function_cfg_internal(
     contracts: Option<&InstantiatedContracts>,
     registry: Option<&super::summary::SummaryRegistry>,
 ) -> Result<FunctionCfgAnalysis, CfgAnalysisError> {
+    loops::candidates::analyze(
+        program,
+        function_id,
+        supplied_entry,
+        config,
+        contracts,
+        registry,
+    )
+}
+
+fn analyze_function_cfg_attempt(
+    program: &ResolvedVirUnit<'_>,
+    function_id: VirFunctionId,
+    supplied_entry: &ResourceState,
+    config: CfgAnalysisConfig,
+    contracts: Option<&InstantiatedContracts>,
+    registry: Option<&super::summary::SummaryRegistry>,
+    selected: &BTreeSet<crate::VirSpecLoopInvariantId>,
+) -> Result<FunctionCfgAnalysis, CfgAnalysisError> {
     let function = program
         .runtime()
         .functions
@@ -752,6 +802,8 @@ fn analyze_function_cfg_internal(
         .map(|block| (block.id, block))
         .collect();
     let loop_blocks = find_loop_blocks(&blocks);
+    let mut induction = loops::Induction::new(program, function, config, selected, registry)?;
+    let scalar_anchors = induction.anchors();
     let instruction_sites = assign_instruction_sites(&blocks)?;
     let entry = initialize_entry_state(function, supplied_entry)?;
     let function_entry_state = entry.clone();
@@ -778,6 +830,8 @@ fn analyze_function_cfg_internal(
     let relation_sources = super::relation::audit::SourceIndex::new(program, function);
     let summary_events = std::cell::RefCell::new(super::summary::EffectJournal::default());
     let evaluation_context = BlockEvaluationContext {
+        loop_blocks: &loop_blocks,
+        scalar_anchors: &scalar_anchors,
         summary_context: super::summary::SummaryTransferContext {
             site: None,
             case_ordinal: 0,
@@ -865,6 +919,7 @@ fn analyze_function_cfg_internal(
             }
         }
 
+        induction.cut_edges(block, &mut evaluated)?;
         collect_guarded_precision_losses(block_id, &evaluated, &mut guarded_precision_losses);
 
         let mut affected_targets = incoming_edges
@@ -991,6 +1046,7 @@ fn analyze_function_cfg_internal(
     }
 
     Ok(FunctionCfgAnalysis {
+        loop_candidate_attempts: Vec::new(),
         summary_events: summary_events.into_inner(),
         summary_pending,
         provenance_evidence: provenance_by_block.into_values().flatten().collect(),
@@ -1074,6 +1130,8 @@ struct SuccessorState {
 
 #[derive(Clone, Copy)]
 struct BlockEvaluationContext<'analysis, 'unit> {
+    loop_blocks: &'analysis BTreeSet<VirBlockId>,
+    scalar_anchors: &'analysis [VirValueId],
     summary_context: super::summary::SummaryTransferContext<'analysis>,
     program: &'analysis ResolvedVirUnit<'unit>,
     function: &'analysis VirFunction,
@@ -1268,6 +1326,7 @@ fn evaluate_block_step(
         instruction_sites,
         loan_limits,
         config,
+        ..
     } = *context;
     let memory = program.runtime().memory;
     let mut provenance_evidence = Vec::new();
@@ -1462,14 +1521,7 @@ fn evaluate_block_step(
     match &block.terminator.terminator {
         VirTerminator::Jump { target } => {
             let target_block = target_block(target, blocks)?;
-            let edge = transfer_edge(
-                block.id,
-                &state,
-                target,
-                target_block,
-                span,
-                config.relation_limits,
-            )?;
+            let edge = transfer_edge(block.id, &state, target, target_block, span, context)?;
             append_queries(
                 program,
                 relation_sources,
@@ -1539,14 +1591,7 @@ fn evaluate_block_step(
                     }
                 }
                 let destination = target_block(target, blocks)?;
-                let edge = transfer_edge(
-                    block.id,
-                    &refined,
-                    target,
-                    destination,
-                    span,
-                    config.relation_limits,
-                )?;
+                let edge = transfer_edge(block.id, &refined, target, destination, span, context)?;
                 append_queries(
                     program,
                     relation_sources,
@@ -1704,8 +1749,10 @@ fn transfer_edge(
     target: &VirBlockTarget,
     destination: &VirBasicBlock,
     source_span: ByteSpan,
-    relation_limits: super::relation::difference::DifferenceLimits,
+    context: &BlockEvaluationContext<'_, '_>,
 ) -> Result<EdgeTransfer, CfgAnalysisError> {
+    let relation_limits = context.config.relation_limits;
+    let scalar_anchors = context.scalar_anchors;
     if target.arguments.len() != destination.parameters.len() {
         return Err(CfgAnalysisError::InvalidEdgeShape {
             source: source_block,
@@ -1714,15 +1761,31 @@ fn transfer_edge(
             parameters: destination.parameters.len(),
         });
     }
-    let renames: Vec<_> = target
+    let mut renames: Vec<_> = target
         .arguments
         .iter()
         .copied()
         .zip(destination.parameters.iter().map(|parameter| parameter.id))
         .collect();
+    // Immutable function-entry scalars are verification-only anchors for loop
+    // activation/exit observations, not additional runtime block parameters.
+    let anchors: Vec<_> = scalar_anchors
+        .iter()
+        .copied()
+        .filter(|id| {
+            source.value(*id).is_some() && !destination.parameters.iter().any(|p| p.id == *id)
+        })
+        .collect();
+    renames.extend(anchors.iter().map(|id| (*id, *id)));
     let mut state = source.project_cfg_edge(&renames);
     let queries = super::relation::audit::QueryLog::default();
-    source.project_initialization_prefix_relations(&renames, &mut state, relation_limits, &queries);
+    source.project_initialization_prefix_relations(
+        &renames,
+        &mut state,
+        relation_limits,
+        &queries,
+        context.loop_blocks.contains(&destination.id),
+    );
     let queries = queries.finish();
     let guard_projection_lost =
         state.path_condition().atom_count() < source.path_condition().atom_count();
@@ -1771,6 +1834,17 @@ fn transfer_edge(
                 error,
             }
         })?;
+    }
+    for id in anchors {
+        state
+            .define_value(id, *source.value(id).unwrap())
+            .map_err(|error| CfgAnalysisError::StateDefinition {
+                block: destination.id,
+                error,
+            })?;
+        if matches!(state.value(id), Some(AbstractValue::U64(_))) {
+            state.set_word_expression(id, crate::AffineExpression::identity(id));
+        }
     }
     if obligations
         .iter()

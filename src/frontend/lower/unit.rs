@@ -10,6 +10,7 @@ use crate::vir::{
 /// Function header plus private draft body. No public API can observe it.
 #[derive(Clone)]
 pub(super) struct DraftLoweredFunction {
+    pub(super) loop_specs: Vec<super::loop_spec::LoopSpec>,
     pub(super) local_specs: Vec<super::local_spec::LocalSpec>,
     pub(super) id: VirFunctionId,
     pub(super) name: String,
@@ -25,6 +26,7 @@ pub(super) struct DraftLoweredFunction {
 /// Only post-CFG sealing can construct this canonical producer result.
 #[derive(Clone)]
 pub(super) struct CanonicalLoweredFunction {
+    pub(super) loop_specs: Vec<super::loop_spec::LoopSpec>,
     pub(super) local_specs: Vec<super::local_spec::LocalSpec>,
     pub(super) function: VirFunction,
     pub(super) abi: VirFunctionAbi,
@@ -36,6 +38,7 @@ pub(super) fn seal_function(
     blocks: Vec<VirBasicBlock>,
 ) -> CanonicalLoweredFunction {
     CanonicalLoweredFunction {
+        loop_specs: draft.loop_specs,
         local_specs: draft.local_specs,
         abi: VirFunctionAbi {
             function: draft.id,

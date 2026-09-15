@@ -303,9 +303,9 @@ fn resource_storage_reset_requires_empty_payload_and_real_write_authority() {
 fn empty_resource_storage_does_not_create_a_value_and_old_schema_is_rejected() {
     let source = "struct Slot { owner: Own<u64>, } fn main() { let mut value: Slot; return; }";
     let output = accepted(source);
-    assert_eq!(output.hir().unwrap().version(), nera::HirVersion::V20);
+    assert_eq!(output.hir().unwrap().version(), nera::HirVersion::V21);
     let unit = output.vir().unwrap().as_unit();
-    assert_eq!(unit.version, nera::VirUnitVersion::V25);
+    assert_eq!(unit.version, nera::VirUnitVersion::V27);
     assert!(unit.stable_dump().contains("resource.storage.reset"));
     let mut old = unit.clone();
     old.version = nera::VirUnitVersion::V10;

@@ -16,7 +16,9 @@ pub(super) fn validate(program: &HirProgram) -> Result<(), HirProgramValidationE
                 && clause.is_some_and(|clause| {
                     matches!(
                         clause.owner,
-                        HirSpecClauseOwner::Prove(_) | HirSpecClauseOwner::Contract { .. }
+                        HirSpecClauseOwner::Prove(_)
+                            | HirSpecClauseOwner::Contract { .. }
+                            | HirSpecClauseOwner::LoopInvariant(_)
                     ) && span_contains(clause.span, assertion.span)
                 }),
             "spec assertion",
@@ -255,6 +257,7 @@ fn valid_pointer(
 ) -> bool {
     let ty = match snapshot {
         HirSpecSnapshot::EntryParameter { .. }
+        | HirSpecSnapshot::LoopEntry { .. }
         | HirSpecSnapshot::Memory { .. }
         | HirSpecSnapshot::Length { .. } => return false,
         HirSpecSnapshot::Local { function, local } => program
@@ -283,6 +286,14 @@ fn valid_pointer(
     };
     let pointee = match program.type_kind(pointee) {
         Some(HirTypeKind::Slice { element, .. }) => *element,
+        Some(HirTypeKind::Array { element, .. })
+            if matches!(
+                program.specs().clauses[clause.index()].owner,
+                HirSpecClauseOwner::LoopInvariant(_)
+            ) =>
+        {
+            *element
+        }
         _ => pointee,
     };
     layout.is_none_or(|layout| pointee == layout)

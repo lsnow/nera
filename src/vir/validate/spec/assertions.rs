@@ -15,7 +15,9 @@ pub(super) fn validate(unit: &VirUnit) -> Result<(), VirValidationError> {
         if assertion.id.get() as usize != index
             || !matches!(
                 clause.owner,
-                crate::VirSpecClauseOwner::Prove(_) | crate::VirSpecClauseOwner::Contract { .. }
+                crate::VirSpecClauseOwner::Prove(_)
+                    | crate::VirSpecClauseOwner::Contract { .. }
+                    | crate::VirSpecClauseOwner::LoopInvariant(_)
             )
             || !origins_are_nested(unit, clause.origin.origin(), assertion.origin)
         {
@@ -220,10 +222,10 @@ fn valid_pointer(
     snapshot: crate::VirSpecSnapshot,
     layout: Option<crate::VirMemoryAccess>,
 ) -> bool {
-    validate_snapshot_type(
-        unit,
-        clause,
-        snapshot,
-        |ty| matches!(ty, VirType::Pointer { access } if layout.is_none_or(|expected| access == expected)),
-    )
+    validate_snapshot_type(unit, clause, snapshot, |ty| {
+        matches!(ty, VirType::Pointer { access } if layout.is_none_or(|expected| access == expected
+            || matches!(clause.owner, crate::VirSpecClauseOwner::LoopInvariant(_))
+                && matches!(unit.memory.kind(access.ty), Some(crate::VirMemoryTypeKind::Array { element, .. })
+                    if unit.memory.access(*element) == Some(expected))))
+    })
 }

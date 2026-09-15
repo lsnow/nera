@@ -424,6 +424,8 @@ impl VirSourceMap {
                         | VirUnitVersion::V23
                         | VirUnitVersion::V24
                         | VirUnitVersion::V25
+                        | VirUnitVersion::V26
+                        | VirUnitVersion::V27
                 )
             {
                 return Err(VirSourceMapErrorKind::GeneratedReasonRequiresV6 {

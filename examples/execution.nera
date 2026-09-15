@@ -1,0 +1,10 @@
+// The interpreter and native backend execute the same source program.
+fn main() -> u64 {
+    let p = alloc<u64>(2);
+    let second = p + 8; // Pointer offsets are measured in bytes.
+    *p = 20;
+    *second = 22;
+    let answer = *p + *second;
+    free(p);
+    return answer;
+}

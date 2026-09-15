@@ -626,6 +626,22 @@ fn diagnostic_for_postcondition(
 
 fn describe_obligation(obligation: ResourceObligation) -> String {
     match obligation.kind() {
+        ResourceObligationKind::LoopResourcesPreserved { invariant } => format!(
+            "loop invariant {} preserves allocation identities, permissions and loans on this back edge",
+            invariant.get()
+        ),
+        ResourceObligationKind::LoopInvariantEstablished {
+            invariant,
+            back_edge,
+        } => format!(
+            "loop invariant {} {}",
+            invariant.get(),
+            if back_edge {
+                "is preserved on this back edge"
+            } else {
+                "holds on this entry"
+            }
+        ),
         ResourceObligationKind::PointerProvenanceKnown { pointer } => {
             format!("pointer %{} has known provenance", pointer.get())
         }
@@ -916,6 +932,13 @@ fn describe_obligation(obligation: ResourceObligation) -> String {
 
 fn contract_suggestion(kind: ResourceObligationKind) -> Option<String> {
     match kind {
+        ResourceObligationKind::LoopResourcesPreserved { .. } => Some(
+            "carry the same allocation instances and available permissions across every back edge; do not replace or consume loop resources".to_owned()),
+        ResourceObligationKind::LoopInvariantEstablished { back_edge, .. } => Some(if back_edge {
+            "check every update and path; strengthen the invariant with the bounds needed for preservation"
+        } else {
+            "establish the invariant before entering the loop, including the zero-iteration case"
+        }.to_owned()),
         ResourceObligationKind::PointerProvenanceKnown { pointer } => Some(format!(
             "add a checked pointer/`Own<T>` precondition for %{}",
             pointer.get()

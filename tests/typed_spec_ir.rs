@@ -918,7 +918,7 @@ fn predicate_binder_ownership_and_gated_bodies_are_explicit() {
 }
 
 #[test]
-fn nontrivial_loop_invariants_remain_gated() {
+fn loop_invariant_without_boundary_is_structurally_invalid() {
     let mut unit = raw_identity_unit();
     let origin = origin(&unit);
     let location = VirSpecLocation::Runtime(VirLocation::BlockEntry {
@@ -942,6 +942,7 @@ fn nontrivial_loop_invariants_remain_gated() {
         },
     });
     unit.specs.loop_invariants_mut().push(VirSpecLoopInvariant {
+        boundary: None,
         id: VirSpecLoopInvariantId::new(0),
         function: VirFunctionId::new(0),
         location,
@@ -953,6 +954,6 @@ fn nontrivial_loop_invariants_remain_gated() {
         unit.into_validated()
             .expect_err("nontrivial invariants are represented but gated")
             .kind(),
-        VirValidationErrorKind::LoopInvariantFeatureGated(_)
+        VirValidationErrorKind::InvalidLoopInvariantBoundary(_)
     ));
 }

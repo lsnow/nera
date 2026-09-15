@@ -4,6 +4,38 @@ use crate::Punctuation as P;
 use crate::frontend::{AstLogicalExpression, AstLogicalExpressionKind as L};
 
 impl Elaborator {
+    pub(super) fn elaborate_loop_invariants(
+        &mut self,
+        loop_id: HirLoopId,
+        invariants: &[super::super::AstLoopInvariant],
+    ) -> Result<(), FrontendFailure> {
+        for invariant in invariants {
+            let function = self.current_function.expect("loop function");
+            let id = HirSpecLoopInvariantId::new(self.specs.loop_invariants.len() as u32);
+            let clause = HirSpecClauseId::new(self.specs.clauses.len() as u32);
+            self.loop_spec_context = Some(loop_id);
+            let root = self.observation_root(clause, &invariant.expression, invariant.span);
+            self.loop_spec_context = None;
+            let root = root?;
+            let location = HirSpecLocation::LoopHead { function, loop_id };
+            self.specs.clauses.push(HirSpecClause {
+                id: clause,
+                owner: HirSpecClauseOwner::LoopInvariant(id),
+                location,
+                root,
+                span: invariant.span,
+            });
+            self.specs.loop_invariants.push(HirSpecLoopInvariant {
+                id,
+                function,
+                loop_id,
+                location,
+                clause,
+                span: invariant.span,
+            });
+        }
+        Ok(())
+    }
     pub(super) fn elaborate_function_clauses(
         &mut self,
         clauses: &[super::super::AstFunctionClause],
@@ -49,15 +81,67 @@ impl Elaborator {
             .ok_or_else(|| FrontendFailure::elaboration(span, "assert requires a function body"))?;
         let prove = HirSpecProveId::new(self.specs.proves.len() as u32);
         let clause = HirSpecClauseId::new(self.specs.clauses.len() as u32);
+        let root = self.observation_root(clause, expression, span)?;
+        let location = HirSpecLocation::Statement { function, prove };
+        self.specs.clauses.push(HirSpecClause {
+            id: clause,
+            owner: HirSpecClauseOwner::Prove(prove),
+            location,
+            root,
+            span,
+        });
+        self.specs.proves.push(HirSpecProve {
+            id: prove,
+            function,
+            location,
+            clause,
+            span,
+        });
+        Ok(HirStatementKind::Prove { prove })
+    }
+
+    fn observation_root(
+        &mut self,
+        clause: HirSpecClauseId,
+        expression: &AstLogicalExpression,
+        span: ByteSpan,
+    ) -> Result<HirSpecRoot, FrontendFailure> {
         let resource = match &expression.kind {
             L::Value(value) => self.local_resource(clause, value)?,
             L::InitializedRange {
                 pointer,
                 start,
                 end,
+            }
+            | L::ResourceRange {
+                pointer,
+                start,
+                end,
+                ..
             } => {
-                let (pointer, layout) =
-                    self.resource_pointer("initialized", pointer, expression.span)?;
+                if matches!(expression.kind, L::ResourceRange { .. })
+                    && self.loop_spec_context.is_none()
+                {
+                    return Err(FrontendFailure::unsupported(
+                        span,
+                        "local permission assertions are not implemented",
+                    ));
+                }
+                let builtin = match expression.kind {
+                    L::ResourceRange { writable: true, .. } => "writable",
+                    L::ResourceRange {
+                        writable: false, ..
+                    } => "readable",
+                    _ => "initialized",
+                };
+                let (pointer, mut layout) =
+                    self.resource_pointer(builtin, pointer, expression.span)?;
+                if self.loop_spec_context.is_some()
+                    && let Some(HirTypeKind::Array { element, .. }) =
+                        self.type_definition(layout).map(|t| &t.kind)
+                {
+                    layout = *element;
+                }
                 let stride = self.initialized_stride(layout, expression.span)?;
                 let start = self.logical_term(clause, start, 0)?;
                 let end = self.logical_term(clause, end, 0)?;
@@ -80,11 +164,34 @@ impl Elaborator {
                     },
                     expression.span,
                 );
-                Some(crate::SpecAssertionKind::Initialized {
-                    pointer,
-                    start_bytes,
-                    end_bytes,
-                    layout,
+                Some(if let L::ResourceRange { writable, .. } = expression.kind {
+                    let memory = crate::SpecMemoryClaim {
+                        pointer,
+                        authority: pointer,
+                        start_bytes,
+                        end_bytes,
+                        layout,
+                        access: if writable {
+                            crate::SpecAccess::Write
+                        } else {
+                            crate::SpecAccess::Read
+                        },
+                    };
+                    if writable {
+                        crate::SpecAssertionKind::Permission(memory)
+                    } else {
+                        crate::SpecAssertionKind::PointsTo {
+                            memory,
+                            value: None,
+                        }
+                    }
+                } else {
+                    crate::SpecAssertionKind::Initialized {
+                        pointer,
+                        start_bytes,
+                        end_bytes,
+                        layout,
+                    }
                 })
             }
             _ => None,
@@ -108,22 +215,7 @@ impl Elaborator {
             }
             root.into()
         };
-        let location = HirSpecLocation::Statement { function, prove };
-        self.specs.clauses.push(HirSpecClause {
-            id: clause,
-            owner: HirSpecClauseOwner::Prove(prove),
-            location,
-            root,
-            span,
-        });
-        self.specs.proves.push(HirSpecProve {
-            id: prove,
-            function,
-            location,
-            clause,
-            span,
-        });
-        Ok(HirStatementKind::Prove { prove })
+        Ok(root)
     }
 
     pub(super) fn spec_term(
@@ -358,7 +450,7 @@ impl Elaborator {
             (AstExpressionKind::Place(place), "alive") if matches!(place.projections.as_slice(), [AstPlaceProjection::Field { name, .. }] if name == "region") => {
                 &place.base
             }
-            (AstExpressionKind::Name(name), "initialized") => name,
+            (AstExpressionKind::Name(name), "initialized" | "writable" | "readable") => name,
             _ => {
                 return Err(FrontendFailure::unsupported(
                     argument.span,
@@ -367,6 +459,17 @@ impl Elaborator {
             }
         };
         let binding = self.lookup(name, argument.span)?;
+        if matches!(callee, "writable" | "readable")
+            && matches!(
+                self.type_definition(binding.value.ty).map(|t| &t.kind),
+                Some(HirTypeKind::RawPointer { .. })
+            )
+        {
+            return Err(FrontendFailure::unsupported(
+                argument.span,
+                "a raw pointer does not carry readable/writable authority; use its owner or reference",
+            ));
+        }
         let pointee = self.pointee_type(binding.value.ty).ok_or_else(|| {
             FrontendFailure::elaboration(
                 argument.span,
@@ -488,6 +591,43 @@ impl Elaborator {
                 return self.contract_length(clause, arguments, span);
             }
             AstExpressionKind::Call { callee, arguments } if callee == "old" => {
+                if let Some(loop_id) = self.loop_spec_context {
+                    let [
+                        AstExpression {
+                            kind: AstExpressionKind::Name(name),
+                            ..
+                        },
+                    ] = arguments.as_slice()
+                    else {
+                        return Err(FrontendFailure::unsupported(
+                            span,
+                            "loop old requires one outer scalar local",
+                        ));
+                    };
+                    let binding = self.lookup(name, span)?;
+                    if !matches!(
+                        self.type_definition(binding.value.ty).map(|t| &t.kind),
+                        Some(
+                            HirTypeKind::Bool
+                                | HirTypeKind::Integer(HirIntegerType::U64 | HirIntegerType::Usize)
+                        )
+                    ) {
+                        return Err(FrontendFailure::unsupported(
+                            span,
+                            "loop old cannot snapshot memory or permissions",
+                        ));
+                    }
+                    return Ok(self.spec_term(
+                        clause,
+                        binding.value.ty,
+                        HirSpecTermKind::Snapshot(HirSpecSnapshot::LoopEntry {
+                            function: self.current_function.unwrap(),
+                            loop_id,
+                            local: binding.local,
+                        }),
+                        span,
+                    ));
+                }
                 if self.contract_position == Some(HirSpecContractPosition::Ensures)
                     && let [
                         AstExpression {

@@ -311,6 +311,32 @@ impl Renderer<'_> {
             }
         }
         if self.explain {
+            if let Some(report) = self.preview.verification() {
+                for (function, verified) in report.functions() {
+                    for (round, attempt) in
+                        verified.cfg().loop_candidate_attempts().iter().enumerate()
+                    {
+                        writeln!(self.out, "[loop-candidate-attempt/not-additional] fn{} round {}: {} candidates, {} block visits",
+                            function.get(), round + 1, attempt.selected.len(), attempt.block_visits).unwrap();
+                        for record in &attempt.rejected {
+                            self.obligation(
+                                "discarded-candidate-attempt/not-additional",
+                                record.obligation().status(),
+                                &condition(record.obligation().kind()),
+                                record.finding(),
+                            );
+                        }
+                        if let Some(error) = &attempt.error {
+                            writeln!(
+                                self.out,
+                                "  discarded analysis: {}",
+                                visible(&error.to_string())
+                            )
+                            .unwrap();
+                        }
+                    }
+                }
+            }
             if let Some(history) = self.preview.historical() {
                 for record in history {
                     self.obligation(

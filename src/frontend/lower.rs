@@ -17,6 +17,7 @@ mod draft;
 mod liveness;
 mod loan_end;
 mod local_spec;
+mod loop_spec;
 mod memory;
 mod place;
 mod post_cfg;
@@ -98,6 +99,42 @@ fn lower_sources(
     sources: &[&SourceFile],
     modules: bool,
 ) -> Result<ValidatedVirUnit, FrontendFailure> {
+    let unit = lower_raw_sources(hir, sources, modules)?;
+    let invariant_sources: Vec<_> = unit
+        .specs
+        .loop_invariants()
+        .iter()
+        .map(|i| {
+            (
+                unit.source_map.source_span_for_origin(i.origin),
+                // Frontend diagnostics use input module IDs, not compact VIR IDs.
+                hir.function_by_id(crate::HirFunctionId::new(i.function.get()))
+                    .map(|f| crate::VirSourceId::new(f.module.get())),
+            )
+        })
+        .collect();
+    unit.into_validated().map_err(|error| {
+        if let crate::VirValidationErrorKind::LoopInvariantFeatureGated(id) = error.kind() {
+            let (invariant_source, invariant_module) = invariant_sources[id.get() as usize];
+            let mut failure = FrontendFailure::unsupported(
+                invariant_source.map_or(hir.entry_function().span, |source| source.span),
+                "loop invariant is outside the structured stable-resource induction profile",
+            );
+            if modules {
+                failure.source = invariant_module;
+            }
+            failure
+        } else {
+            invalid_hir(hir.entry_function().span)
+        }
+    })
+}
+
+fn lower_raw_sources(
+    hir: &HirProgram,
+    sources: &[&SourceFile],
+    modules: bool,
+) -> Result<VirUnit, FrontendFailure> {
     hir.validate_tables()
         .map_err(|_| invalid_hir(hir.entry_function().span))?;
     if (!modules && hir.modules().len() != 1)
@@ -135,8 +172,10 @@ fn lower_sources(
     let mut function_abis = Vec::with_capacity(lowered_functions.len());
     let mut source_map_entries = Vec::new();
     let mut local_specs = Vec::new();
+    let mut loop_specs = Vec::new();
     for lowered in lowered_functions {
         local_specs.extend(lowered.local_specs);
+        loop_specs.extend(lowered.loop_specs);
         functions.push(lowered.function);
         function_abis.push(lowered.abi);
         source_map_entries.extend(lowered.source_map_entries);
@@ -195,24 +234,24 @@ fn lower_sources(
     };
     patch_lowered_loan_origins(&mut runtime, &source_map)?;
     let borrows = lower_borrow_environment(hir, &runtime, &source_map)?;
-    let specs = infer_contracts(
+    let mut specs = infer_contracts(
         hir,
         &memory,
         &runtime,
         &source_map,
         &local_specs,
+        &loop_specs,
         &spec_sources,
     )?;
-    VirUnit {
-        version: VirUnitVersion::V25,
+    loop_spec::infer(&runtime, &source_map, &loop_specs, &mut specs);
+    Ok(VirUnit {
+        version: VirUnitVersion::V27,
         memory: memory.into_schema(),
         borrows,
         runtime,
         specs,
         source_map,
-    }
-    .into_validated()
-    .map_err(|_| invalid_hir(source_span))
+    })
 }
 
 fn function_symbol(hir: &HirProgram, function: &HirFunction) -> String {
@@ -432,6 +471,7 @@ struct LoweredLoop {
 }
 
 struct Lowerer<'hir> {
+    loop_specs: Vec<loop_spec::LoopSpec>,
     local_specs: Vec<local_spec::LocalSpec>,
     hir: &'hir HirProgram,
     function: &'hir HirFunction,
@@ -625,6 +665,7 @@ impl<'hir> Lowerer<'hir> {
         }
         let mut lowerer = Self {
             local_specs: Vec::new(),
+            loop_specs: Vec::new(),
             hir,
             function,
             types,
@@ -825,6 +866,7 @@ impl<'hir> Lowerer<'hir> {
             .collect::<Result<Vec<_>, FrontendFailure>>()?;
         let body = self.cfg.finish_draft(function.span)?;
         Ok(DraftLoweredFunction {
+            loop_specs: self.loop_specs,
             local_specs: self.local_specs,
             id: VirFunctionId::new(function.id.get()),
             name: function_symbol(self.hir, function),
@@ -1252,6 +1294,7 @@ impl<'hir> Lowerer<'hir> {
             .map(|value| value.ty)
             .collect::<Vec<_>>();
         let header_locals = self.visible_locals_needed(&liveness.header, statement_span)?;
+        let loop_preheader = self.cfg.spec_boundary(statement_span)?.0;
         let header = self.cfg.create_environment_block_with_extras(
             parent_scope,
             &header_locals,
@@ -1279,6 +1322,8 @@ impl<'hir> Lowerer<'hir> {
         {
             return Err(invalid_hir(condition.span));
         }
+
+        let loop_condition_block = self.cfg.spec_boundary(statement_span)?.0;
 
         let mut branch_facts = self.flow_facts.clone();
         extend_unique_facts(&mut branch_facts, &lowered_condition.fact_values);
@@ -1335,7 +1380,7 @@ impl<'hir> Lowerer<'hir> {
         let lowered_loop = LoweredLoop {
             liveness,
             parent_scope,
-            continue_target: header,
+            continue_target: header.clone(),
             exit,
         };
         self.active_loops.push(lowered_loop.clone());
@@ -1350,6 +1395,20 @@ impl<'hir> Lowerer<'hir> {
         body_result?;
 
         self.lower_loop_condition_exit(&condition_exit, &lowered_loop.exit, statement_span)?;
+
+        self.record_loop_spec(
+            loop_id,
+            &header,
+            loop_spec::LoopBoundaryPoints {
+                preheader: loop_preheader,
+                condition: loop_condition_block,
+                latch: None,
+                exit: lowered_loop.exit.block(),
+            },
+            &predecessor,
+            None,
+            &[],
+        );
 
         self.cfg
             .switch_to(lowered_loop.exit.block(), statement_span)?;
@@ -1414,6 +1473,7 @@ impl<'hir> Lowerer<'hir> {
         let predecessor = self.environment.clone();
         let predecessor_facts = self.flow_facts.clone();
         let predecessor_fact_count = predecessor_facts.len();
+        let loop_preheader = self.cfg.spec_boundary(statement_span)?.0;
         let mut loop_facts = predecessor_facts.clone();
         loop_facts.push(VirValue {
             id: start.value,
@@ -1580,6 +1640,27 @@ impl<'hir> Lowerer<'hir> {
         )?;
 
         self.lower_loop_condition_exit(&condition_exit, &lowered_loop.exit, statement_span)?;
+
+        self.record_loop_spec(
+            loop_id,
+            &header,
+            loop_spec::LoopBoundaryPoints {
+                preheader: loop_preheader,
+                condition: header.block(),
+                latch: Some(latch.block()),
+                exit: lowered_loop.exit.block(),
+            },
+            &predecessor,
+            Some((
+                *binding,
+                VirValue {
+                    id: start.value,
+                    ty: start.ty,
+                },
+                header.extra_parameters()[current_index],
+            )),
+            &loop_facts,
+        );
 
         self.cfg
             .switch_to(lowered_loop.exit.block(), statement_span)?;

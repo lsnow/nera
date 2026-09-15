@@ -713,6 +713,7 @@ impl AbstractAllocation {
 
     pub fn mark_dead(&mut self) {
         self.scalar_contents.clear();
+        self.initialization_prefixes = InitializationPrefixes::default();
         self.liveness = LivenessState::Dead;
         self.ownership = OwnershipState::Unowned;
     }
@@ -720,6 +721,7 @@ impl AbstractAllocation {
     pub fn set_liveness(&mut self, liveness: LivenessState) {
         if liveness != LivenessState::Live {
             self.scalar_contents.clear();
+            self.initialization_prefixes = InitializationPrefixes::default();
         }
         self.liveness = liveness;
     }

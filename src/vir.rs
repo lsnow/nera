@@ -71,17 +71,20 @@ pub use source_map::{
     VirGeneratedReason, VirLocation, VirLocationOrigin, VirOrigin, VirOriginKind, VirSource,
     VirSourceMap, VirSourceMapErrorKind, VirSourceSpan,
 };
+pub(crate) use spec::{
+    ResourceLoopAtom, ScalarLoopAtom, ScalarOperand, resource_atom, scalar_atoms,
+};
 pub use spec::{
     VirContract, VirContractAccess, VirContractBinder, VirContractBinderId, VirContractFree,
     VirContractInitialization, VirContractLiveness, VirContractOwnership, VirContractPermission,
     VirContractPointer, VirContractPosition, VirContractResource, VirContractResourceId,
-    VirContractResourceSummary, VirPredicate, VirPredicateId, VirSpecAssertion, VirSpecAssertionId,
-    VirSpecAssertionKind, VirSpecBinder, VirSpecBinderId, VirSpecBinderOwner, VirSpecClause,
-    VirSpecClauseId, VirSpecClauseKind, VirSpecClauseOrigin, VirSpecClauseOwner,
-    VirSpecEnvironment, VirSpecLocation, VirSpecLoopInvariant, VirSpecLoopInvariantId,
-    VirSpecProve, VirSpecProveId, VirSpecSnapshot, VirSpecTables, VirSpecTerm, VirSpecTermId,
-    VirSpecTermKind, VirSpecType, VirTrustEntry, VirTrustEntryId, VirTrustPolicyKind,
-    VirTrustScope,
+    VirContractResourceSummary, VirLoopBinding, VirLoopBoundary, VirLoopEdge, VirPredicate,
+    VirPredicateId, VirSpecAssertion, VirSpecAssertionId, VirSpecAssertionKind, VirSpecBinder,
+    VirSpecBinderId, VirSpecBinderOwner, VirSpecClause, VirSpecClauseId, VirSpecClauseKind,
+    VirSpecClauseOrigin, VirSpecClauseOwner, VirSpecEnvironment, VirSpecLocation,
+    VirSpecLoopInvariant, VirSpecLoopInvariantId, VirSpecProve, VirSpecProveId, VirSpecSnapshot,
+    VirSpecTables, VirSpecTerm, VirSpecTermId, VirSpecTermKind, VirSpecType, VirTrustEntry,
+    VirTrustEntryId, VirTrustPolicyKind, VirTrustScope,
 };
 pub use validate::{VirValidationError, VirValidationErrorKind};
 
@@ -129,6 +132,10 @@ pub enum VirUnitVersion {
     /// Resource assertion contracts and authority-free disjoint ranges.
     V24,
     V25,
+    /// Typed loop boundaries and entry/head bindings (induction remains gated).
+    V26,
+    /// Inferred loop candidates are distinct from explicit/type clauses.
+    V27,
 }
 
 /// Stable identifier of a function within one VIR unit.
@@ -261,7 +268,7 @@ impl VirUnit {
         assign_loan_effect_origins(&mut runtime, &source_map);
         let specs = VirSpecEnvironment::implicit(&runtime);
         Self {
-            version: VirUnitVersion::V25,
+            version: VirUnitVersion::V27,
             memory,
             borrows: VirBorrowEnvironment::empty(),
             runtime,

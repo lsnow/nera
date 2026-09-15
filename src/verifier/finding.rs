@@ -53,6 +53,38 @@ pub struct VerifierFinding {
 }
 
 impl VerifierFinding {
+    pub(super) fn loop_invariant(
+        unit: &ResolvedVirUnit<'_>,
+        invariant: &crate::VirSpecLoopInvariant,
+        source_block: crate::VirBlockId,
+    ) -> Option<Self> {
+        let boundary = invariant.boundary.as_ref()?;
+        if !boundary
+            .entries
+            .iter()
+            .chain(&boundary.back_edges)
+            .any(|e| e.source == source_block)
+        {
+            return None;
+        }
+        let source = unit
+            .as_unit()
+            .source_map
+            .source_span_for_origin(invariant.origin)?;
+        Some(Self {
+            site: VerifierFindingSite::Spec {
+                location: invariant.location,
+                entity: VerifierSpecEntity::Clause(invariant.clause),
+                occurrence: Some(VirLocation::Terminator {
+                    function: invariant.function,
+                    block: source_block,
+                }),
+            },
+            origin: invariant.origin,
+            source: source.source,
+            source_span: source.span,
+        })
+    }
     #[must_use]
     pub const fn site(self) -> VerifierFindingSite {
         self.site
@@ -111,6 +143,20 @@ impl VerifierFinding {
         occurrence: Option<VirLocation>,
     ) -> Option<Self> {
         let clause = unit.as_unit().specs.clause(clause_id)?;
+        if let (
+            VirSpecClauseOwner::LoopInvariant(id),
+            Some(VirLocation::Terminator { function, block }),
+        ) = (clause.owner, occurrence)
+        {
+            let invariant = unit
+                .as_unit()
+                .specs
+                .loop_invariants()
+                .get(id.get() as usize)?;
+            return (function == invariant.function)
+                .then(|| Self::loop_invariant(unit, invariant, block))
+                .flatten();
+        }
         if occurrence.is_some()
             && (!matches!(
                 clause.owner,

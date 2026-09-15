@@ -18,6 +18,8 @@ the verifier, and the direct x86_64 Linux backend, but it is not production-read
   allocation-liveness and initialization observations.
 - Function preconditions, postconditions, bounded memory observations, and
   explicit read/write frames, checked together with inferred borrow permissions.
+- Loop invariants for bounded scalar and memory-initialization reasoning, with
+  checked automatic candidates for common counting and initialization loops.
 - Detection of use-after-free, double free, conflicting aliases,
   uninitialized access, out-of-bounds access, and invalid pointer use.
 - Partial initialization and partial moves for structs, tuples, arrays, and
@@ -52,6 +54,10 @@ proved, and native executables are currently reported as **unverified**.
 
 ## Examples
 
+See the [stage 1–8 walkthrough](examples/README.md) for eight standalone
+examples, expected verification results, and interpreter/native commands.
+The use-after-free example is intentionally rejected.
+
 ### Function contracts
 
 ```nera
@@ -78,6 +84,37 @@ See `spec/cases/verify/contract-arena.nera` for two disjoint reservations from
 one backing array, capacity failure, and borrow restoration on function return.
 It uses separate scalar reservation checks and slice transfers, not a general
 heap-cursor allocator abstraction.
+
+### Loop invariants
+
+```nera
+fn count(n: usize) -> usize
+requires n <= 8usize;
+{
+    let mut i = 0usize;
+    while i < n {
+        invariant i <= n;
+        i = i + 1usize;
+    }
+    return i;
+}
+
+fn main() -> u64 {
+    if count(6usize) == 6usize { return 42; }
+    return 99;
+}
+```
+
+The verifier proves the invariant on entry and checks that each path returning
+to the loop header preserves it, together with the actual memory permissions.
+Common loops can omit these annotations when automatic candidates are proved;
+inference is bounded and does not cover arbitrary loops. Invariants are erased
+at runtime and do not prove termination.
+
+See [the initialization example](spec/cases/verify/loop-initialize-target.nera)
+for a growing initialized prefix of raw storage, and
+[the arena example](spec/cases/verify/loop-arena-initialize.nera) for initialization
+and later bounded views of one backing allocation.
 
 ### Ownership and explicit allocation
 
@@ -244,12 +281,15 @@ For the focused local-assertion and memory-proof regression suite:
 ```sh
 cargo run -p xtask -- check-spec-local
 cargo run -p xtask -- check-contracts
+cargo run -p xtask -- check-loops
 ```
 
 This runs the related tests, native checks, formatting, snapshots, compilation,
 and Clippy. It does not replace the full release gate.
 `check-contracts` includes the local-assertion suite and the function-contract
 regressions; running both is unnecessary when testing all these features.
+`check-loops` includes both suites and the loop regressions in one deduplicated
+run; use it alone when checking the combined verification features.
 
 ## Command-line interface
 

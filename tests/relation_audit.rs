@@ -69,7 +69,7 @@ fn fixed_corpus_has_deterministic_queries_and_complete_replay() {
         assert!(queries > 0);
         assert!(
             queries <= 2048 && visits <= 64,
-            "fixed corpus complexity envelope: {name}"
+            "fixed corpus complexity envelope: {name}, queries={queries}, visits={visits}"
         );
         eprintln!(
             "relation-audit corpus={name} elapsed_us={} block_visits={visits} retained_cases={retained_cases} queries={queries}",

@@ -108,7 +108,9 @@ impl VirRuntimeSemanticProfile {
             | VirUnitVersion::V22
             | VirUnitVersion::V23
             | VirUnitVersion::V24
-            | VirUnitVersion::V25 => Some(VIR_SYSTEM_SEMANTICS_V2),
+            | VirUnitVersion::V25
+            | VirUnitVersion::V26
+            | VirUnitVersion::V27 => Some(VIR_SYSTEM_SEMANTICS_V2),
             VirUnitVersion::V6
             | VirUnitVersion::V7
             | VirUnitVersion::V8

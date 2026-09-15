@@ -2,6 +2,11 @@ use super::{
     RuntimeVirProgram, VirContractId, VirFunction, VirFunctionId, VirLocation, VirOriginId,
     VirRegionId, VirSignature, VirType,
 };
+mod loops;
+pub(crate) use loops::{
+    ResourceLoopAtom, ScalarLoopAtom, ScalarOperand, resource_atom, scalar_atoms,
+};
+pub use loops::{VirLoopBinding, VirLoopBoundary, VirLoopEdge};
 
 /// Dense identifier of one signature binder within a contract.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -256,15 +261,25 @@ pub struct VirContractResource {
 /// those facts cannot enter a unit until their typed declaration tables exist.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum VirSpecClauseOrigin {
-    InferredType { origin: VirOriginId },
-    Explicit { origin: VirOriginId },
+    InferredType {
+        origin: VirOriginId,
+    },
+    /// Untrusted discovery output, checked by ordinary loop induction.
+    InferredLoop {
+        origin: VirOriginId,
+    },
+    Explicit {
+        origin: VirOriginId,
+    },
 }
 
 impl VirSpecClauseOrigin {
     #[must_use]
     pub const fn origin(self) -> VirOriginId {
         match self {
-            Self::InferredType { origin } | Self::Explicit { origin } => origin,
+            Self::InferredType { origin }
+            | Self::InferredLoop { origin }
+            | Self::Explicit { origin } => origin,
         }
     }
 }
@@ -454,7 +469,7 @@ pub struct VirTrustEntry {
     pub origin: VirOriginId,
 }
 
-/// Typed loop-invariant identity; non-trivial entries are gated in 6.4.5.
+/// Typed loop interface. Structural validation precedes the induction feature gate.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VirSpecLoopInvariant {
     pub id: VirSpecLoopInvariantId,
@@ -462,6 +477,7 @@ pub struct VirSpecLoopInvariant {
     pub location: VirSpecLocation,
     pub clause: VirSpecClauseId,
     pub origin: VirOriginId,
+    pub boundary: Option<VirLoopBoundary>,
 }
 
 /// One function-owned contract in the canonical VIR specification table.

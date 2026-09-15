@@ -14,7 +14,7 @@ impl ResourceState {
         if let Some(allocation) = self.allocations.get_mut(&id) {
             allocation.ownership = OwnershipState::Unowned;
             if allocation.liveness != LivenessState::Dead {
-                allocation.liveness = LivenessState::MaybeLive;
+                allocation.set_liveness(LivenessState::MaybeLive);
             }
         }
     }

@@ -48,7 +48,8 @@ impl TransferBuilder<'_> {
             _ => None,
         };
         // Exact/enveloped writes are invalidated by the canonical allocation
-        // mutators. Unbounded writes must not leave old content facts behind.
+        // mutators. Unbounded or unknown-alias writes must not leave content
+        // or relational initialization facts behind, even on unproved paths.
         if let Some(id) = known
             && let Some(range) = access_envelope(pointer.offset_bytes(), bytes)
             && self
@@ -66,10 +67,11 @@ impl TransferBuilder<'_> {
             .filter(|id| known.is_none_or(|known| *id == known))
             .collect::<Vec<_>>();
         for id in ids {
-            self.state
-                .allocation_mut(id)
-                .unwrap()
-                .clear_scalar_contents();
+            let allocation = self.state.allocation_mut(id).unwrap();
+            let extent = ByteRange::new(0, allocation.size_bytes()).expect("allocation extent");
+            allocation
+                .forget_initialization(extent)
+                .expect("allocation extent");
         }
     }
 }

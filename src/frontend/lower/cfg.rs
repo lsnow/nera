@@ -335,6 +335,9 @@ pub(super) struct CfgBuilder {
 }
 
 impl CfgBuilder {
+    pub(super) fn block_count(&self) -> u32 {
+        self.blocks.len() as u32
+    }
     pub(super) fn spec_boundary(
         &self,
         span: ByteSpan,

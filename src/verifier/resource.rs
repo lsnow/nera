@@ -12,6 +12,7 @@ mod contents;
 mod initialization;
 mod instance;
 mod loan;
+mod loop_frame;
 mod object;
 mod pointer;
 mod scalar;

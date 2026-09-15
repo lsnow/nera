@@ -821,8 +821,13 @@ impl<'environment> TransferBuilder<'environment> {
                     .iter()
                     .all(|obligation| obligation.status().is_proven())
             {
-                self.state
-                    .advance_initialization_prefixes(before, pointer, access);
+                self.state.advance_initialization_prefixes(
+                    before,
+                    pointer,
+                    access,
+                    self.relation_limits,
+                    &self.relations.queries,
+                );
             }
         }
         Ok(())

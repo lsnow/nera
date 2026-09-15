@@ -11,6 +11,38 @@ pub(super) struct LocalSpec {
     pub values: BTreeMap<HirLocalId, cfg::LoweredValue>,
 }
 
+pub(super) fn pointer_snapshot(
+    owner: VirFunctionId,
+    values: &BTreeMap<HirLocalId, cfg::LoweredValue>,
+    snapshot: HirSpecSnapshot,
+    authority: bool,
+    span: ByteSpan,
+) -> Result<VirSpecSnapshot, FrontendFailure> {
+    let HirSpecSnapshot::Local { function, local } = snapshot else {
+        return Err(invalid_hir(span));
+    };
+    if function.get() != owner.get() {
+        return Err(invalid_hir(span));
+    }
+    let value = values
+        .get(&local)
+        .filter(|v| matches!(v.ty, VirType::Pointer { .. }))
+        .ok_or_else(|| {
+            FrontendFailure::unsupported(
+                span,
+                "resource snapshot is not available at this CFG point",
+            )
+        })?;
+    Ok(VirSpecSnapshot::Value {
+        function: owner,
+        value: if authority {
+            value.permission.ok_or_else(|| invalid_hir(span))?
+        } else {
+            value.value
+        },
+    })
+}
+
 impl LocalSpec {
     pub fn pointer(
         &self,
@@ -18,30 +50,7 @@ impl LocalSpec {
         authority: bool,
         span: ByteSpan,
     ) -> Result<VirSpecSnapshot, FrontendFailure> {
-        let HirSpecSnapshot::Local { function, local } = snapshot else {
-            return Err(invalid_hir(span));
-        };
-        if function.get() != self.function.get() {
-            return Err(invalid_hir(span));
-        }
-        let value = self
-            .values
-            .get(&local)
-            .filter(|v| matches!(v.ty, VirType::Pointer { .. }))
-            .ok_or_else(|| {
-                FrontendFailure::unsupported(
-                    span,
-                    "resource snapshot is not available at this CFG point",
-                )
-            })?;
-        Ok(VirSpecSnapshot::Value {
-            function: self.function,
-            value: if authority {
-                value.permission.ok_or_else(|| invalid_hir(span))?
-            } else {
-                value.value
-            },
-        })
+        pointer_snapshot(self.function, &self.values, snapshot, authority, span)
     }
     pub fn location(&self) -> VirSpecLocation {
         VirSpecLocation::Runtime(if self.boundary == 0 {

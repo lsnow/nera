@@ -55,6 +55,8 @@ fn dump_unit(output: &mut String, unit: &VirUnit) -> fmt::Result {
         VirUnitVersion::V22 => writeln!(output, "vir-unit-v22")?,
         VirUnitVersion::V23 => writeln!(output, "vir-unit-v23")?,
         VirUnitVersion::V24 => writeln!(output, "vir-unit-v24")?,
+        VirUnitVersion::V27 => writeln!(output, "vir-unit-v27")?,
+        VirUnitVersion::V26 => writeln!(output, "vir-unit-v26")?,
         VirUnitVersion::V25 => writeln!(output, "vir-unit-v25")?,
     }
     writeln!(output, "memory {{")?;
@@ -224,6 +226,7 @@ fn dump_specs(output: &mut String, specs: &super::VirSpecEnvironment) -> fmt::Re
         )?;
     }
     for invariant in specs.loop_invariants() {
+        writeln!(output, "loop-boundary {:?}", invariant.boundary)?;
         write!(
             output,
             "loop-invariant invariant{} function fn{} at ",
@@ -625,6 +628,9 @@ fn clause_origin_name(origin: super::VirSpecClauseOrigin) -> String {
     match origin {
         super::VirSpecClauseOrigin::InferredType { origin } => {
             format!("inferred-type origin{}", origin.get())
+        }
+        super::VirSpecClauseOrigin::InferredLoop { origin } => {
+            format!("inferred-loop origin{}", origin.get())
         }
         super::VirSpecClauseOrigin::Explicit { origin } => {
             format!("explicit origin{}", origin.get())

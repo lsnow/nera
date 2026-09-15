@@ -2,6 +2,8 @@
 //! Never applies a runtime instruction, defines an SSA value, or commits state.
 use super::*;
 use crate::verifier::vc::VcQueryBudget;
+mod symbolic;
+pub(in crate::verifier) use symbolic::{SymbolicSpecMemoryQuery, query_symbolic_spec_memory};
 #[cfg(test)]
 mod tests;
 

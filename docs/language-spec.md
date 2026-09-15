@@ -411,6 +411,8 @@ while index < end {
 
 Loop checking must reach a stable safe state within the configured analysis
 limits. If it cannot, verification fails with an unknown or unsupported result.
+Explicit invariants and checked automatic candidates can provide an inductive
+summary instead of relying only on repeated loop analysis (see 15.6).
 
 ### 15.3 Range loops
 
@@ -442,6 +444,51 @@ match message {
 Patterns may be wildcards, bindings, integer or boolean literals, and enum
 variants with tuple or named payloads. Match guards use `if` before `=>`.
 Tuple and array destructuring patterns are not supported.
+
+### 15.6 Loop invariants
+
+Place zero or more `invariant` clauses at the beginning of a `while` or `for`
+body, before executable statements:
+
+```nera
+let mut i = 0usize;
+while i < n {
+    invariant i <= n;
+    i = i + 1usize;
+}
+```
+
+The entry state must establish every explicit clause. Every path that repeats
+the loop, including `continue`, must preserve the clauses and the actual
+ownership, borrow, and initialization state. A `break` or `return` is checked
+using its own outgoing state, not an assumed normal loop exit. Nested loops
+must satisfy the same checks. Range-loop bounds are evaluated once; supported
+immutable bound values can be used in invariants without reevaluating them.
+
+The current profile supports scalar comparisons and conjunctions, plus separate
+resource clauses such as `alive(p.region)`, `initialized(p, begin..end)`,
+`readable(p, begin..end)`, and `writable(p, begin..end)`. Resource clauses observe
+existing authority; they do not create permissions. For supported raw array
+storage, a clause such as `initialized(p, 0usize..i)` describes the initialized
+prefix while the remaining storage may still be uninitialized. Each iteration
+must perform the required writes before extending that prefix.
+
+For common counting and prefix-initialization loops, the verifier tries a
+bounded set of automatic candidates. Each candidate must pass the same entry
+and preservation checks as an explicit clause. Failed candidates are discarded;
+ordinary analysis still has to prove safety. Explicit clauses are never silently
+discarded. This does not guarantee inference for arbitrary safe loops.
+
+Loop reasoning currently requires a supported stable allocation and borrow
+shape. Calls compose with checked contracts and actual memory effects, but
+effectful calls can lose content precision. New allocations across iterations,
+general evolving loan footprints, arbitrary dynamic ranges, heap snapshots,
+`old` in loop clauses, disjunctions, and quantified invariants are outside this
+inductive profile or may remain unproved. Unsupported reasoning and exhausted
+budgets do not count as successful verification.
+
+Invariants are static only and are erased by `run` and `build`. They do not
+prove termination or the correctness of the compiler or generated executable.
 
 ## 16. Moves, copies, and initialization
 
@@ -542,9 +589,9 @@ values that reside in addressable storage, or whose values were not retained
 across a control-flow join, cannot yet be observed; the compiler rejects these
 cases explicitly. Assertions do not extend a borrow's lifetime.
 
-Assertions and contracts can occur in closed multi-file programs and concrete
-generic instances. Loop invariants, `proof`/`ghost`, and source quantifiers
-remain unsupported.
+Assertions, contracts, and supported loop invariants can occur in closed
+multi-file programs and concrete generic instances. `proof`/`ghost` and source
+quantifiers remain unsupported.
 
 `verify` exits with status 0 for a checked program, 1 for an unproved program,
 and 2 for rejected source. Failed conditions distinguish insufficient facts,
@@ -669,8 +716,10 @@ let-statement = "let" [ "mut" ] identifier [ ":" type ]
 return-statement = "return" [ expression ] ";" ;
 if-statement  = "if" expression block
                 [ "else" ( if-statement | block ) ] ;
-while-statement = "while" expression block ;
-for-statement = "for" identifier "in" expression ".." expression block ;
+while-statement = "while" expression loop-block ;
+for-statement = "for" identifier "in" expression ".." expression loop-block ;
+loop-block    = "{" { invariant-clause } { statement } "}" ;
+invariant-clause = "invariant" logical-expression ";" ;
 
 expression    = primary [ comparison primary ] ;
 primary       = atom { "+" atom } ;

@@ -579,13 +579,27 @@ impl Instantiator<'_> {
                         self.block(module, block, env, depth + 1)?;
                     }
                 }
-                AstStatementKind::While { condition, body } => {
+                AstStatementKind::While {
+                    condition,
+                    body,
+                    invariants,
+                } => {
+                    for invariant in invariants {
+                        self.logical_expression(module, &mut invariant.expression, env, depth + 1)?;
+                    }
                     self.expression(module, condition, env, depth + 1)?;
                     self.block(module, body, env, depth + 1)?;
                 }
                 AstStatementKind::For {
-                    start, end, body, ..
+                    start,
+                    end,
+                    body,
+                    invariants,
+                    ..
                 } => {
+                    for invariant in invariants {
+                        self.logical_expression(module, &mut invariant.expression, env, depth + 1)?;
+                    }
                     self.expression(module, start, env, depth + 1)?;
                     self.expression(module, end, env, depth + 1)?;
                     self.block(module, body, env, depth + 1)?;

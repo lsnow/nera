@@ -123,6 +123,7 @@ pub enum VirValidationErrorKind {
     InvalidTrustEntry(super::VirTrustEntryId),
     TrustPolicyDenied(super::VirTrustEntryId),
     LoopInvariantFeatureGated(super::VirSpecLoopInvariantId),
+    InvalidLoopInvariantBoundary(super::VirSpecLoopInvariantId),
     UnknownSpecClauseOrigin(VirOriginId),
     SpecClauseOriginOutsideFunction(VirSpecClauseId),
     InvalidInferredTypeClause(VirSpecClauseId),
@@ -206,7 +207,7 @@ pub enum VirValidationErrorKind {
 }
 
 pub(super) fn validate(unit: &VirUnit) -> Result<(), VirValidationError> {
-    if unit.version != VirUnitVersion::V25 {
+    if unit.version != VirUnitVersion::V27 {
         return Err(program_error(
             VirValidationErrorKind::UnsupportedUnitVersion(unit.version),
         ));

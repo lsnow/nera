@@ -6,6 +6,7 @@ mod contract_resources;
 mod ids;
 mod lifetimes;
 mod local_spec;
+pub(in crate::frontend) mod loop_spec;
 mod node_identity;
 mod place;
 mod program;
@@ -439,6 +440,7 @@ enum SurfaceVariantStyle {
 
 struct Elaborator {
     contract_position: Option<HirSpecContractPosition>,
+    loop_spec_context: Option<HirLoopId>,
     specs: HirSpecEnvironment,
     graph: super::modules::ModuleGraph,
     current_module: usize,
@@ -590,6 +592,7 @@ impl Elaborator {
             next_node: 0,
             specs: HirSpecEnvironment::empty(),
             contract_position: None,
+            loop_spec_context: None,
             active_loops: Vec::new(),
             current_function: None,
             return_type: core_types.unit,
@@ -2046,7 +2049,11 @@ impl Elaborator {
                         .transpose()?,
                 }
             }
-            AstStatementKind::While { condition, body } => {
+            AstStatementKind::While {
+                condition,
+                body,
+                invariants,
+            } => {
                 let loop_id = HirLoopId::new(self.next_loop);
                 self.next_loop = self.next_loop.checked_add(1).ok_or_else(|| {
                     FrontendFailure::elaboration(statement.span, "too many structured loops")
@@ -2059,6 +2066,7 @@ impl Elaborator {
                     ));
                 }
                 self.active_loops.push(loop_id);
+                self.elaborate_loop_invariants(loop_id, invariants)?;
                 let body = self.elaborate_block(body, None);
                 if self.active_loops.pop() != Some(loop_id) {
                     return Err(FrontendFailure::elaboration(
@@ -2074,6 +2082,7 @@ impl Elaborator {
             }
             AstStatementKind::For {
                 binding,
+                invariants,
                 binding_span,
                 start,
                 end,
@@ -2097,8 +2106,14 @@ impl Elaborator {
                     ));
                 }
                 self.active_loops.push(loop_id);
-                let body_and_pattern =
-                    self.elaborate_for_body(body, binding, *binding_span, start_semantic.ty);
+                let body_and_pattern = self.elaborate_for_body(
+                    body,
+                    binding,
+                    *binding_span,
+                    start_semantic.ty,
+                    loop_id,
+                    invariants,
+                );
                 if self.active_loops.pop() != Some(loop_id) {
                     return Err(FrontendFailure::elaboration(
                         statement.span,
@@ -2282,6 +2297,8 @@ impl Elaborator {
         binding: &str,
         binding_span: ByteSpan,
         item_type: HirTypeId,
+        loop_id: HirLoopId,
+        invariants: &[super::AstLoopInvariant],
     ) -> Result<(HirBlock, HirPattern), FrontendFailure> {
         let scope = HirScopeId::new(self.next_scope);
         self.next_scope = self
@@ -2302,6 +2319,7 @@ impl Elaborator {
             },
             binding_span,
         )?;
+        self.elaborate_loop_invariants(loop_id, invariants)?;
         let result = self.elaborate_statements(&block.statements);
         let frame = self.scopes.pop().expect("for-loop scope was pushed");
         let statements = result?;

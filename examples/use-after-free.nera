@@ -1,0 +1,7 @@
+// Intentionally invalid: parsing succeeds, but verification must reject it.
+fn main() -> u64 {
+    let p = alloc<u64>(1);
+    *p = 42;
+    free(p);
+    return *p;
+}

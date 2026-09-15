@@ -1,0 +1,16 @@
+// Initialized backing: this is update, not a proof of first initialization.
+fn main() -> u64 { return update(6usize); }
+
+fn update(n: usize) -> u64
+requires n <= 8usize;
+{
+    let mut values = [0, 0, 0, 0, 0, 0, 0, 7];
+    let mut i = 0usize;
+    while i < n {
+        invariant i <= n;
+        values[i] = 42;
+        i = i + 1usize;
+    }
+    if n == 0usize { return 0; }
+    return values[0];
+}

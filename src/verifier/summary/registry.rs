@@ -30,6 +30,20 @@ impl SummaryRegistry {
         self.assumptions.contains(name)
     }
 
+    /// An actual closed effect summary, never a user frame declaration or an
+    /// SCC hypothesis. Call transfer still checks preconditions and records its
+    /// normal dependency/audit evidence even when loop content havoc is skipped.
+    pub fn preserves_loop_contents(&self, target: &crate::VirCallTarget) -> bool {
+        !self.is_inductive(&target.symbol)
+            && self.get(target).is_some_and(|s| {
+                s.closed
+                    && s.audit_complete
+                    && s.state == SummaryState::Closed
+                    && matches!(&s.effects.may_write, Knowledge::Known(writes) if writes.is_empty())
+                    && matches!(&s.effects.may_free, Knowledge::Known(frees) if frees.is_empty())
+            })
+    }
+
     /// Scoped trial registry. This clone is discarded, never promoted in place.
     pub fn trial(&self, candidates: &BTreeMap<String, FunctionSummary>) -> Self {
         let mut trial = self.clone();

@@ -25,8 +25,9 @@ mod pointer;
 mod scalar_memory;
 mod spec;
 pub(super) use spec::{
-    SpecFootprint, SpecMemoryQuery, query_contract_memory, query_spec_disjoint, query_spec_memory,
-    spec_alive, spec_footprint, spec_range_footprint, spec_same_allocation, spec_scalar_contents,
+    SpecFootprint, SpecMemoryQuery, SymbolicSpecMemoryQuery, query_contract_memory,
+    query_spec_disjoint, query_spec_memory, query_symbolic_spec_memory, spec_alive, spec_footprint,
+    spec_range_footprint, spec_same_allocation, spec_scalar_contents,
 };
 #[cfg(test)]
 mod tests;

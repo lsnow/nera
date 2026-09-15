@@ -40,6 +40,164 @@ mod spec_arithmetic;
 mod spec_exists;
 
 #[test]
+fn loop_review_fixes_preserve_native_execution_and_cleanup() {
+    #[path = "support/loop_review.rs"]
+    mod fixture;
+    for (source, allocations) in [
+        (fixture::MIXED, 0),
+        (fixture::FOR_BOUND, 0),
+        (fixture::READ_ONLY, 1),
+    ] {
+        for source in [source.to_owned(), fixture::erase_invariants(source)] {
+            let output = analyze(&SourceFile::from_text("loop-review-native.nera", &source));
+            let unit = output.vir().unwrap();
+            assert_interpreter_matches_native("loop-review", unit);
+            assert_program_resource_ledger(unit, allocations, None);
+        }
+    }
+}
+
+#[test]
+fn loop_arena_initialization_and_views_preserve_native_resource_ledger() {
+    #[path = "support/loop_arena.rs"]
+    mod fixture;
+    for (source, allocations) in [
+        (fixture::INITIALIZE.to_owned(), 1),
+        (fixture::erase_invariants(fixture::INITIALIZE), 1),
+        (
+            fixture::INITIALIZE.replacen("initialize(6usize)", "initialize(1usize)", 1),
+            1,
+        ),
+        (
+            fixture::INITIALIZE.replace("p[i] = 42;", "if i == 3usize { break; } p[i] = 42;"),
+            1,
+        ),
+        (fixture::initialized_update(), 0),
+        (fixture::ADJACENT_VIEWS.to_owned(), 1),
+        (fixture::capacity_failure(), 0),
+    ] {
+        let output = analyze(&SourceFile::from_text("loop-arena-native.nera", &source));
+        let unit = output.vir().unwrap();
+        assert_interpreter_matches_native("loop-arena", unit);
+        assert_program_resource_ledger(unit, allocations, None);
+    }
+}
+
+#[test]
+fn loop_contract_composition_matches_native_and_resource_ledger() {
+    #[path = "support/loop_composition.rs"]
+    mod fixture;
+    for app in [
+        fixture::APP.to_owned(),
+        fixture::erase_invariants(fixture::APP),
+    ] {
+        let compiler = fixture::session(&app, fixture::OPS);
+        assert!(compiler.verify("app").unwrap().is_checked());
+        let analysis = compiler.analyze("app").unwrap();
+        let unit = analysis.frontend().vir().unwrap();
+        assert_interpreter_matches_native("loop-contract-composition", unit);
+        assert_program_resource_ledger(unit, 0, None);
+    }
+}
+
+#[test]
+fn inferred_loop_candidates_preserve_native_execution_and_cleanup() {
+    for (name, original) in [
+        (
+            "inferred-initialize",
+            include_str!("../spec/cases/verify/loop-initialize-target.nera"),
+        ),
+        (
+            "inferred-update",
+            include_str!("../spec/cases/verify/loop-update-target.nera"),
+        ),
+    ] {
+        let source = original
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("invariant "))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let out = analyze(&SourceFile::from_text(name, &source));
+        let unit = out.vir().unwrap();
+        assert!(
+            verify_program(&unit.resolve().unwrap(), Default::default())
+                .unwrap()
+                .is_memory_checked_core0()
+        );
+        assert_interpreter_matches_native(name, unit);
+        assert_resource_ledger(&source, usize::from(name == "inferred-initialize"), None);
+    }
+}
+
+#[test]
+fn structured_loop_control_and_cleanup_match_native() {
+    for (name, source) in [
+        (
+            "nested-for",
+            "fn main()->u64 {for i in 0..3 {invariant i<=3;
+            for j in 0..4 {invariant j<=4; if j==1 {continue;} if i==2 {break;}}} return 42;}",
+        ),
+        (
+            "loop-loan-cleanup",
+            "fn main()->u64 {let mut x=7; for i in 0..3 {invariant i<=3;
+            let r=&mut x; *r=42; continue;} return x;}",
+        ),
+        (
+            "loop-owner-return",
+            "fn main()->u64 {let p=alloc<u64>(1); *p=42;
+            for i in 0..3 {invariant i<=3; if i==1 {return *p;}} return 0;}",
+        ),
+    ] {
+        let out = analyze(&SourceFile::from_text(name, source));
+        let unit = out.vir().unwrap();
+        let report = verify_program(&unit.resolve().unwrap(), Default::default()).unwrap();
+        assert!(
+            report.is_memory_checked_core0(),
+            "{name}: {:?}",
+            report.diagnostics()
+        );
+        assert_interpreter_matches_native(name, unit);
+        assert_resource_ledger(source, usize::from(name == "loop-owner-return"), None);
+    }
+}
+
+#[test]
+fn stable_resource_loop_invariants_preserve_native_runtime() {
+    for (name, source) in [
+        (
+            "loop-initialize-invariant",
+            include_str!("../spec/cases/verify/loop-initialize-target.nera"),
+        ),
+        (
+            "loop-update-invariant",
+            include_str!("../spec/cases/verify/loop-update-target.nera"),
+        ),
+    ] {
+        let output = analyze(&SourceFile::from_text(name, source));
+        let unit = output.vir().unwrap();
+        assert!(
+            verify_program(&unit.resolve().unwrap(), Default::default())
+                .unwrap()
+                .is_memory_checked_core0()
+        );
+        assert_interpreter_matches_native(name, unit);
+    }
+}
+
+#[test]
+fn scalar_loop_induction_preserves_native_runtime() {
+    let source = "fn main()->u64 {return count(42);} fn count(n:u64)->u64 ensures result==n; {let mut i=0; while i<n {invariant i<=n; i=i+1;} return i;}";
+    let output = analyze(&SourceFile::from_text("native-loop-induction.nera", source));
+    let unit = output.vir().unwrap();
+    assert!(
+        verify_program(&unit.resolve().unwrap(), Default::default())
+            .unwrap()
+            .is_memory_checked_core0()
+    );
+    assert_interpreter_matches_native("scalar-loop-induction", unit);
+}
+
+#[test]
 fn source_local_assertions_preserve_native_execution() {
     let output = nera::analyze(&nera::SourceFile::from_text(
         "native-local-assert.nera",
@@ -1018,6 +1176,13 @@ fn heap_construction_releases_present_inner_payloads_before_outer_storage() {
 
 #[test]
 fn loop_initialization_matches_native_and_preserves_resource_cleanup() {
+    assert_resource_ledger(
+        "fn main() -> u64 { let p = alloc<[u64; 64]>(1);
+        for i in 2usize..64usize { p[i] = 42; }
+        let answer = p[63]; free(p); return answer; }",
+        1,
+        Some(1),
+    );
     assert_resource_ledger(
         include_str!("../spec/cases/verify/loop-initialization.nera"),
         0,

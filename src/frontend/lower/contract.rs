@@ -20,6 +20,7 @@ pub(super) fn infer_contracts(
     runtime: &RuntimeVirProgram,
     source_map: &VirSourceMap,
     local_specs: &[super::local_spec::LocalSpec],
+    loop_specs: &[super::loop_spec::LoopSpec],
     spec_sources: &std::collections::BTreeMap<crate::HirModuleId, VirSourceId>,
 ) -> Result<VirSpecEnvironment, FrontendFailure> {
     let mut specs = VirSpecEnvironment::implicit(runtime);
@@ -152,8 +153,46 @@ pub(super) fn infer_contracts(
         source_map,
         &mut specs,
         local_specs,
+        loop_specs,
         spec_sources,
     )?;
+    for invariant in &hir.specs().loop_invariants {
+        let id = crate::VirSpecLoopInvariantId::new(invariant.id.get());
+        let mapped = loop_specs
+            .iter()
+            .find(|s| {
+                s.function.get() == invariant.function.get() && s.loop_id == invariant.loop_id
+            })
+            .ok_or_else(|| invalid_hir(invariant.span))?;
+        let mut boundary = mapped.boundary.clone();
+        let function = runtime
+            .functions
+            .iter()
+            .find(|f| f.id == mapped.function)
+            .ok_or_else(|| invalid_hir(invariant.span))?;
+        (boundary.entries, boundary.back_edges, boundary.exits) = boundary.edges(function);
+        let clause = specs
+            .clauses()
+            .iter()
+            .find(|c| c.owner == VirSpecClauseOwner::LoopInvariant(id))
+            .ok_or_else(|| invalid_hir(invariant.span))?;
+        let lowered = crate::VirSpecLoopInvariant {
+            id,
+            function: mapped.function,
+            location: clause.location,
+            clause: clause.id,
+            origin: source_map
+                .user_origin(
+                    *spec_sources
+                        .get(&hir.function_by_id(invariant.function).unwrap().module)
+                        .unwrap(),
+                    invariant.span,
+                )
+                .ok_or_else(|| invalid_hir(invariant.span))?,
+            boundary: Some(boundary),
+        };
+        specs.loop_invariants_mut().push(lowered);
+    }
     Ok(specs)
 }
 
@@ -344,6 +383,7 @@ fn lower_hir_specs(
     source_map: &VirSourceMap,
     specs: &mut VirSpecEnvironment,
     local_specs: &[super::local_spec::LocalSpec],
+    loop_specs: &[super::loop_spec::LoopSpec],
     spec_sources: &std::collections::BTreeMap<crate::HirModuleId, VirSourceId>,
 ) -> Result<(), FrontendFailure> {
     let spec_source_origin =
@@ -414,6 +454,53 @@ fn lower_hir_specs(
                     lower_spec_type(hir, term.ty).ok_or_else(|| invalid_hir(term.span))?,
                     term.span,
                 )?)
+            } else if let HirSpecTermKind::Snapshot(HirSpecSnapshot::LoopEntry {
+                function,
+                loop_id,
+                local,
+            }) = term.kind
+            {
+                let binding = loop_specs
+                    .iter()
+                    .find(|s| s.function.get() == function.get() && s.loop_id == loop_id)
+                    .and_then(|s| s.boundary.bindings.iter().find(|b| b.local == local.get()))
+                    .ok_or_else(|| {
+                        let mut failure = FrontendFailure::unsupported(
+                            term.span,
+                            "loop entry scalar is not retained at the header",
+                        );
+                        failure.source = hir
+                            .function_by_id(function)
+                            .map(|f| VirSourceId::new(f.module.get()));
+                        failure
+                    })?;
+                VirSpecTermKind::Snapshot(VirSpecSnapshot::Value {
+                    function: VirFunctionId::new(function.get()),
+                    value: binding.entry,
+                })
+            } else if let HirSpecTermKind::Snapshot(HirSpecSnapshot::Local { local, function }) =
+                term.kind
+                && let HirSpecLocation::LoopHead { loop_id, .. } =
+                    hir.specs().clauses[term.clause.index()].location
+            {
+                let binding = loop_specs
+                    .iter()
+                    .find(|s| s.function.get() == function.get() && s.loop_id == loop_id)
+                    .and_then(|s| s.boundary.bindings.iter().find(|b| b.local == local.get()))
+                    .ok_or_else(|| {
+                        let mut failure = FrontendFailure::unsupported(
+                            term.span,
+                            "loop snapshot is not retained as a scalar head parameter",
+                        );
+                        failure.source = hir
+                            .function_by_id(function)
+                            .map(|f| VirSourceId::new(f.module.get()));
+                        failure
+                    })?;
+                VirSpecTermKind::Snapshot(VirSpecSnapshot::Value {
+                    function: VirFunctionId::new(function.get()),
+                    value: binding.head,
+                })
             } else {
                 lower_spec_term_kind(hir, memory, &term.kind, term.span)?
             },
@@ -438,6 +525,18 @@ fn lower_hir_specs(
                         local_specs
                             .iter()
                             .find(|s| s.prove == prove)
+                            .ok_or_else(|| invalid_hir(assertion.span))?,
+                    )
+                } else {
+                    None
+                },
+                if let HirSpecLocation::LoopHead { function, loop_id } =
+                    hir.specs().clauses[assertion.clause.index()].location
+                {
+                    Some(
+                        loop_specs
+                            .iter()
+                            .find(|s| s.function.get() == function.get() && s.loop_id == loop_id)
                             .ok_or_else(|| invalid_hir(assertion.span))?,
                     )
                 } else {
@@ -475,7 +574,7 @@ fn lower_hir_specs(
                     crate::VirSpecLoopInvariantId::new(invariant.get()),
                 ),
             },
-            location: lower_spec_location(clause.location, local_specs)
+            location: lower_spec_location(clause.location, local_specs, loop_specs)
                 .ok_or_else(|| invalid_hir(clause.span))?,
             origin: VirSpecClauseOrigin::Explicit { origin },
             kind: match clause.root {
@@ -507,7 +606,7 @@ fn lower_hir_specs(
         specs.proves_mut().push(VirSpecProve {
             id: VirSpecProveId::new(prove.id.get()),
             function: VirFunctionId::new(prove.function.get()),
-            location: lower_spec_location(prove.location, local_specs)
+            location: lower_spec_location(prove.location, local_specs, loop_specs)
                 .ok_or_else(|| invalid_hir(prove.span))?,
             clause: shifted_clause_id(clause_base, prove.clause)
                 .ok_or_else(|| invalid_hir(prove.span))?,
@@ -638,6 +737,7 @@ fn lower_assertion(
     kind: &crate::HirSpecAssertionKind,
     span: ByteSpan,
     local: Option<&super::local_spec::LocalSpec>,
+    loop_spec: Option<&super::loop_spec::LoopSpec>,
 ) -> Result<crate::VirSpecAssertionKind, FrontendFailure> {
     use crate::SpecAssertionKind as A;
     let term = |id: crate::HirSpecTermId| VirSpecTermId::new(id.get());
@@ -645,6 +745,14 @@ fn lower_assertion(
     let snapshot = |s, authority| {
         if let Some(local) = local {
             local.pointer(s, authority, span)
+        } else if let Some(loop_spec) = loop_spec {
+            super::local_spec::pointer_snapshot(
+                loop_spec.function,
+                &loop_spec.values,
+                s,
+                authority,
+                span,
+            )
         } else if authority {
             lower_authority_snapshot(hir, memory, s, span)
         } else {
@@ -851,12 +959,14 @@ fn lower_snapshot(
             function: VirFunctionId::new(function.get()),
             slot: 0,
         },
+        HirSpecSnapshot::LoopEntry { .. } => return Err(invalid_hir(span)),
     })
 }
 
 fn lower_spec_location(
     location: HirSpecLocation,
     local_specs: &[super::local_spec::LocalSpec],
+    loop_specs: &[super::loop_spec::LoopSpec],
 ) -> Option<VirSpecLocation> {
     match location {
         HirSpecLocation::Statement { function, prove } => local_specs
@@ -869,7 +979,15 @@ fn lower_spec_location(
         HirSpecLocation::FunctionResult { function } => Some(VirSpecLocation::FunctionResult {
             function: VirFunctionId::new(function.get()),
         }),
-        HirSpecLocation::LoopHead { .. } => None,
+        HirSpecLocation::LoopHead { function, loop_id } => loop_specs
+            .iter()
+            .find(|s| s.function.get() == function.get() && s.loop_id == loop_id)
+            .map(|s| {
+                VirSpecLocation::Runtime(VirLocation::BlockEntry {
+                    function: s.function,
+                    block: s.boundary.header,
+                })
+            }),
     }
 }
 

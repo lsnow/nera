@@ -49,6 +49,57 @@ fn sequential_fixed_array_loop_initializes_complete_value() {
 }
 
 #[test]
+fn nonzero_and_dynamic_starts_initialize_only_the_selected_interval() {
+    checked(
+        "fn main() -> u64 { let mut a: [u64; 64];
+        for i in 2usize..64usize { a[i] = 42; } return a[63]; }",
+        42,
+    );
+    checked(
+        "fn main() -> u64 { return fill(2usize, 48usize); }
+        fn fill(begin: usize, end: usize) -> u64
+        { if begin >= end { return 0; } if end > 64usize { return 0; }
+          let a = alloc<[u64; 64]>(1); let mut i = begin;
+          while i < end { a[i] = 42; let value = a[i]; i = i + 1usize; }
+          free(a); return 42; }",
+        42,
+    );
+}
+
+#[test]
+fn nonzero_ranges_do_not_cover_gaps_or_assume_dynamic_exit_facts() {
+    for (body, read) in [("a[i] = 42;", 1), ("if i != 4usize { a[i] = 42; }", 4)] {
+        let source = format!(
+            "fn main() -> u64 {{ let mut a: [u64; 8];
+            for i in 2usize..8usize {{ {body} }} return a[{read}]; }}"
+        );
+        rejected(accepted(&source).vir().unwrap().as_unit().clone(), true);
+    }
+    // The range domain supports arbitrary SSA origins, but the implicit CFG
+    // fixed point can still lose the input/cursor relation at a complex exit.
+    // Do not silently install a resource invariant to make this example pass.
+    let source = "fn main() -> u64 { return fill(2usize, 48usize); }
+        fn fill(begin: usize, end: usize) -> u64 {
+          if begin >= end { return 0; } if end > 64usize { return 0; }
+          let a = alloc<[u64; 64]>(1); let mut i = begin;
+          while i < end { a[i] = 42; i = i + 1usize; }
+          let answer = a[begin]; free(a); return answer; }";
+    let output = accepted(source);
+    let kinds = rejected(output.vir().unwrap().as_unit().clone(), false);
+    assert!(kinds.iter().any(|kind| matches!(
+        kind,
+        nera::ResourceObligationKind::MemoryInitialized { .. }
+            | nera::ResourceObligationKind::ObjectValueBytesInitialized { .. }
+    )));
+    assert_eq!(
+        interpret(output.vir().unwrap().resolve().unwrap().runtime())
+            .unwrap()
+            .values(),
+        [nera::VirRuntimeValue::U64(42)]
+    );
+}
+
+#[test]
 fn while_heap_nested_fields_and_boolean_elements() {
     checked("fn main() -> u64 { let values = alloc<[u64; 8]>(1); let mut i = 0usize;
       while i < 8usize { values[i] = 42; i = i + 1usize; } let whole = *values; free(values); return whole[7]; }", 42);
@@ -165,6 +216,9 @@ fn missing_write_skipped_increment_and_retirement_cannot_forge_a_prefix() {
         }
         block.instructions = rewritten;
     }
+    // Exercise the original initialization transfer, not an inferred interface
+    // whose admitted instruction profile no longer matches this mutation.
+    retired.rebuild_implicit_contracts_from_runtime();
     retired.rebuild_source_map_from_runtime("retired-prefix.vir", 1000);
     rejected(retired, true);
 }

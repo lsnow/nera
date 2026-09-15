@@ -1,0 +1,23 @@
+fn main() -> u64 {
+    return initialize(6usize);
+}
+
+// Only the prefix [0, i) is initialized; the remainder stays raw storage.
+fn initialize(n: usize) -> u64
+requires 1usize <= n;
+requires n <= 8usize;
+{
+    let p = alloc<[u64; 8]>(1);
+    assert alive(p.region);
+    let mut i = 0usize;
+    while i < n {
+        invariant i <= n;
+        invariant alive(p.region);
+        invariant initialized(p, 0usize..i);
+        p[i] = 42;
+        i = i + 1usize;
+    }
+    let answer = p[0];
+    free(p);
+    return answer;
+}

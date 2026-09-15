@@ -1,0 +1,24 @@
+struct Pair {
+    left: u64,
+    right: u64,
+}
+
+enum Outcome {
+    Empty,
+    Value(u64),
+}
+
+fn main() -> u64 {
+    let pair = Pair { left: 20, right: 22 };
+    let answer = combine(pair);
+    let outcome = Outcome::Value(answer);
+    match outcome {
+        Outcome::Empty => { return 0; },
+        Outcome::Value(answer) => { return answer; },
+    }
+}
+
+fn combine(pair: Pair) -> u64 {
+    let values = [pair.left, pair.right];
+    return values[0] + values[1];
+}

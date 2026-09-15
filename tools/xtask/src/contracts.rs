@@ -1,7 +1,7 @@
 //! Stage 8.2 extends the 8.1 union without rerunning overlapping targets.
 use std::{error::Error, path::Path};
 
-fn test_commands() -> Vec<Vec<&'static str>> {
+pub(super) fn test_commands() -> Vec<Vec<&'static str>> {
     let mut commands = super::spec_local::test_commands();
     commands[1].push("--no-fail-fast");
     commands[0].extend([

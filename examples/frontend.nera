@@ -1,0 +1,7 @@
+// Comments, identifiers, literals, and expressions pass through the frontend.
+fn main() -> u64 {
+    let left = 20;
+    let right = 22;
+    let answer = left + right;
+    return answer;
+}

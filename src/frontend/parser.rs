@@ -21,6 +21,7 @@ const MAX_BLOCK_NESTING: usize = 256;
 
 struct ParsedBlock {
     ast: AstBlock,
+    invariants: Vec<super::AstLoopInvariant>,
     closing_token_index: usize,
 }
 
@@ -612,6 +613,15 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
         depth: usize,
         loop_depth: usize,
     ) -> Result<ParsedBlock, FrontendFailure> {
+        self.parse_block_with_invariants(depth, loop_depth, false)
+    }
+
+    fn parse_block_with_invariants(
+        &mut self,
+        depth: usize,
+        loop_depth: usize,
+        allow_invariants: bool,
+    ) -> Result<ParsedBlock, FrontendFailure> {
         if depth >= MAX_BLOCK_NESTING {
             return Err(FrontendFailure::unsupported(
                 self.current().span(),
@@ -623,6 +633,21 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
             .span()
             .start();
         let mut statements = Vec::new();
+        let mut invariants = Vec::new();
+        if allow_invariants {
+            while self.current().kind() == TokenKind::Keyword(Keyword::Invariant) {
+                let begin = self.bump().span().start();
+                let expression = self.parse_logical_expression()?;
+                let end = self
+                    .expect_punctuation(Punctuation::Semicolon, "expected `;` after invariant")?
+                    .span()
+                    .end();
+                invariants.push(super::AstLoopInvariant {
+                    expression,
+                    span: span(begin, end),
+                });
+            }
+        }
         let mut falls_through = true;
         while !self.at_punctuation(Punctuation::RightBrace) {
             if self.current().kind() == TokenKind::Eof {
@@ -644,6 +669,7 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
         let closing_token_index = self.cursor;
         let end = self.bump().span().end();
         Ok(ParsedBlock {
+            invariants,
             ast: AstBlock {
                 statements,
                 span: span(start, end),
@@ -767,10 +793,15 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
     ) -> Result<AstStatement, FrontendFailure> {
         let start = self.bump().span().start();
         let condition = self.parse_expression_before_block()?;
-        let body = self.parse_block(block_depth + 1, loop_depth + 1)?.ast;
+        let parsed = self.parse_block_with_invariants(block_depth + 1, loop_depth + 1, true)?;
+        let body = parsed.ast;
         let statement_span = span(start, body.span.end());
         Ok(AstStatement {
-            kind: AstStatementKind::While { condition, body },
+            kind: AstStatementKind::While {
+                condition,
+                body,
+                invariants: parsed.invariants,
+            },
             span: statement_span,
         })
     }
@@ -808,11 +839,13 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
         }
         self.expect_punctuation(Punctuation::Range, "expected `..` in for-loop range")?;
         let end = self.parse_expression_before_block()?;
-        let body = self.parse_block(block_depth + 1, loop_depth + 1)?.ast;
+        let parsed = self.parse_block_with_invariants(block_depth + 1, loop_depth + 1, true)?;
+        let body = parsed.ast;
         Ok(AstStatement {
             span: span(start_span, body.span.end()),
             kind: AstStatementKind::For {
                 binding,
+                invariants: parsed.invariants,
                 binding_span: binding_token.span(),
                 start,
                 end,

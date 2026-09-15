@@ -25,6 +25,15 @@ impl ObligationStatus {
 /// One memory/resource condition required by a VIR instruction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ResourceObligationKind {
+    /// The complete stable ledger, jointly with all scalar/resource clauses.
+    LoopResourcesPreserved {
+        invariant: crate::VirSpecLoopInvariantId,
+    },
+    /// A loop-local induction obligation, never an assumption/trust entry.
+    LoopInvariantEstablished {
+        invariant: crate::VirSpecLoopInvariantId,
+        back_edge: bool,
+    },
     PointerSameInstance {
         left: VirValueId,
         right: VirValueId,

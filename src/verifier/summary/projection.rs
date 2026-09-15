@@ -913,43 +913,56 @@ pub(crate) fn aliases(function: &VirFunction) -> BTreeMap<VirValueId, ScalarTerm
             }
         }
     }
-    loop {
-        let old_len = aliases.len();
-        for block in &function.blocks {
-            if block.id == function.entry {
-                continue;
-            }
-            let edges = function
-                .blocks
-                .iter()
-                .flat_map(|b| match &b.terminator.terminator {
-                    VirTerminator::Jump { target } => vec![target],
-                    VirTerminator::Branch {
-                        then_target,
-                        else_target,
-                        ..
-                    } => vec![then_target, else_target],
-                    VirTerminator::Return { .. } => Vec::new(),
-                })
-                .filter(|edge| edge.block == block.id)
-                .collect::<Vec<_>>();
-            for (index, parameter) in block.parameters.iter().enumerate() {
-                if aliases.contains_key(&parameter.id) || edges.is_empty() {
-                    continue;
-                }
-                let values = edges
-                    .iter()
-                    .map(|edge| aliases.get(&edge.arguments[index]).cloned())
-                    .collect::<Option<Vec<_>>>();
-                if let Some(values) = values
-                    && values.iter().all(|v| v == &values[0])
-                {
-                    aliases.insert(parameter.id, values[0].clone());
-                }
+    let mut incoming = BTreeMap::<VirValueId, Vec<VirValueId>>::new();
+    let blocks: BTreeMap<_, _> = function.blocks.iter().map(|b| (b.id, b)).collect();
+    for block in &function.blocks {
+        let edges = match &block.terminator.terminator {
+            VirTerminator::Jump { target } => vec![target],
+            VirTerminator::Branch {
+                then_target,
+                else_target,
+                ..
+            } => vec![then_target, else_target],
+            VirTerminator::Return { .. } => Vec::new(),
+        };
+        for edge in edges {
+            for (parameter, argument) in blocks[&edge.block].parameters.iter().zip(&edge.arguments)
+            {
+                incoming.entry(parameter.id).or_default().push(*argument);
             }
         }
-        if aliases.len() == old_len {
-            break;
+    }
+    // A cyclic phi web is an alias only when ALL of its terminal definitions
+    // have the same known origin, with at least one real seed. Do not equate
+    // values by intervals or ignore a nontrivial definition on a back edge.
+    // This handles n' = phi(n, n') without treating i' = phi(0, i+1) as 0.
+    for &parameter in incoming.keys() {
+        if aliases.contains_key(&parameter) {
+            continue;
+        }
+        let mut pending = vec![parameter];
+        let mut seen = BTreeSet::new();
+        let mut origin = None;
+        let mut valid = true;
+        while let Some(value) = pending.pop() {
+            if !seen.insert(value) {
+                continue;
+            }
+            if let Some(term) = aliases.get(&value) {
+                if origin.as_ref().is_some_and(|old| old != term) {
+                    valid = false;
+                    break;
+                }
+                origin = Some(term.clone());
+            } else if let Some(arguments) = incoming.get(&value) {
+                pending.extend(arguments);
+            } else {
+                valid = false;
+                break;
+            }
+        }
+        if valid && let Some(origin) = origin {
+            aliases.insert(parameter, origin);
         }
     }
     aliases

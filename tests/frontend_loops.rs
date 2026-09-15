@@ -221,9 +221,9 @@ fn loop_surface_and_type_errors_fail_closed() {
             FrontendStatus::Invalid,
         ),
         (
-            "explicit-invariant.nera",
-            "fn deferred() { while true { invariant true; break; } return; }",
-            FrontendStatus::Unsupported,
+            "non-boolean-invariant.nera",
+            "fn invalid() { while true { invariant 1; break; } return; }",
+            FrontendStatus::Invalid,
         ),
     ] {
         assert_eq!(lower(name, source).status(), expected, "{name}");

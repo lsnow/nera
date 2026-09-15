@@ -53,11 +53,13 @@ pub enum HirVersion {
     /// Resource contract roots and immutable slice length observations.
     V19,
     V20,
+    /// Source loop declarations and typed loop-head scalar scopes.
+    V21,
 }
 
 impl HirVersion {
     /// The only supported in-memory schema. Older tags are not compatibility modes.
-    pub const CURRENT: Self = Self::V20;
+    pub const CURRENT: Self = Self::V21;
 }
 
 /// Deterministic module path within one compilation unit.
@@ -1944,6 +1946,7 @@ mod version_tests {
             HirVersion::V17,
             HirVersion::V18,
             HirVersion::V19,
+            HirVersion::V20,
         ] {
             program.version = old;
             let error = program.validate_tables().expect_err("old schema rejected");

@@ -1215,7 +1215,9 @@ fn collect_called_functions(block: &AstBlock, names: &mut BTreeSet<String>) {
                     collect_called_functions(block, names);
                 }
             }
-            AstStatementKind::While { condition, body } => {
+            AstStatementKind::While {
+                condition, body, ..
+            } => {
                 collect_expression_calls(condition, names);
                 collect_called_functions(body, names);
             }

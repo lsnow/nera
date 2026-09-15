@@ -349,6 +349,12 @@ pub struct AstStatement {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AstLoopInvariant {
+    pub expression: AstLogicalExpression,
+    pub span: ByteSpan,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AstStatementKind {
     Assert {
         expression: AstLogicalExpression,
@@ -388,11 +394,13 @@ pub enum AstStatementKind {
     },
     While {
         condition: AstExpression,
+        invariants: Vec<AstLoopInvariant>,
         body: AstBlock,
     },
     /// A half-open integer range loop, `for name in start..end`.
     For {
         binding: String,
+        invariants: Vec<AstLoopInvariant>,
         binding_span: ByteSpan,
         start: AstExpression,
         end: AstExpression,

@@ -11,6 +11,7 @@ use super::{
     permission_writable_status, pointer_fact, provenance_match_status, scale_pointer_interval,
     symbolic_bound, word_expression, word_fact,
 };
+use crate::AbstractByteRange;
 
 #[derive(Clone, Copy)]
 pub(super) struct PermissionAccessContext {
@@ -258,6 +259,16 @@ impl TransferBuilder<'_> {
         permission: AbstractPermission,
         context: PermissionAccessContext,
     ) {
+        self.permission_range_access_obligations(permission_id, permission, context, None);
+    }
+
+    pub(super) fn permission_range_access_obligations(
+        &mut self,
+        permission_id: VirValueId,
+        permission: AbstractPermission,
+        context: PermissionAccessContext,
+        selected: Option<AbstractByteRange>,
+    ) {
         self.require(
             ResourceObligationKind::PermissionAvailable {
                 permission: permission_id,
@@ -278,13 +289,22 @@ impl TransferBuilder<'_> {
                 permission: permission_id,
                 access: context.envelope,
             },
-            self.relations.queries.covers_access(
-                &self.state,
-                permission.range(),
-                context.pointer,
-                context.access_bytes,
-                self.relation_limits,
-            ),
+            if let Some(range) = selected {
+                self.relations.queries.contained(
+                    &self.state,
+                    permission.range(),
+                    range,
+                    self.relation_limits,
+                )
+            } else {
+                self.relations.queries.covers_access(
+                    &self.state,
+                    permission.range(),
+                    context.pointer,
+                    context.access_bytes,
+                    self.relation_limits,
+                )
+            },
         );
         if matches!(context.required_access, AccessPermission::Write) {
             self.require(
@@ -298,10 +318,20 @@ impl TransferBuilder<'_> {
             &self.state,
             permission_id,
             permission,
-            LoanAccess::bytes(
-                context.pointer,
-                context.access_bytes,
-                context.required_access,
+            selected.map_or_else(
+                || {
+                    LoanAccess::bytes(
+                        context.pointer,
+                        context.access_bytes,
+                        context.required_access,
+                    )
+                },
+                |range| LoanAccess {
+                    pointer: context.pointer,
+                    envelope: context.envelope,
+                    range,
+                    required: context.required_access,
+                },
             ),
             self.relation_limits,
             &self.relations,

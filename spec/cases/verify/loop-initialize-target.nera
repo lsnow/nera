@@ -1,0 +1,21 @@
+// Raw storage owner, not a reference to an initialized array.
+// Array-owner initialized(p, range) is a proposed 8.3 observation extension.
+fn main() -> u64 { return initialize(6usize); }
+
+fn initialize(n: usize) -> u64
+requires n <= 8usize;
+{
+    let p = alloc<[u64; 8]>(1);
+    let mut i = 0usize;
+    while i < n {
+        invariant i <= n;
+        invariant alive(p.region);
+        invariant initialized(p, 0usize..i);
+        p[i] = 42;
+        i = i + 1usize;
+    }
+    if n == 0usize { free(p); return 0; }
+    let value = p[0];
+    free(p);
+    return value;
+}

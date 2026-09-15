@@ -12,37 +12,9 @@ fn lower(source: &str) -> ValidatedVirUnit {
     output.vir().unwrap().clone()
 }
 
-fn runtime_with_resolved_origins(unit: &ValidatedVirUnit) -> String {
-    // Spec adds source-map entries and may renumber origin IDs. Compare the
-    // complete origin payload (including generated reasons), not those indices.
-    let dump = unit.runtime().stable_dump();
-    let mut normalized = String::new();
-    for (index, part) in dump.split("origin").enumerate() {
-        if index == 0 {
-            normalized.push_str(part);
-            continue;
-        }
-        normalized.push_str("origin");
-        let digits = part.bytes().take_while(u8::is_ascii_digit).count();
-        if digits != 0 {
-            let mut id = VirOriginId::new(part[..digits].parse().unwrap());
-            loop {
-                match &unit.as_unit().source_map.origin(id).unwrap().kind {
-                    VirOriginKind::Generated { parent, reason } => {
-                        normalized.push_str(&format!("[{reason:?}]"));
-                        id = *parent;
-                    }
-                    user @ VirOriginKind::User { .. } => {
-                        normalized.push_str(&format!("[{user:?}]"));
-                        break;
-                    }
-                }
-            }
-        }
-        normalized.push_str(&part[digits..]);
-    }
-    normalized
-}
+#[path = "support/runtime_origins.rs"]
+mod runtime_origins;
+use runtime_origins::runtime_with_resolved_origins;
 
 #[test]
 fn local_arena_proves_real_guards_and_restored_storage_without_runtime_changes() {

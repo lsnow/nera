@@ -3,6 +3,15 @@ use crate::ResourceObligationKind as K;
 
 pub(super) fn condition(kind: K) -> String {
     let text = match kind {
+        K::LoopResourcesPreserved { .. } => {
+            "loop allocation identities, permissions and loans are preserved"
+        }
+        K::LoopInvariantEstablished {
+            back_edge: false, ..
+        } => "loop invariant holds on entry",
+        K::LoopInvariantEstablished {
+            back_edge: true, ..
+        } => "loop invariant is preserved on the back edge",
         K::PointerSameInstance { .. } => "pointers refer to the same allocation instance",
         K::PointerCompatibleDomain { .. } => "pointer arithmetic domains are compatible",
         K::PointerDistanceNonnegative { .. } => "pointer distance is nonnegative",

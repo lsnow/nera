@@ -1,0 +1,16 @@
+// 8.3.1 target: explicit invariants are not implemented yet.
+fn main() -> u64 {
+    if count(6usize) == 6usize { return 42; }
+    return 99;
+}
+
+fn count(n: usize) -> usize
+requires n <= 8usize;
+{
+    let mut i = 0usize;
+    while i < n {
+        invariant i <= n;
+        i = i + 1usize;
+    }
+    return i;
+}

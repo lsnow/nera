@@ -1,0 +1,25 @@
+// Raw backing: only the two adjacent sentinels are initialized before the loop.
+fn main() -> u64 { return initialize(6usize); }
+
+fn initialize(end: usize) -> u64
+requires 1usize <= end;
+requires end <= 7usize;
+{
+    let p = alloc<[u64; 8]>(1);
+    p[0] = 7;
+    p[7] = 9;
+    let mut i = 1usize;
+    while i < end {
+        invariant 1usize <= i;
+        invariant i <= end;
+        invariant initialized(p, 1usize..i);
+        p[i] = 42;
+        i = i + 1usize;
+    }
+    let left = p[0];
+    let right = p[7];
+    if end == 1usize { free(p); return left + right; }
+    let value = p[1];
+    free(p);
+    return left + value + right;
+}

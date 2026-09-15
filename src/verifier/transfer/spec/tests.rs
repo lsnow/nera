@@ -55,6 +55,118 @@ fn query(authority: bool, initialized: bool) -> SpecMemoryQuery {
     }
 }
 
+#[test]
+fn symbolic_loop_observations_preserve_access_rules_and_fail_closed() {
+    let memory = VirMemorySchema::core_u64();
+    let q = SymbolicSpecMemoryQuery {
+        pointer: id(1),
+        authority: Some(id(2)),
+        start: SymbolicRangeBound::constant(0),
+        end: SymbolicRangeBound::constant(8),
+        layout: VirMemoryAccess::core_u64(),
+        access: AccessPermission::Write,
+        initialized: false,
+    };
+    let check = |s: &ResourceState, q| {
+        let before = s.clone();
+        let result = query_symbolic_spec_memory(
+            s,
+            &memory,
+            q,
+            Default::default(),
+            &mut VcQueryBudget::new(VcLimits::default()),
+        )
+        .map(|(status, _)| status)
+        .unwrap_or(ObligationStatus::Unknown);
+        assert_eq!(*s, before);
+        result
+    };
+    let s = state();
+    assert_eq!(check(&s, q), ObligationStatus::Proven);
+    for (start, end) in [(0, 16), (8, 0), (1, 8), (24, 24)] {
+        assert_ne!(
+            check(
+                &s,
+                SymbolicSpecMemoryQuery {
+                    start: SymbolicRangeBound::constant(start),
+                    end: SymbolicRangeBound::constant(end),
+                    ..q
+                }
+            ),
+            ObligationStatus::Proven
+        );
+    }
+    assert_eq!(
+        check(
+            &s,
+            SymbolicSpecMemoryQuery {
+                start: SymbolicRangeBound::constant(8),
+                ..q
+            }
+        ),
+        ObligationStatus::Proven
+    );
+    assert_ne!(
+        check(
+            &s,
+            SymbolicSpecMemoryQuery {
+                initialized: true,
+                ..q
+            }
+        ),
+        ObligationStatus::Proven
+    );
+    for mutation in 0..5 {
+        let mut s = state();
+        match mutation {
+            0 => s.allocation_mut(allocation_id()).unwrap().mark_dead(),
+            1 => s
+                .allocation_mut(allocation_id())
+                .unwrap()
+                .set_liveness(LivenessState::MaybeLive),
+            2 => {
+                let AbstractValue::Permission(p) = s.value_mut(id(2)).unwrap() else {
+                    unreachable!()
+                };
+                p.mark_consumed();
+            }
+            3 => {
+                *s.value_mut(id(2)).unwrap() = AbstractValue::Permission(AbstractPermission::new(
+                    AbstractProvenance::Unknown,
+                    AbstractByteRange::Exact(ByteRange::new(0, 16).unwrap()),
+                    AccessPermission::Write,
+                    FreeCapability::No,
+                ));
+            }
+            _ => {
+                s.define_loan(
+                    VirLoanId::new(0),
+                    AbstractLoan::new(
+                        AbstractProvenance::Known(allocation_id()),
+                        ByteRange::new(0, 8).unwrap(),
+                        crate::VirLoanKind::Shared,
+                        crate::VirBorrowRegionId::new(0),
+                        None,
+                        LoanActivity::Active,
+                    ),
+                )
+                .unwrap();
+            }
+        }
+        assert_ne!(
+            check(&s, q),
+            ObligationStatus::Proven,
+            "mutation {mutation}"
+        );
+    }
+    let mut budget = VcQueryBudget::new(VcLimits {
+        max_queries: 0,
+        ..Default::default()
+    });
+    assert!(query_symbolic_spec_memory(&s, &memory, q, Default::default(), &mut budget).is_none());
+    assert!(budget.exhausted);
+}
+
 fn check(state: &ResourceState, query: SpecMemoryQuery) -> ObligationStatus {
     let before = state.clone();
     let result = query_spec_memory(

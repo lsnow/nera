@@ -178,7 +178,9 @@ pub(super) fn validate_specs(program: &HirProgram) -> Result<(), HirProgramValid
             crate::HirSpecRoot::Assertion(id) => {
                 matches!(
                     clause.owner,
-                    HirSpecClauseOwner::Prove(_) | HirSpecClauseOwner::Contract { .. }
+                    HirSpecClauseOwner::Prove(_)
+                        | HirSpecClauseOwner::Contract { .. }
+                        | HirSpecClauseOwner::LoopInvariant(_)
                 ) && specs
                     .assertions
                     .get(id.index())
@@ -289,12 +291,33 @@ pub(super) fn validate_specs(program: &HirProgram) -> Result<(), HirProgramValid
         )?;
     }
 
-    require(
-        specs.loop_invariants.is_empty(),
-        "spec loop invariant",
-        0,
-        "non-trivial loop invariants remain feature gated",
-    )
+    for invariant in &specs.loop_invariants {
+        let valid = program
+            .function_by_id(invariant.function)
+            .and_then(|f| f.body())
+            .and_then(|b| super::super::loop_spec::find_loop(&b.root, invariant.loop_id))
+            .is_some_and(|(_, body, _)| span_contains(body.span, invariant.span));
+        require(
+            valid
+                && specs
+                    .clauses
+                    .get(invariant.clause.index())
+                    .is_some_and(|c| {
+                        c.owner == HirSpecClauseOwner::LoopInvariant(invariant.id)
+                            && c.location == invariant.location
+                            && c.span == invariant.span
+                    })
+                && invariant.location
+                    == (HirSpecLocation::LoopHead {
+                        function: invariant.function,
+                        loop_id: invariant.loop_id,
+                    }),
+            "spec loop invariant",
+            invariant.id.index(),
+            "loop owner or declaration scope mismatch",
+        )?;
+    }
+    Ok(())
 }
 
 fn is_spec_scalar_type(program: &HirProgram, ty: HirTypeId) -> bool {
@@ -382,6 +405,13 @@ fn validate_spec_snapshot(
                     && f.body().and_then(|body| body.parameters.get(parameter as usize).and_then(|id| body.locals.get(id.index()))).is_some_and(|local| local.ty == term.ty)
             })
         }
+        HirSpecSnapshot::LoopEntry {function,loop_id,local} => {
+            clause.location == (HirSpecLocation::LoopHead {function,loop_id}) && is_spec_scalar_type(program,term.ty)
+                && program.function_by_id(function).and_then(|f|f.body()).is_some_and(|b|
+                    super::super::loop_spec::find_loop(&b.root,loop_id).is_some_and(|(s,_,_)|
+                        b.locals.get(local.index()).is_some_and(|l|l.ty==term.ty && l.declaration_span.end()<=s.span.start()
+                            && super::super::loop_spec::visible_at_loop(&b.root,loop_id,l.scope))))
+        }
         HirSpecSnapshot::Local { function, local } => program
             .function_by_id(function)
             .and_then(|function| function.body.as_ref().map(|body| (function, body)))
@@ -395,7 +425,12 @@ fn validate_spec_snapshot(
                         && matches!(clause.root, crate::HirSpecRoot::Assertion(_))
                         && matches!(clause.owner, HirSpecClauseOwner::Contract { contract, .. } if contract == function.contract)
                         && body.parameters.contains(&local)
-                    || matches!(clause.location, HirSpecLocation::Statement { function: owner, .. } if owner == function.id))
+                    || matches!(clause.location, HirSpecLocation::Statement { function: owner, .. } if owner == function.id)
+                    || matches!(clause.location, HirSpecLocation::LoopHead {function: owner,loop_id} if owner == function.id
+                        && super::super::loop_spec::find_loop(&body.root,loop_id).is_some_and(|(s,_,binding)| {
+                            binding == Some(local) || body.locals.get(local.index()).is_some_and(|l|
+                                l.declaration_span.end() <= s.span.start() && super::super::loop_spec::visible_at_loop(&body.root,loop_id,l.scope))
+                        })))
                     && body
                         .locals
                         .get(local.index())

@@ -1,4 +1,4 @@
-vir-unit-v25
+vir-unit-v27
 memory {
 target little pointer 8/8 usize 8/8
 type type0 = bool layout layout0 capabilities copy/trivial-drop/resource-free/sized
@@ -191,6 +191,12 @@ contract contract3 function fn3 (ptr<type1/layout1>, u64, permission) -> (u64, p
   binder binder4 ensures slot1: permission
   clauses []
 }
+term term0 clause0: u64 origin82 = snapshot fn0:%52
+term term1 clause0: u64 origin82 = u64 3
+term term2 clause0: bool origin82 = le term0 term1
+clause clause0 invariant0 at fn0/bb4:entry inferred-loop origin82 = logic term2
+loop-boundary Some(VirLoopBoundary { loop_id: 0, preheader: VirBlockId(3), header: VirBlockId(4), condition: VirBlockId(4), latch: None, blocks: [VirBlockId(4), VirBlockId(5), VirBlockId(7)], entries: [VirLoopEdge { source: VirBlockId(3), arm: 0, target: Some(VirBlockId(4)) }], back_edges: [VirLoopEdge { source: VirBlockId(5), arm: 0, target: Some(VirBlockId(4)) }], exits: [VirLoopEdge { source: VirBlockId(7), arm: 0, target: Some(VirBlockId(6)) }], bindings: [VirLoopBinding { local: 4, entry: VirValueId(47), head: VirValueId(52), ty: U64 }] })
+loop-invariant invariant0 function fn0 at fn0/bb4:entry clause0 origin82
 }
 source-map {
 source source0 "spec/cases/verify/provenance-flow.nera" bytes 844

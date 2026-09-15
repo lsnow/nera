@@ -58,7 +58,7 @@ fn boolean_guard_infers_both_shared_sources() {
             })
     );
     let dump = output.vir().unwrap().stable_dump();
-    assert!(dump.starts_with("vir-unit-v25\n"));
+    assert!(dump.starts_with("vir-unit-v27\n"));
     assert!(dump.contains("borrow-result-alt0["));
     assert!(dump.contains("param0=true"));
     assert!(dump.contains("param0=false"));

@@ -642,12 +642,20 @@ fn validate_pure_specs(
                 VirValidationErrorKind::InvalidInferredTypeClause(clause.id),
             ));
         }
+        if matches!(clause.origin, VirSpecClauseOrigin::InferredLoop { .. })
+            && !matches!(clause.owner, crate::VirSpecClauseOwner::LoopInvariant(_))
+        {
+            return Err(program_error(
+                VirValidationErrorKind::InvalidSpecClauseOwner(clause.id),
+            ));
+        }
         match clause.kind {
             VirSpecClauseKind::Assertion { root } => {
                 if !matches!(
                     clause.owner,
                     crate::VirSpecClauseOwner::Prove(_)
                         | crate::VirSpecClauseOwner::Contract { .. }
+                        | crate::VirSpecClauseOwner::LoopInvariant(_)
                 ) || !unit
                     .specs
                     .assertions()
@@ -764,10 +772,105 @@ fn validate_pure_specs(
             ));
         }
     }
-    if let Some(invariant) = unit.specs.loop_invariants().first() {
-        return Err(program_error(
-            VirValidationErrorKind::LoopInvariantFeatureGated(invariant.id),
-        ));
+    if !unit.specs.loop_invariants().is_empty() {
+        for invariant in unit.specs.loop_invariants() {
+            let declaration_valid = unit
+                .specs
+                .clauses()
+                .get(invariant.clause.get() as usize)
+                .is_some_and(|c| {
+                    c.owner == crate::VirSpecClauseOwner::LoopInvariant(invariant.id)
+                        && c.location == invariant.location
+                        && c.origin.origin() == invariant.origin
+                });
+            let binding_complete = invariant.boundary.as_ref().is_some_and(|b| {
+                unit.specs
+                    .terms()
+                    .iter()
+                    .filter(|t| t.clause == invariant.clause)
+                    .all(|t| match t.kind {
+                        crate::VirSpecTermKind::Snapshot(crate::VirSpecSnapshot::Value {
+                            function,
+                            value,
+                        }) => {
+                            function == invariant.function
+                                && b.bindings
+                                    .iter()
+                                    .any(|binding| binding.head == value || binding.entry == value)
+                        }
+                        crate::VirSpecTermKind::Snapshot(_) => false,
+                        _ => true,
+                    })
+            });
+            if !declaration_valid || !binding_complete {
+                return Err(program_error(
+                    VirValidationErrorKind::InvalidLoopInvariantBoundary(invariant.id),
+                ));
+            }
+            if !unit
+                .runtime
+                .functions
+                .iter()
+                .find(|f| f.id == invariant.function)
+                .is_some_and(|f| {
+                    invariant.boundary.as_ref().is_some_and(|b| {
+                        b.valid(f)
+                            && invariant.location
+                                == crate::VirSpecLocation::Runtime(crate::VirLocation::BlockEntry {
+                                    function: f.id,
+                                    block: b.header,
+                                })
+                    })
+                })
+            {
+                return Err(program_error(
+                    VirValidationErrorKind::InvalidLoopInvariantBoundary(invariant.id),
+                ));
+            }
+            for other in unit
+                .specs
+                .loop_invariants()
+                .iter()
+                .filter(|i| i.function == invariant.function && i.id < invariant.id)
+            {
+                let (Some(a), Some(b)) = (&invariant.boundary, &other.boundary) else {
+                    continue;
+                };
+                let overlap = a.blocks.iter().any(|x| b.blocks.contains(x));
+                let nested = a.blocks.iter().all(|x| b.blocks.contains(x))
+                    || b.blocks.iter().all(|x| a.blocks.contains(x));
+                if (a.loop_id == b.loop_id && a != b)
+                    || (a.header == b.header && a.loop_id != b.loop_id)
+                    || (overlap && !nested)
+                {
+                    return Err(program_error(
+                        VirValidationErrorKind::InvalidLoopInvariantBoundary(invariant.id),
+                    ));
+                }
+            }
+        }
+        let mut checked_profiles = BTreeSet::new();
+        for invariant in unit.specs.loop_invariants() {
+            let function = unit
+                .runtime
+                .functions
+                .iter()
+                .find(|f| f.id == invariant.function)
+                .unwrap();
+            if !checked_profiles.insert((function.id, invariant.boundary.as_ref().unwrap().header))
+            {
+                continue;
+            }
+            if !invariant.boundary.as_ref().unwrap().induction_profile(
+                function,
+                &unit.specs,
+                &unit.runtime.functions,
+            ) {
+                return Err(program_error(
+                    VirValidationErrorKind::LoopInvariantFeatureGated(invariant.id),
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -1017,6 +1120,27 @@ fn validate_runtime_snapshot(
     };
     if location.function() != function_id {
         return false;
+    }
+    if let crate::VirSpecClauseOwner::LoopInvariant(id) = clause.owner
+        && let Some(boundary) = unit
+            .specs
+            .loop_invariants()
+            .get(id.get() as usize)
+            .and_then(|i| i.boundary.as_ref())
+        && location
+            == (VirLocation::BlockEntry {
+                function: function_id,
+                block: boundary.header,
+            })
+        && boundary.preheader != boundary.header
+        && boundary.bindings.iter().any(|b| b.entry == value)
+    {
+        let mut entry_clause = clause.clone();
+        entry_clause.location = crate::VirSpecLocation::Runtime(VirLocation::Terminator {
+            function: function_id,
+            block: boundary.preheader,
+        });
+        return validate_runtime_snapshot(unit, &entry_clause, matches_type, function_id, value);
     }
     let Some(block_id) = location.block() else {
         return false;
