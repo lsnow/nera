@@ -128,14 +128,14 @@ fn storage_declaration_has_no_expression_and_keeps_precise_scalar_effects() {
     let output =
         accepted("fn main() -> u64 { let mut value: u64; value = 1; value = 42; return value; }");
     let hir = output.hir().unwrap();
-    assert_eq!(hir.version(), nera::HirVersion::V21);
+    assert_eq!(hir.version(), nera::HirVersion::V22);
     let body = hir.functions()[0].body().unwrap();
     assert!(matches!(
         body.root.statements[0].kind,
         nera::HirStatementKind::Declare { .. }
     ));
     let unit = output.vir().unwrap().as_unit();
-    assert_eq!(unit.version, nera::VirUnitVersion::V27);
+    assert_eq!(unit.version, nera::VirUnitVersion::V28);
     let instructions: Vec<_> = unit.runtime.functions[0]
         .blocks
         .iter()

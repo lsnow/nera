@@ -436,14 +436,18 @@ mod tests {
     #[test]
     fn simultaneous_phi_swap_duplicate_arguments_and_eliminated_intermediate() {
         let original = bounded_state(1);
-        let swapped = original.project_cfg_edge(&[(id(0), id(1)), (id(1), id(0)), (id(2), id(2))]);
+        let swapped = original
+            .project_cfg_case(&[(id(0), id(1)), (id(1), id(0)), (id(2), id(2))])
+            .unwrap();
         assert!(
             swapped
                 .relations()
                 .bounds()
                 .any(|b| b.left == Some(id(1)) && b.right == Some(id(0)) && b.bound == -1)
         );
-        let projected = original.project_cfg_edge(&[(id(0), id(10)), (id(2), id(20))]);
+        let projected = original
+            .project_cfg_case(&[(id(0), id(10)), (id(2), id(20))])
+            .unwrap();
         assert!(
             projected
                 .relations()
@@ -456,7 +460,9 @@ mod tests {
                 .flatten()
                 .all(|v| [id(10), id(20)].contains(&v))
         }));
-        let duplicated = original.project_cfg_edge(&[(id(0), id(10)), (id(0), id(11))]);
+        let duplicated = original
+            .project_cfg_case(&[(id(0), id(10)), (id(0), id(11))])
+            .unwrap();
         for (a, b) in [(10, 11), (11, 10)] {
             assert!(
                 duplicated

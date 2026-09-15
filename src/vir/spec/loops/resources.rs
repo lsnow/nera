@@ -78,6 +78,17 @@ pub(crate) fn resource_atom(
     Some(atom)
 }
 
+pub(crate) fn conditional_resource_atom(
+    specs: &VirSpecEnvironment,
+    root: crate::VirSpecAssertionId,
+) -> Option<(VirSpecTermId, ResourceLoopAtom)> {
+    let A::Conditional { guard, body } = specs.assertions().get(root.get() as usize)?.kind else {
+        return None;
+    };
+    super::scalar::scalar_predicate(specs, guard).then_some(())?;
+    Some((guard, resource_atom(specs, body)?))
+}
+
 pub(super) fn stable_resource_instruction(instruction: &I) -> bool {
     matches!(
         instruction,

@@ -50,7 +50,7 @@ fn existing_targets_without_annotations_are_checked() {
 #[test]
 fn candidates_do_not_hide_real_errors_or_explicit_failures() {
     for source in [
-        "fn main()->u64 {let p=alloc<[u64;4]>(1); for i in 0usize..4usize {if i==2usize {continue;} p[i]=42;} let x=p[3]; free(p); return x;}",
+        "fn main()->u64 {let p=alloc<[u64;4]>(1); for i in 0usize..4usize {if i==2usize {continue;} p[i]=42;} let x=p[2]; free(p); return x;}",
         "fn main()->u64 {let p=alloc<[u64;4]>(1); for i in 0usize..4usize {let x=p[i]; p[i]=x;} free(p); return 0;}",
         "fn main()->u64 {let mut i=0; while i<3 {invariant i==0; i=i+1;} return i;}",
         "fn main()->u64 {let p=alloc<[u64;4]>(1); for i in 0usize..0usize {p[i]=42;} let x=p[0]; free(p); return x;}",
@@ -68,8 +68,13 @@ fn failed_prefix_is_eliminated_and_scalar_candidate_is_rechecked() {
         while i<4usize {if i!=2usize {p[i]=42;} i=i+1usize;}
         assert i==4usize; if i!=4usize {free(p); return 99;} free(p); return 42;}";
     let out = frontend(source);
-    let report =
-        verify_program(&out.vir().unwrap().resolve().unwrap(), Default::default()).unwrap();
+    // Exercise invariant elimination independently of the newer disjunctive
+    // partition engine, which can prove this safe program without candidates.
+    let config = CfgAnalysisConfig {
+        max_loop_partition_cuts: 0,
+        ..Default::default()
+    };
+    let report = verify_program(&out.vir().unwrap().resolve().unwrap(), config).unwrap();
     assert!(
         report.is_memory_checked_core0(),
         "{:?}",
@@ -90,7 +95,7 @@ fn failed_prefix_is_eliminated_and_scalar_candidate_is_rechecked() {
     assert!(attempts.last().unwrap().rejected.is_empty());
     let preview = nera::verification::verify_source(
         &SourceFile::from_text("candidate-elimination.nera", source),
-        Default::default(),
+        config,
     );
     let text =
         nera::verification::render_text(&preview, nera::verification::TextReportMode::Explain);

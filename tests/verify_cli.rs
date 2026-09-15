@@ -42,17 +42,19 @@ fn loop_contract_cli_reports_callee_and_iteration_obligations() {
         "--entry",
         "app::main",
     ];
-    for (app, ops, code) in [
-        (cases::APP.to_owned(), cases::OPS.to_owned(), 0),
+    for (app, ops, code, explicit_invariants) in [
+        (cases::APP.to_owned(), cases::OPS.to_owned(), 0, true),
         (
             cases::erase_invariants(cases::APP),
             cases::OPS.to_owned(),
             0,
+            false,
         ),
         (
             cases::APP.to_owned(),
             cases::OPS.replace("readable(result,0..1)", "readable(result,0..2)"),
             1,
+            true,
         ),
     ] {
         assert_eq!(
@@ -72,7 +74,13 @@ fn loop_contract_cli_reports_callee_and_iteration_obligations() {
             "{text}"
         );
         if code == 0 {
-            assert!(text.contains("loop invariant"), "{text}");
+            assert!(text.contains("callee precondition holds for these arguments"));
+            // Automatic analysis may prove the loop without selecting invariant
+            // candidates. Explicit clauses must still report both proof sites.
+            if explicit_invariants {
+                assert!(text.contains("loop invariant holds on entry"));
+                assert!(text.contains("loop invariant is preserved on the back edge"));
+            }
         }
     }
 }

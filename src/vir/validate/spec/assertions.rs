@@ -43,6 +43,13 @@ pub(super) fn validate(unit: &VirUnit) -> Result<(), VirValidationError> {
             binder: None,
         };
         let valid = match &assertion.kind {
+            A::Conditional { guard, body } => {
+                node.terms.push(guard.get() as usize);
+                node.children.push(body.get() as usize);
+                matches!(clause.owner, crate::VirSpecClauseOwner::LoopInvariant(_))
+                    && scalar(*guard, VirSpecType::Bool)
+                    && child(*body)
+            }
             A::Footprint { range, .. } => {
                 matches!(
                     clause.owner,

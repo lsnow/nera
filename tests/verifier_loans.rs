@@ -705,9 +705,11 @@ fn loop_carried_unended_instance_fails_closed_without_transfer_failure() {
     let analysis = analyze(unit);
     assert!(analysis.returns().is_empty());
     assert!(analysis.loop_blocks().contains(&VirBlockId::new(0)));
+    // Partitioned loops retain the active-loan phase instead of first
+    // collapsing it into MaybeActive. Re-entering LoanBegin refutes closure.
     assert!(has_obligation(
         &analysis,
-        ObligationStatus::Unknown,
+        ObligationStatus::Refuted,
         |kind| matches!(
             kind,
             ResourceObligationKind::LoanEndedExactlyOnce { loan }

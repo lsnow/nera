@@ -101,6 +101,7 @@ impl VirLoopBoundary {
                 }
                 Some(crate::VirSpecClauseKind::Assertion { root }) => {
                     super::resource_atom(specs, *root).is_some()
+                        || super::conditional_resource_atom(specs, *root).is_some()
                 }
                 _ => false,
             };
@@ -145,6 +146,33 @@ impl VirLoopBoundary {
         }
         true
     }
+}
+
+/// A bounded pure guard, not a conjunction to install as a havoc premise.
+pub(super) fn scalar_predicate(specs: &VirSpecEnvironment, root: VirSpecTermId) -> bool {
+    let mut pending = vec![root];
+    let mut seen = BTreeSet::new();
+    while let Some(id) = pending.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        if seen.len() > 64 {
+            return false;
+        }
+        let Some(term) = specs.terms().get(id.get() as usize) else {
+            return false;
+        };
+        match &term.kind {
+            T::U64(_) | T::Bool(_) | T::Snapshot(S::Value { .. }) => {}
+            T::Not(child) => pending.push(*child),
+            T::And(children) | T::Or(children) => pending.extend(children),
+            T::Equal { left, right }
+            | T::LessThan { left, right }
+            | T::LessOrEqual { left, right } => pending.extend([left, right]),
+            _ => return false,
+        }
+    }
+    true
 }
 
 fn members_back(boundary: &VirLoopBoundary, source: VirBlockId, target: VirBlockId) -> bool {

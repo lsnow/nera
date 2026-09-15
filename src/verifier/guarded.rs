@@ -1,5 +1,7 @@
 use std::collections::BTreeSet;
 
+mod loops;
+
 #[cfg(test)]
 mod initialization_tests;
 
@@ -14,6 +16,7 @@ pub enum GuardedStatePrecisionLoss {
     GuardAtomBudget,
     GuardProjection,
     LoopWidening,
+    LoopPartitionBudget,
     RefinementPassBudget,
     RefinementVisitBudget,
     ActiveLoanBudget,
@@ -107,6 +110,7 @@ impl ConditionalResourceState {
         normalize(cases, inherited_losses, limits, reduction)
     }
 
+    #[cfg(test)]
     pub(super) fn join(
         &self,
         other: &Self,
@@ -118,55 +122,6 @@ impl ConditionalResourceState {
         let mut losses = self.precision_losses.clone();
         losses.extend(other.precision_losses.iter().copied());
         normalize(cases, losses, limits, reduction)
-    }
-
-    pub(super) fn widen(
-        &self,
-        next: &Self,
-        limits: GuardedStateLimits,
-    ) -> Result<Self, ResourceJoinError> {
-        let mut losses = self.precision_losses.clone();
-        losses.extend(next.precision_losses.iter().copied());
-
-        let guards_match = self.cases.len() == next.cases.len()
-            && self
-                .cases
-                .iter()
-                .zip(&next.cases)
-                .all(|(current, next)| current.path_condition() == next.path_condition());
-        if guards_match {
-            let cases = self
-                .cases
-                .iter()
-                .zip(&next.cases)
-                .map(|(current, next)| current.widen(next))
-                .collect::<Result<Vec<_>, _>>()?;
-            normalize(cases, losses, limits, GuardedReduction::Selective)
-        } else {
-            losses.insert(GuardedStatePrecisionLoss::LoopWidening);
-            let current = self.collapsed()?;
-            let next = next.collapsed()?;
-            normalize(
-                vec![current.widen(&next)?],
-                losses,
-                limits,
-                GuardedReduction::Selective,
-            )
-        }
-    }
-
-    pub(super) fn collapse_for_loop(
-        &self,
-        limits: GuardedStateLimits,
-    ) -> Result<Self, ResourceJoinError> {
-        let mut losses = self.precision_losses.clone();
-        losses.insert(GuardedStatePrecisionLoss::LoopWidening);
-        normalize(
-            vec![self.collapsed()?],
-            losses,
-            limits,
-            GuardedReduction::Selective,
-        )
     }
 }
 
@@ -684,7 +639,7 @@ mod tests {
     }
 
     #[test]
-    fn mismatched_loop_guards_collapse_and_report_precision_loss() {
+    fn mismatched_loop_guards_keep_distinct_resource_partitions() {
         let limits = GuardedStateLimits {
             max_cases: 4,
             max_guard_atoms: 4,
@@ -694,11 +649,11 @@ mod tests {
 
         let widened = current.widen(&next, limits).expect("widen succeeds");
 
-        assert_eq!(widened.cases().len(), 1);
+        assert_eq!(widened.cases().len(), 2);
         assert!(
-            widened
+            !widened
                 .precision_losses()
-                .contains(&GuardedStatePrecisionLoss::LoopWidening)
+                .contains(&GuardedStatePrecisionLoss::LoopPartitionBudget)
         );
     }
 

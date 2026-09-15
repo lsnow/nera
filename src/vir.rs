@@ -72,7 +72,8 @@ pub use source_map::{
     VirSourceMap, VirSourceMapErrorKind, VirSourceSpan,
 };
 pub(crate) use spec::{
-    ResourceLoopAtom, ScalarLoopAtom, ScalarOperand, resource_atom, scalar_atoms,
+    ResourceLoopAtom, ScalarLoopAtom, ScalarOperand, conditional_resource_atom, resource_atom,
+    scalar_atoms,
 };
 pub use spec::{
     VirContract, VirContractAccess, VirContractBinder, VirContractBinderId, VirContractFree,
@@ -136,6 +137,8 @@ pub enum VirUnitVersion {
     V26,
     /// Inferred loop candidates are distinct from explicit/type clauses.
     V27,
+    /// Conditional loop resource observations (no authority-producing assumption).
+    V28,
 }
 
 /// Stable identifier of a function within one VIR unit.
@@ -268,7 +271,7 @@ impl VirUnit {
         assign_loan_effect_origins(&mut runtime, &source_map);
         let specs = VirSpecEnvironment::implicit(&runtime);
         Self {
-            version: VirUnitVersion::V27,
+            version: VirUnitVersion::V28,
             memory,
             borrows: VirBorrowEnvironment::empty(),
             runtime,

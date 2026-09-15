@@ -823,6 +823,10 @@ fn lower_assertion(
             memory: claim(memory)?,
             value: value.map(term),
         },
+        A::Conditional { guard, body } => A::Conditional {
+            guard: crate::VirSpecTermId::new(guard.get()),
+            body: assertion(*body),
+        },
         A::Separation(ids) => A::Separation(ids.iter().copied().map(assertion).collect()),
         A::Exists {
             binder,

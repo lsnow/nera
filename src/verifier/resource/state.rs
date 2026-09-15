@@ -185,7 +185,10 @@ impl PathCondition {
         // target per source retains a sound subset without a Cartesian blowup.
         let mut first_target_by_source = BTreeMap::new();
         for &(source, target) in renames {
-            first_target_by_source.entry(source).or_insert(target);
+            first_target_by_source
+                .entry(source)
+                .and_modify(|first: &mut VirValueId| *first = (*first).min(target))
+                .or_insert(target);
         }
 
         let mut projected = Self::empty();
@@ -480,17 +483,6 @@ impl ResourceState {
         &self.loan_precision_losses
     }
 
-    pub(in crate::verifier) fn project_value_for_cfg(
-        &self,
-        source: VirValueId,
-        renames: &[(VirValueId, VirValueId)],
-    ) -> Option<AbstractValue> {
-        let remapper = ExpressionRemapper::new(self, renames);
-        self.value(source)
-            .copied()
-            .map(|value| remapper.value(value))
-    }
-
     /// Keeps allocation facts while projecting path facts onto CFG edge
     /// arguments. Target values are deliberately left empty for the CFG
     /// transfer to define after checking types and linear permission moves.
@@ -536,6 +528,21 @@ impl ResourceState {
                 .collect(),
             loan_precision_losses: self.loan_precision_losses.clone(),
         }
+    }
+
+    /// Sufficient whole-state inclusion by join absorption. Numeric loss tags
+    /// are diagnostic; all resource facts (including loan losses) remain checked.
+    pub(in crate::verifier) fn covers_cfg_case(&self, incoming: &Self) -> bool {
+        let Ok(mut joined) = self.join(incoming) else {
+            return false;
+        };
+        if !joined.relations.bounds().eq(self.relations.bounds())
+            || joined.relations.disequalities() != self.relations.disequalities()
+        {
+            return false;
+        }
+        joined.relations = self.relations.clone();
+        joined == *self
     }
 
     /// Least upper bound for control-flow convergence.

@@ -245,7 +245,7 @@ fn lower_raw_sources(
     )?;
     loop_spec::infer(&runtime, &source_map, &loop_specs, &mut specs);
     Ok(VirUnit {
-        version: VirUnitVersion::V27,
+        version: VirUnitVersion::V28,
         memory: memory.into_schema(),
         borrows,
         runtime,

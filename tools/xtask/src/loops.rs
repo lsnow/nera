@@ -14,6 +14,7 @@ fn test_commands() -> Vec<Vec<&'static str>> {
         "loop_arena",
         "loop_acceptance",
         "loop_review",
+        "loop_partitions",
         "frontend_loops",
         "frontend_loop_initialization",
         "frontend_for_match",
@@ -79,6 +80,7 @@ mod tests {
             .collect();
         assert_eq!(targets.len(), targets.iter().collect::<BTreeSet<_>>().len());
         assert!(targets.contains(&"loop_arena") && targets.contains(&"loop_acceptance"));
+        assert!(targets.contains(&"loop_partitions"));
         let native = &commands[2][7..];
         assert_eq!(native.len(), native.iter().collect::<BTreeSet<_>>().len());
         for command in commands {

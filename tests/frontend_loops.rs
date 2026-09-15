@@ -251,21 +251,35 @@ fn loop_resource_transitions_are_checked_at_break_and_back_edge() {
     .expect("break resource transition is analyzable");
     assert!(verification.all_obligations_proven());
 
-    let mismatch = accepted(
+    let conditional_release = accepted(
         "loop-resource-mismatch.nera",
         include_str!("../spec/cases/control-flow/loop-resource-mismatch.nera"),
     );
-    let program = mismatch.vir().expect("accepted loop has VIR");
+    let program = conditional_release.vir().expect("accepted loop has VIR");
     let verification = analyze_function_cfg(
         &program.resolve().expect("analysis input resolves"),
         VirFunctionId::new(0),
     )
-    .expect("resource mismatch reaches verifier");
-    assert!(!verification.all_obligations_proven());
+    .expect("conditional release reaches verifier");
+    // The live first iteration and consumed later iterations are separate
+    // resource cases. Carrying the consumed permission does not reuse it.
+    assert!(verification.all_obligations_proven());
+    assert!(verification.closure_audited());
     assert_eq!(
         interpret(program.resolve().expect("VIR resolves").runtime())
             .expect("a consumed permission tombstone may cross an edge when it is not reused")
             .values(),
         [VirRuntimeValue::U64(2)]
     );
+
+    let repeated_release = accepted(
+        "repeated-release.nera",
+        &include_str!("../spec/cases/control-flow/loop-resource-mismatch.nera")
+            .replace("iteration == 0", "iteration < 2"),
+    );
+    let resolved = repeated_release.vir().unwrap().resolve().unwrap();
+    let verification = analyze_function_cfg(&resolved, VirFunctionId::new(0))
+        .expect("repeated release reaches verifier");
+    assert!(!verification.all_obligations_proven());
+    assert!(interpret(resolved.runtime()).is_err());
 }

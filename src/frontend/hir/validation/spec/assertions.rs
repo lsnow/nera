@@ -58,6 +58,13 @@ pub(super) fn validate(program: &HirProgram) -> Result<(), HirProgramValidationE
             binder: None,
         };
         let valid = match &assertion.kind {
+            SpecAssertionKind::Conditional { guard, body } => {
+                node.terms.push(guard.index());
+                node.children.push(body.index());
+                clause.is_some_and(|c| matches!(c.owner, HirSpecClauseOwner::LoopInvariant(_)))
+                    && scalar(*guard, true)
+                    && child(*body)
+            }
             SpecAssertionKind::Footprint { range, .. } => {
                 let owner = clause.is_some_and(|c| {
                     matches!(

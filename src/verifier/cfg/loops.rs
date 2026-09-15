@@ -10,6 +10,7 @@ use crate::verifier::vc::{
 };
 use crate::vir::{ScalarLoopAtom as Atom, ScalarOperand as Operand, scalar_atoms};
 pub(super) mod candidates;
+pub(super) mod partitions;
 mod resources;
 mod scalars;
 pub use candidates::LoopCandidateAttempt;
@@ -19,6 +20,26 @@ pub(super) struct Induction<'a, 'u> {
 }
 
 impl<'a, 'u> Induction<'a, 'u> {
+    pub(super) fn preheaders(&self) -> BTreeSet<VirBlockId> {
+        self.loops
+            .iter()
+            .map(|i| i.clauses[0].0.boundary.as_ref().unwrap().preheader)
+            .collect()
+    }
+
+    pub(super) fn prime(
+        &mut self,
+        id: VirBlockId,
+        block: &VirBasicBlock,
+        raw: &ConditionalBlockEvaluation,
+    ) -> Result<(), CfgAnalysisError> {
+        for induction in &mut self.loops {
+            if induction.clauses[0].0.boundary.as_ref().unwrap().preheader == id {
+                induction.cut_edges(block, &mut raw.clone())?;
+            }
+        }
+        Ok(())
+    }
     pub(super) fn new(
         unit: &'a ResolvedVirUnit<'u>,
         function: &'a VirFunction,
@@ -67,6 +88,7 @@ impl<'a, 'u> Induction<'a, 'u> {
 }
 
 struct LoopInduction<'a, 'u> {
+    conditional_guards: BTreeMap<crate::VirSpecLoopInvariantId, VcTermId>,
     registry: Option<&'a super::super::summary::SummaryRegistry>,
     unit: &'a ResolvedVirUnit<'u>,
     function: &'a VirFunction,
@@ -103,6 +125,7 @@ impl<'a, 'u> LoopInduction<'a, 'u> {
     ) -> Result<Self, CfgAnalysisError> {
         let mut normalizer = VcNormalizer::new(VcLimits::default());
         let mut clauses = Vec::new();
+        let mut conditional_guards = BTreeMap::new();
         for invariant in unit.as_unit().specs.loop_invariants().iter().filter(|i| {
             i.function == function.id
                 && i.boundary.as_ref().unwrap().header == header
@@ -115,8 +138,20 @@ impl<'a, 'u> LoopInduction<'a, 'u> {
                         .map_err(|_| CfgAnalysisError::LoopInvariantBudgetExceeded(invariant.id))?,
                 ),
                 crate::VirSpecClauseKind::Assertion { root }
-                    if crate::vir::resource_atom(&unit.as_unit().specs, root).is_some() =>
+                    if crate::vir::resource_atom(&unit.as_unit().specs, root).is_some()
+                        || crate::vir::conditional_resource_atom(&unit.as_unit().specs, root)
+                            .is_some() =>
                 {
+                    if let Some((guard, _)) =
+                        crate::vir::conditional_resource_atom(&unit.as_unit().specs, root)
+                    {
+                        conditional_guards.insert(
+                            invariant.id,
+                            normalizer.normalize(unit, guard).map_err(|_| {
+                                CfgAnalysisError::LoopInvariantBudgetExceeded(invariant.id)
+                            })?,
+                        );
+                    }
                     None
                 }
                 _ => return Err(CfgAnalysisError::ContractInstantiation),
@@ -126,6 +161,7 @@ impl<'a, 'u> LoopInduction<'a, 'u> {
         let mut budget = VcQueryBudget::new(VcLimits::default());
         budget.relation_limits = config.relation_limits;
         Ok(Self {
+            conditional_guards,
             registry,
             unit,
             function,
@@ -209,14 +245,38 @@ impl<'a, 'u> LoopInduction<'a, 'u> {
                         else {
                             unreachable!()
                         };
-                        resources::check(
-                            self.unit,
-                            crate::vir::resource_atom(&self.unit.as_unit().specs, root).unwrap(),
-                            state,
-                            &mut ledgers[case_ordinal],
-                            self.config,
-                            &mut self.budget,
-                        )
+                        let guard = self.conditional_guards.get(&invariant.id).map(|guard| {
+                            evaluate_bool(
+                                self.normalizer.arena(),
+                                *guard,
+                                &BTreeSet::new(),
+                                SnapshotValues::State(state),
+                                self.function,
+                                &mut self.budget,
+                            )
+                        });
+                        if guard == Some(Some(AbstractBool::False)) {
+                            ObligationStatus::Proven
+                        } else if guard.is_some() && guard != Some(Some(AbstractBool::True)) {
+                            ObligationStatus::Unknown
+                        } else {
+                            resources::check(
+                                self.unit,
+                                crate::vir::resource_atom(&self.unit.as_unit().specs, root)
+                                    .or_else(|| {
+                                        crate::vir::conditional_resource_atom(
+                                            &self.unit.as_unit().specs,
+                                            root,
+                                        )
+                                        .map(|(_, atom)| atom)
+                                    })
+                                    .unwrap(),
+                                state,
+                                &mut ledgers[case_ordinal],
+                                self.config,
+                                &mut self.budget,
+                            )
+                        }
                     };
                     let queries = std::mem::take(&mut self.budget.relations)
                         .finish()
@@ -273,7 +333,7 @@ impl<'a, 'u> LoopInduction<'a, 'u> {
                         ),
                     };
                     merge_case_obligation(&mut evaluated.obligations, record);
-                    if back_edge && invariant.id == first_id {
+                    if back_edge && invariant.id == first_id && self.conditional_guards.is_empty() {
                         let preserved = self.resource_entry.as_ref().is_some_and(|entry| {
                             state.loop_resources_match(entry, &resource_values)
                         });
@@ -295,7 +355,12 @@ impl<'a, 'u> LoopInduction<'a, 'u> {
                     }
                 }
             }
-            if !back_edge {
+            if !self.conditional_guards.is_empty() {
+                // Conditional lifecycle clauses describe inferred whole cases.
+                // Check them on actual entry/backedges, never assume a resource
+                // phase or cut an edge whose state has not been covered.
+                successors.push(successor);
+            } else if !back_edge {
                 // Havoc the head, then restore only independently established
                 // immutable scalar aliases and loop-local premises. Never copy
                 // a modified parameter's initial value/path facts into the head.

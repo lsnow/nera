@@ -1,5 +1,92 @@
 use crate::*;
 
+#[test]
+fn conditional_resource_guards_have_typed_clause_local_children_in_both_irs() {
+    const SOURCE: &str = "fn main()->u64 {let p=alloc<u64>(1); let mut i=0;
+        while i<3 {invariant true; invariant i!=0 || alive(p.region); if i==0 {free(p);} i=i+1;} return i;}";
+    let (_, hir) = typed(SOURCE);
+    for mutation in 0..4 {
+        let mut tables = super::program_tables(&hir);
+        let index = tables
+            .specs
+            .assertions
+            .iter()
+            .position(|a| matches!(a.kind, SpecAssertionKind::Conditional { .. }))
+            .unwrap();
+        let SpecAssertionKind::Conditional { guard, body } =
+            &mut tables.specs.assertions[index].kind
+        else {
+            unreachable!()
+        };
+        match mutation {
+            0 => *guard = HirSpecTermId::new(999),
+            1 => *body = HirSpecAssertionId::new(index as u32),
+            2 => {
+                *guard = tables
+                    .specs
+                    .terms
+                    .iter()
+                    .find(|t| matches!(t.kind, HirSpecTermKind::U64(_)))
+                    .unwrap()
+                    .id
+            }
+            3 => {
+                *guard = tables
+                    .specs
+                    .terms
+                    .iter()
+                    .find(|t| matches!(t.kind, HirSpecTermKind::Bool(true)))
+                    .unwrap()
+                    .id
+            }
+            _ => unreachable!(),
+        }
+        assert!(super::hir_from_tables(tables).is_err());
+    }
+    let original = raw(SOURCE);
+    original.validate().unwrap();
+    for mutation in 0..4 {
+        let mut unit = original.clone();
+        let index = unit
+            .specs
+            .assertions()
+            .iter()
+            .position(|a| matches!(a.kind, SpecAssertionKind::Conditional { .. }))
+            .unwrap();
+        let word = unit
+            .specs
+            .terms()
+            .iter()
+            .find(|t| matches!(t.kind, VirSpecTermKind::U64(_)))
+            .unwrap()
+            .id;
+        let foreign = unit
+            .specs
+            .terms()
+            .iter()
+            .find(|t| matches!(t.kind, VirSpecTermKind::Bool(true)))
+            .unwrap()
+            .id;
+        let SpecAssertionKind::Conditional { guard, body } =
+            &mut unit.specs.assertions_mut()[index].kind
+        else {
+            unreachable!()
+        };
+        match mutation {
+            0 => *guard = VirSpecTermId::new(999),
+            1 => *body = VirSpecAssertionId::new(index as u32),
+            2 => *guard = word,
+            3 => *guard = foreign,
+            _ => unreachable!(),
+        }
+        assert!(unit.validate().is_err());
+    }
+    let old = original.clone();
+    let mut changed = old;
+    changed.version = VirUnitVersion::V27;
+    assert!(changed.validate().is_err());
+}
+
 fn raw(source: &str) -> VirUnit {
     let (file, hir) = typed(source);
     super::super::lower_raw_sources(&hir, &[&file], false).unwrap()

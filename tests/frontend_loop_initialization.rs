@@ -261,13 +261,13 @@ fn malformed_stride_overflow_and_unknown_calls_are_not_initialization_proofs() {
     assert!(changed);
     stride.rebuild_source_map_from_runtime("wrong-stride.vir", 10000);
     assert!(stride.into_validated().is_err());
-    let overflow = accepted(
-        "fn main() -> u64 { let mut a: [u64; 4]; let mut i = 18446744073709551615usize;
-      while i > 0usize { a[0] = 42; i = i + 1usize; } return a[0]; }",
-    );
-    // Runtime word addition wraps; verification must still reject this as
-    // checked induction progress rather than treating the wrap as a proof.
-    rejected(overflow.vir().unwrap().as_unit().clone(), false);
+    let wrapping = "fn main() -> u64 { let mut a: [u64; 4]; let mut i = 18446744073709551615usize;
+      while i > 0usize { a[0] = 42; i = i + 1usize; } return a[0]; }";
+    // Exact wrapping executes once, initializes only a[0], then exits. It is
+    // safe but is not monotone induction progress or initialization of a[1].
+    checked(wrapping, 42);
+    let overflow = accepted(&wrapping.replace("return a[0]", "return a[1]"));
+    rejected(overflow.vir().unwrap().as_unit().clone(), true);
     let unknown = analyze(&SourceFile::from_text(
         "unknown-call.nera",
         "fn main() -> u64 { let mut a: [u64; 4];

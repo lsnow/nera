@@ -3,7 +3,7 @@ use crate::{VirBlockId, VirBlockTarget, VirFunction, VirTerminator, VirType, Vir
 use std::collections::BTreeSet;
 mod resources;
 mod scalar;
-pub(crate) use resources::{ResourceLoopAtom, resource_atom};
+pub(crate) use resources::{ResourceLoopAtom, conditional_resource_atom, resource_atom};
 pub(crate) use scalar::{ScalarLoopAtom, ScalarOperand, scalar_atoms};
 
 #[derive(Clone, Debug, PartialEq, Eq)]

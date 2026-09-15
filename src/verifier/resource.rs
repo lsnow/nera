@@ -8,11 +8,13 @@ use crate::{
 };
 
 mod bytes;
+mod cfg_projection;
 mod contents;
 mod initialization;
 mod instance;
 mod loan;
 mod loop_frame;
+mod loop_partition;
 mod object;
 mod pointer;
 mod scalar;
@@ -984,13 +986,13 @@ mod tests {
             (source_permission, target_permission),
         ];
 
-        let projected = state.project_cfg_edge(&renames);
+        let projected = state.project_cfg_case(&renames).unwrap();
         assert_eq!(
             projected.word_expression(target_word),
             Some(AffineExpression::identity(target_word))
         );
         let Some(AbstractValue::Permission(permission)) =
-            state.project_value_for_cfg(source_permission, &renames)
+            projected.value(target_permission).copied()
         else {
             panic!("permission must project")
         };

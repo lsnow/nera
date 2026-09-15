@@ -49,6 +49,12 @@ pub struct SpecMemoryRange<S, T, L> {
 /// Exists binds one clause-owned scalar binder in `body`, never in `witness`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SpecAssertionKind<T, A, B, S, L> {
+    /// Loop-only conditional observation. False guard requires no resource;
+    /// true guard checks body. Never an authority-producing assumption.
+    Conditional {
+        guard: T,
+        body: A,
+    },
     /// Entry-bound public effect upper bound, never an access capability.
     Footprint {
         write: bool,

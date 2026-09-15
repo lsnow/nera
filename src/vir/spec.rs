@@ -4,7 +4,8 @@ use super::{
 };
 mod loops;
 pub(crate) use loops::{
-    ResourceLoopAtom, ScalarLoopAtom, ScalarOperand, resource_atom, scalar_atoms,
+    ResourceLoopAtom, ScalarLoopAtom, ScalarOperand, conditional_resource_atom, resource_atom,
+    scalar_atoms,
 };
 pub use loops::{VirLoopBinding, VirLoopBoundary, VirLoopEdge};
 

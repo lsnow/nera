@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
+mod closure;
 mod loops;
 pub use loops::LoopCandidateAttempt;
 
@@ -35,6 +36,10 @@ use super::transfer::{
 /// Deterministic limits and widening policy for CFG analysis.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CfgAnalysisConfig {
+    /// Finite literal-comparison cut points for loop disjunctions (hard cap 16).
+    pub max_loop_partition_cuts: usize,
+    /// Final closure replay: case/instruction work and whole-case coverage comparisons.
+    pub max_closure_audit_steps: u64,
     /// Maximum untrusted loop candidates selected for one function.
     pub max_loop_candidates: usize,
     /// Bounded induction/elimination attempts after ordinary analysis fails.
@@ -79,6 +84,8 @@ pub struct CfgAnalysisConfig {
 impl Default for CfgAnalysisConfig {
     fn default() -> Self {
         Self {
+            max_loop_partition_cuts: 8,
+            max_closure_audit_steps: 1_000_000,
             max_loop_candidates: 32,
             max_loop_candidate_rounds: 4,
             max_loop_candidate_block_visits: 2_000,
@@ -282,6 +289,7 @@ impl FunctionReturnState {
 /// Final CFG result for one structurally validated VIR function.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FunctionCfgAnalysis {
+    closure_audited: bool,
     loop_candidate_attempts: Vec<LoopCandidateAttempt>,
     pub(crate) summary_events: super::summary::EffectJournal,
     /// Historical non-Proven observations cannot justify summary closure just
@@ -305,6 +313,10 @@ pub struct FunctionCfgAnalysis {
 }
 
 impl FunctionCfgAnalysis {
+    /// Whether the final cyclic CFG candidate passed frozen-state replay.
+    pub const fn closure_audited(&self) -> bool {
+        self.closure_audited
+    }
     /// Discovery failures are diagnostics, never assumptions or trusted evidence.
     pub fn loop_candidate_attempts(&self) -> &[LoopCandidateAttempt] {
         &self.loop_candidate_attempts
@@ -397,9 +409,11 @@ impl FunctionCfgAnalysis {
 
     #[must_use]
     pub fn all_obligations_proven(&self) -> bool {
-        self.obligations
-            .iter()
-            .all(|record| record.obligation.is_proven())
+        (self.loop_blocks.is_empty() || self.closure_audited)
+            && self
+                .obligations
+                .iter()
+                .all(|record| record.obligation.is_proven())
     }
 }
 
@@ -407,6 +421,13 @@ impl FunctionCfgAnalysis {
 /// during CFG analysis.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CfgAnalysisError {
+    ClosureAuditBudgetExceeded {
+        limit: u64,
+    },
+    ClosureAuditFailed {
+        block: VirBlockId,
+        reason: &'static str,
+    },
     LoopInvariantResourceStateUnsupported,
     LoopInvariantBudgetExceeded(crate::VirSpecLoopInvariantId),
     MissingFunction(VirFunctionId),
@@ -465,6 +486,12 @@ pub enum CfgAnalysisError {
 impl fmt::Display for CfgAnalysisError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ClosureAuditBudgetExceeded { limit } => {
+                write!(formatter, "CFG closure audit budget {limit} exhausted")
+            }
+            Self::ClosureAuditFailed { block, reason } => {
+                write!(formatter, "CFG closure audit failed in {block:?}: {reason}")
+            }
             Self::LoopInvariantResourceStateUnsupported => write!(
                 formatter,
                 "loop induction requires stable allocation identities, fixed resource ranges and supported entry state"
@@ -584,7 +611,9 @@ impl Error for CfgAnalysisError {
             | Self::MissingInstructionSite { .. }
             | Self::InvalidFinding { .. }
             | Self::RelationEvidenceBudgetExceeded { .. }
-            | Self::RelationEvidenceMismatch { .. } => None,
+            | Self::RelationEvidenceMismatch { .. }
+            | Self::ClosureAuditBudgetExceeded { .. }
+            | Self::ClosureAuditFailed { .. } => None,
         }
     }
 }
@@ -802,6 +831,11 @@ fn analyze_function_cfg_attempt(
         .map(|block| (block.id, block))
         .collect();
     let loop_blocks = find_loop_blocks(&blocks);
+    let partition_cuts = if loop_blocks.is_empty() {
+        Vec::new()
+    } else {
+        loops::partitions::discover(function, config.max_loop_partition_cuts)
+    };
     let mut induction = loops::Induction::new(program, function, config, selected, registry)?;
     let scalar_anchors = induction.anchors();
     let instruction_sites = assign_instruction_sites(&blocks)?;
@@ -822,6 +856,7 @@ fn analyze_function_cfg_attempt(
     let mut returns_by_block = BTreeMap::new();
     let mut widened_blocks = BTreeSet::new();
     let mut refined_blocks = BTreeSet::new();
+    let mut final_preserved_blocks = BTreeSet::new();
     let mut guarded_precision_losses =
         BTreeMap::<VirBlockId, BTreeSet<GuardedStatePrecisionLoss>>::new();
     let mut refinement_passes = 0_u32;
@@ -872,8 +907,16 @@ fn analyze_function_cfg_attempt(
             block,
             &entry_conditional_state,
             config.guarded_limits(),
-            GuardedReduction::Selective,
+            if loop_blocks.contains(&block_id) && !partition_cuts.is_empty() {
+                GuardedReduction::PreserveGuards
+            } else {
+                GuardedReduction::Selective
+            },
         )?;
+        final_preserved_blocks.remove(&block_id);
+        if loop_blocks.contains(&block_id) && !partition_cuts.is_empty() {
+            final_preserved_blocks.insert(block_id);
+        }
         retain_summary_pending(
             &mut summary_pending,
             &evaluated.obligations,
@@ -915,6 +958,7 @@ fn analyze_function_cfg_attempt(
                         GuardedReduction::PreserveGuards,
                     )?;
                     refined_blocks.insert(block_id);
+                    final_preserved_blocks.insert(block_id);
                 }
             }
         }
@@ -944,7 +988,11 @@ fn analyze_function_cfg_attempt(
                 &entry_seed,
                 &incoming_edges,
                 config.guarded_limits(),
-                GuardedReduction::Selective,
+                if loop_blocks.contains(&target) && !partition_cuts.is_empty() {
+                    GuardedReduction::PreserveGuards
+                } else {
+                    GuardedReduction::Selective
+                },
             )?;
             if merge_successor(
                 target,
@@ -954,6 +1002,7 @@ fn analyze_function_cfg_attempt(
                 &mut entries,
                 &mut entry_updates,
                 &mut widened_blocks,
+                &partition_cuts,
             )? {
                 pending.insert(target);
             }
@@ -1045,7 +1094,25 @@ fn analyze_function_cfg_attempt(
             });
     }
 
+    let closure_audited = !loop_blocks.is_empty()
+        && obligations_by_block
+            .values()
+            .flatten()
+            .all(|r| r.obligation().is_proven());
+    if closure_audited {
+        closure::audit(
+            evaluation_context,
+            selected,
+            &entry_seed,
+            &block_results,
+            &final_preserved_blocks,
+            &obligations_by_block,
+            &returns_by_block,
+        )?;
+    }
+
     Ok(FunctionCfgAnalysis {
+        closure_audited,
         loop_candidate_attempts: Vec::new(),
         summary_events: summary_events.into_inner(),
         summary_pending,
@@ -1093,6 +1160,7 @@ fn retain_summary_pending(
     Ok(())
 }
 
+#[derive(Clone)]
 struct ConditionalBlockEvaluation {
     provenance_evidence: Vec<super::provenance::ProvenanceEvidence>,
     entry: ConditionalResourceState,
@@ -1105,6 +1173,7 @@ struct ConditionalBlockEvaluation {
     returns: Vec<FunctionReturnState>,
 }
 
+#[derive(Clone)]
 struct ConditionalSuccessorState {
     edge_ordinal: u8,
     block: VirBlockId,
@@ -1712,19 +1781,27 @@ fn initialize_entry_state(
         .iter()
         .map(|parameter| (parameter.id, parameter.id))
         .collect();
-    let mut projected = supplied.project_cfg_edge(&renames);
-    for parameter in &entry.parameters {
-        let fact = supplied
-            .value(parameter.id)
-            .copied()
-            .unwrap_or_else(|| unknown_value(parameter.ty));
-        ensure_type(entry.id, parameter.id, parameter.ty, fact)?;
-        projected
-            .define_value(parameter.id, fact)
+    let mut projected =
+        supplied
+            .project_cfg_case(&renames)
             .map_err(|error| CfgAnalysisError::StateDefinition {
                 block: entry.id,
                 error,
             })?;
+    for parameter in &entry.parameters {
+        let fact = projected
+            .value(parameter.id)
+            .copied()
+            .unwrap_or_else(|| unknown_value(parameter.ty));
+        ensure_type(entry.id, parameter.id, parameter.ty, fact)?;
+        if projected.value(parameter.id).is_none() {
+            projected
+                .define_value(parameter.id, fact)
+                .map_err(|error| CfgAnalysisError::StateDefinition {
+                    block: entry.id,
+                    error,
+                })?;
+        }
         if matches!(parameter.ty, VirType::U64) && projected.word_expression(parameter.id).is_none()
         {
             projected.set_word_expression(
@@ -1777,7 +1854,13 @@ fn transfer_edge(
         })
         .collect();
     renames.extend(anchors.iter().map(|id| (*id, *id)));
-    let mut state = source.project_cfg_edge(&renames);
+    let mut state =
+        source
+            .project_cfg_case(&renames)
+            .map_err(|error| CfgAnalysisError::StateDefinition {
+                block: destination.id,
+                error,
+            })?;
     let queries = super::relation::audit::QueryLog::default();
     source.project_initialization_prefix_relations(
         &renames,
@@ -1787,8 +1870,7 @@ fn transfer_edge(
         context.loop_blocks.contains(&destination.id),
     );
     let queries = queries.finish();
-    let guard_projection_lost =
-        state.path_condition().atom_count() < source.path_condition().atom_count();
+    let guard_projection_lost = source.loses_cfg_guards(&renames);
     if !state.path_condition().is_reachable() {
         return Ok(EdgeTransfer {
             queries,
@@ -1801,11 +1883,12 @@ fn transfer_edge(
     let mut obligations = Vec::new();
     let mut permission_arguments = Vec::new();
     for (&argument, parameter) in target.arguments.iter().zip(&destination.parameters) {
-        let mut fact = source
-            .project_value_for_cfg(argument, &renames)
+        let fact = state
+            .value(parameter.id)
+            .copied()
             .unwrap_or_else(|| missing_value(parameter.ty));
         ensure_type(source_block, argument, parameter.ty, fact)?;
-        if let AbstractValue::Permission(permission) = fact {
+        if let AbstractValue::Permission(_) = fact {
             for &previous in &permission_arguments {
                 obligations.push(ResourceObligation::new(
                     ResourceObligationKind::PermissionOperandsDistinct {
@@ -1826,22 +1909,17 @@ fn transfer_edge(
             // a join as a tombstone so a guarded alternative can retain the
             // correlation between the drop flag and the remaining authority.
             // Calls, returns and memory effects still require Available.
-            fact = AbstractValue::Permission(permission);
         }
-        state.define_value(parameter.id, fact).map_err(|error| {
-            CfgAnalysisError::StateDefinition {
-                block: destination.id,
-                error,
-            }
-        })?;
+        if state.value(parameter.id).is_none() {
+            state.define_value(parameter.id, fact).map_err(|error| {
+                CfgAnalysisError::StateDefinition {
+                    block: destination.id,
+                    error,
+                }
+            })?;
+        }
     }
     for id in anchors {
-        state
-            .define_value(id, *source.value(id).unwrap())
-            .map_err(|error| CfgAnalysisError::StateDefinition {
-                block: destination.id,
-                error,
-            })?;
         if matches!(state.value(id), Some(AbstractValue::U64(_))) {
             state.set_word_expression(id, crate::AffineExpression::identity(id));
         }
@@ -2547,6 +2625,7 @@ fn merge_successor(
     entries: &mut BTreeMap<VirBlockId, ConditionalResourceState>,
     entry_updates: &mut BTreeMap<VirBlockId, u32>,
     widened_blocks: &mut BTreeSet<VirBlockId>,
+    partition_cuts: &[u64],
 ) -> Result<bool, CfgAnalysisError> {
     if !incoming.is_reachable() {
         return Ok(false);
@@ -2569,18 +2648,9 @@ fn merge_successor(
         entries.insert(block, incoming);
         return Ok(true);
     }
-    let mut joined = current
-        .join(
-            &incoming,
-            config.guarded_limits(),
-            GuardedReduction::Selective,
-        )
+    let joined = current
+        .merge_loop(&incoming, config.guarded_limits(), false, partition_cuts)
         .map_err(|error| CfgAnalysisError::ResourceJoin { block, error })?;
-    if joined.cases().len() > 1 {
-        joined = joined
-            .collapse_for_loop(config.guarded_limits())
-            .map_err(|error| CfgAnalysisError::ResourceJoin { block, error })?;
-    }
     if joined == current {
         return Ok(false);
     }
@@ -2588,7 +2658,7 @@ fn merge_successor(
     let updates = entry_updates.entry(block).or_default();
     let next = if *updates >= config.widen_after_updates {
         let widened = current
-            .widen(&joined, config.guarded_limits())
+            .merge_loop(&joined, config.guarded_limits(), true, partition_cuts)
             .map_err(|error| CfgAnalysisError::ResourceJoin { block, error })?;
         if widened != joined {
             widened_blocks.insert(block);

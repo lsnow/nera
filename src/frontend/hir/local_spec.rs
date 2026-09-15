@@ -107,6 +107,44 @@ impl Elaborator {
         span: ByteSpan,
     ) -> Result<HirSpecRoot, FrontendFailure> {
         let resource = match &expression.kind {
+            L::Binary {
+                operator: P::LogicalOr,
+                left,
+                right,
+            } if self.loop_spec_context.is_some()
+                && matches!(
+                    right.kind,
+                    L::ResourceRange { .. }
+                        | L::InitializedRange { .. }
+                        | L::Value(AstExpression {
+                            kind: AstExpressionKind::Call { .. },
+                            ..
+                        })
+                ) =>
+            {
+                let unless = self.logical_term(clause, left, 0)?;
+                if self.specs.terms[unless.index()].ty != self.core_types.bool_ {
+                    return Err(FrontendFailure::elaboration(
+                        span,
+                        "conditional invariant requires a Bool guard",
+                    ));
+                }
+                let guard = self.spec_term(
+                    clause,
+                    self.core_types.bool_,
+                    HirSpecTermKind::Not(unless),
+                    left.span,
+                );
+                let HirSpecRoot::Assertion(body) =
+                    self.observation_root(clause, right, right.span)?
+                else {
+                    return Err(FrontendFailure::unsupported(
+                        span,
+                        "conditional invariant requires a resource observation",
+                    ));
+                };
+                Some(crate::SpecAssertionKind::Conditional { guard, body })
+            }
             L::Value(value) => self.local_resource(clause, value)?,
             L::InitializedRange {
                 pointer,

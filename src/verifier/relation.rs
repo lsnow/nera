@@ -22,7 +22,7 @@ pub(super) use capture::capture;
 pub(super) use local::compare;
 
 /// Version of the trusted Rust observation protocol, not a Lean certificate.
-pub const RELATION_KERNEL_VERSION: u32 = 15;
+pub const RELATION_KERNEL_VERSION: u32 = 19;
 
 /// Canonical instruction-scoped term. Derived slots refer to intermediate
 /// numeric results of that instruction, not freshly evaluated source syntax.

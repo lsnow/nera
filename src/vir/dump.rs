@@ -56,6 +56,7 @@ fn dump_unit(output: &mut String, unit: &VirUnit) -> fmt::Result {
         VirUnitVersion::V23 => writeln!(output, "vir-unit-v23")?,
         VirUnitVersion::V24 => writeln!(output, "vir-unit-v24")?,
         VirUnitVersion::V27 => writeln!(output, "vir-unit-v27")?,
+        VirUnitVersion::V28 => writeln!(output, "vir-unit-v28")?,
         VirUnitVersion::V26 => writeln!(output, "vir-unit-v26")?,
         VirUnitVersion::V25 => writeln!(output, "vir-unit-v25")?,
     }
@@ -364,6 +365,12 @@ fn dump_spec_assertion_kind(
             }
             Ok(())
         }
+        A::Conditional { guard, body } => write!(
+            output,
+            "conditional term{} assertion{}",
+            guard.get(),
+            body.get()
+        ),
         A::Separation(children) => {
             write!(output, "separation [")?;
             for (i, child) in children.iter().enumerate() {

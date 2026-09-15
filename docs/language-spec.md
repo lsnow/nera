@@ -479,13 +479,44 @@ and preservation checks as an explicit clause. Failed candidates are discarded;
 ordinary analysis still has to prove safety. Explicit clauses are never silently
 discarded. This does not guarantee inference for arbitrary safe loops.
 
-Loop reasoning currently requires a supported stable allocation and borrow
-shape. Calls compose with checked contracts and actual memory effects, but
-effectful calls can lose content precision. New allocations across iterations,
-general evolving loan footprints, arbitrary dynamic ranges, heap snapshots,
-`old` in loop clauses, disjunctions, and quantified invariants are outside this
-inductive profile or may remain unproved. Unsupported reasoning and exhausted
-budgets do not count as successful verification.
+The verifier can retain separate ownership states across loop iterations and
+use a bounded set of comparison constants to preserve relevant numeric facts.
+This supports some nested loops with conditional release. Before accepting a
+loop, it rechecks the final inferred states against the actual entry, repeating
+paths, and exits. Missing coverage or exhausted audit budgets prevent success.
+
+Conditional resource invariants use a pure Boolean expression followed by
+`||` and one supported resource observation:
+
+```nera
+let p = alloc<u64>(1);
+let mut i = 0;
+while i < 3 {
+    invariant i != 0 || alive(p.region);
+    if i == 0 { free(p); }
+    i = i + 1;
+}
+```
+
+This clause requires p to be alive whenever i is zero. Supported observations
+are `alive`, `initialized`, `readable`, and `writable`, using the forms above.
+The Boolean expression may use loop-head scalar values, literals, comparisons,
+and `!`, `&&`, and `||`. These conditional clauses are currently loop-only.
+
+When a loop contains a conditional resource clause, all its invariants are
+checked against the actual inferred entry and repeating-path states. Clauses
+do not restore consumed permissions or create initialized storage. An
+undetermined condition remains unproved. Unconditional stable-resource
+invariants retain the existing induction support described above.
+
+Calls compose with checked contracts and actual memory effects, but effectful
+calls can lose content precision. New allocations across iterations, evolving
+borrow ranges, arbitrary dynamic ranges, heap snapshots, `old` in loop clauses,
+general resource disjunctions, and quantified invariants remain outside the
+supported induction profile or may remain unproved. Combining conditional
+ownership changes with prefix-initialization induction is also limited.
+Unsupported reasoning and exhausted budgets do not count as successful
+verification.
 
 Invariants are static only and are erased by `run` and `build`. They do not
 prove termination or the correctness of the compiler or generated executable.
