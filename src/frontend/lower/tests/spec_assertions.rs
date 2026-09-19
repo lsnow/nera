@@ -126,7 +126,7 @@ fn resource_schema_lowering_preserves_occurrences_origins_and_runtime() {
     let plain = lower_test(&hir_from_tables(plain).unwrap()).unwrap();
     let hir = hir_from_tables(tables).unwrap();
     let unit = lower_test(&hir).unwrap();
-    assert_eq!(hir.version(), crate::HirVersion::V22);
+    assert_eq!(hir.version(), crate::HirVersion::V23);
     assert_eq!(unit.as_unit().version, crate::VirUnitVersion::V28);
     assert_eq!(unit.runtime().stable_dump(), plain.runtime().stable_dump());
     assert_eq!(unit.as_unit().memory, plain.as_unit().memory);

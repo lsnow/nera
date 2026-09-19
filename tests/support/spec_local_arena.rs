@@ -1,7 +1,7 @@
 pub const SOURCE: &str = include_str!("../../spec/cases/verify/spec-arena-local.nera");
 
 pub fn erased() -> String {
-    // Keep byte positions, so dump equality also checks runtime source mappings.
+    // Remove runtime checks while keeping the positions of all other statements.
     SOURCE
         .split('\n')
         .map(|line| {

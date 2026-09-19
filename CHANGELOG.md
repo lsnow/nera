@@ -2,6 +2,14 @@
 
 All notable changes to the public Nera preview are documented here.
 
+## Unreleased
+
+- Changed `assert` to evaluate ordinary boolean expressions at runtime. A false
+  condition reports an interpreter error or aborts a native executable.
+- Removed the source-level static assertion entrypoint without adding a `prove`
+  statement. Contracts, loop invariants, and internal Spec verification remain.
+- Updated assertion tests, examples, and the public language reference.
+
 ## 0.0.1
 
 - Added an experimental systems-language frontend with structs, enums, arrays,

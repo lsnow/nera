@@ -13,7 +13,7 @@ planned feature in a stage is available. Each file is standalone.
 | 5 — Resource verifier | [use-after-free.nera](use-after-free.nera) | Deliberately read an allocation after freeing it. | **`Unproved`, exit 1** |
 | 6 — Structured data and control flow | [structured-data.nera](structured-data.nera) | Structs, arrays, enums, function calls, and pattern matching. | `Checked` |
 | 7 — Ordinary safe code | [inferred-borrows.nera](inferred-borrows.nera) | A local mutable borrow, a returned shared slice, inferred dependencies, and last-use restoration. | `Checked` |
-| 8 — Explicit proof annotations | [loop-contracts.nera](loop-contracts.nera) | Preconditions and invariants for a growing initialized prefix, plus a local liveness assertion. | `Checked` |
+| 8 — Explicit proof annotations | [loop-contracts.nera](loop-contracts.nera) | Preconditions and invariants for a growing initialized prefix. | `Checked` |
 
 All seven positive examples return **42**. Stage 5 is an intentional negative
 example, not a broken installation. Stage 1 illustrates the memory lifecycle,
@@ -58,7 +58,8 @@ Expect `Unproved`, failed safety conditions at the read after `free`, and exit
 status 1. Do not build and execute this deliberately invalid source natively.
 
 `run` and `build` are unverified execution paths; they do not first enforce a
-successful `verify`. Assertions and invariants are erased, not runtime traps.
+successful `verify`. Invariants are erased; runtime assertions are retained and
+stop execution when their condition is false.
 Verification is relative to the current supported model and trust boundary; it
 is not a proof of compiler correctness, native code correctness, or termination.
 

@@ -560,78 +560,47 @@ The language does not require explicit contracts for ordinary safe code in this
 release. Local assertions and bounded function contracts are supported as
 described below. Proof blocks remain reserved and unsupported.
 
-### 17.1 Static local assertions
+### 17.1 Runtime assertions
 
 ```nera
 fn main() -> u64 {
     let mut value = 1;
     assert value == 1;
     value = 2;
-    assert value < 4 && !(value == 3);
+    assert value < 4;
     let p = alloc<u64>(1);
-    assert alive(p.region);
     *p = value;
-    assert initialized(p, 0..1);
+    assert *p == 2;
     free(p);
     return value;
 }
 ```
 
-`assert logical-expression;` creates a static condition at that statement.
-It observes the values and memory state at that position, including preceding
-assignments and releases. It must hold on every reachable branch represented
-at that point. A successful assertion does not create permissions or become an
-unchecked assumption for later statements.
+`assert expression;` evaluates an ordinary `bool` expression once at that
+statement. A false condition reports `CheckFailed` with the statement's source
+location in the interpreter; a native executable calls `abort`. Both `run` and
+`build` retain these checks, including in unverified programs.
 
-Supported pure expressions use `bool`, `u64`, and 64-bit `usize` constants,
-parameters, and available local values:
+The expression follows the normal runtime rules: calls returning `bool`, scalar
+comparisons, and memory reads are supported. Reads, calls, and borrows participate
+in normal memory-safety analysis and borrow lifetime planning. Runtime `!`, `&&`,
+and `||` are not yet supported; use separate assertions or explicit control flow.
 
-- parentheses and `!`;
-- `&&` and `||`;
-- `==`, `!=`, `<`, `<=`, `>`, and `>=`;
-- checked `+`, `-`, and multiplication by a literal constant.
+The verifier retains the underlying runtime `Check` instruction's `CheckTrue`
+obligation. A condition that is false or cannot be proved prevents a `Checked`
+result. On the successful continuation, the verifier may use the condition as
+true. This does not remove the runtime check from `run` or `build`.
 
-Precedence from strongest to weakest is `!`, `*`, `+ -`, comparisons,
-`&&`, then `||`. Comparisons cannot be chained without parentheses.
-Arithmetic operands must have the same type; a directly participating
-unsuffixed integer literal may adopt the other operand's word type. General
-contextual typing of compound constant expressions is not supported.
-Logical arithmetic does not wrap. Overflow or an undefined expression cannot
-establish a proof; boolean short-circuiting can avoid an unused operand.
-
-The following standalone resource observations are also accepted:
-
-| Expression | Meaning |
-| --- | --- |
-| `alive(p.region)` | The allocation observed through `p` is currently live. |
-| `initialized(p)` | The first element at `p` is initialized. |
-| `initialized(p, begin..end)` | The half-open element range relative to `p` is initialized. |
-
-Here `p` is a local pointer, owner, or reference name. Initialization
-observations currently support `bool` and `u64` elements. Element offsets
-are checked when scaled to bytes; dynamic ranges require sufficient existing
-facts to determine their initialization. Resource observations cannot yet be
-combined with boolean operators. A user declaration shadowing one of these
-builtin names is not interpreted as a logical builtin.
-
-Assertions do not evaluate ordinary calls, allocate, borrow, or read fields or
-pointer contents. For example, `assert *p == 42;` is unsupported. Some local
-values that reside in addressable storage, or whose values were not retained
-across a control-flow join, cannot yet be observed; the compiler rejects these
-cases explicitly. Assertions do not extend a borrow's lifetime.
+The former source-level static assertion entrypoint is removed, with no `prove`
+statement or keyword. `alive` and `initialized` are logical resource queries, not
+runtime assertion builtins. They remain available in their supported contract and
+loop-invariant contexts. Internal Spec HIR/VIR proof representations and their
+validation remain available; source `assert` no longer creates a Spec Prove.
 
 Assertions, contracts, and supported loop invariants can occur in closed
 multi-file programs and concrete generic instances. `proof`/`ghost` and source
-quantifiers remain unsupported.
-
-`verify` exits with status 0 for a checked program, 1 for an unproved program,
-and 2 for rejected source. Failed conditions distinguish insufficient facts,
-false predicates, resource conflicts, unsupported reasoning, and exhausted
-budgets where applicable. The compiler and verifier remain part of the trust
-boundary.
-
-`run` and `build` erase assertions and remain unverified, even if an assertion
-is false. A static assertion is not a runtime bounds check or trap.
+quantifiers remain unsupported. `run` and `build` remain unverified, and the
+compiler and verifier remain part of the trust boundary.
 
 ### 17.2 Function contracts and frames
 
@@ -691,7 +660,7 @@ subslice combinations, and early restoration of a parent after a returned
 borrow's last use remain unsupported or conservatively rejected. Such failures
 must not be interpreted as a successful memory-safety proof.
 
-Contracts, like assertions, are erased by `run` and `build`; native artifacts
+Contracts are erased by `run` and `build`; runtime assertions are retained. Native artifacts
 remain unverified. A `Checked` result does not formally prove the compiler.
 
 ## 18. Compact grammar
@@ -741,7 +710,7 @@ statement     = let-statement | assignment | call ";" | free-statement
               | return-statement | if-statement | while-statement
               | for-statement | match-statement | "break" ";"
               | "continue" ";" | assert-statement | block ;
-assert-statement = "assert" logical-expression ";" ;
+assert-statement = "assert" expression ";" ;
 let-statement = "let" [ "mut" ] identifier [ ":" type ]
                 [ "=" expression ] ";" ;
 return-statement = "return" [ expression ] ";" ;

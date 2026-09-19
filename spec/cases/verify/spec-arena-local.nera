@@ -5,9 +5,9 @@ fn arena(first: usize, second: usize) -> u64 {
     if first > 0usize {
         if first < second {
             if second < len(backing) {
-                assert 0usize < first && first < second;
+                assert 0usize < first;
+                assert first < second;
                 assert second < 6usize;
-                assert first * 8usize < second * 8usize;
                 let mut answer = 0;
                 {
                     let parent = &mut backing[..];
@@ -22,9 +22,6 @@ fn arena(first: usize, second: usize) -> u64 {
                     parent[0] = sum;
                     answer = parent[0] + sentinel;
                 }
-                let probe = &backing[0];
-                assert alive(probe.region);
-                assert initialized(probe, 0..1);
                 return answer;
             }
         }

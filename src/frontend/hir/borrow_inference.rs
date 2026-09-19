@@ -471,7 +471,6 @@ impl Elaborator {
                 break;
             }
             match &statement.kind {
-                AstStatementKind::Assert { .. } => {}
                 AstStatementKind::Declare { name, .. } => {
                     environment.insert(name, Origin::NotBorrow)
                 }
@@ -586,7 +585,8 @@ impl Elaborator {
                 | AstStatementKind::Match { .. }
                 | AstStatementKind::While { .. }
                 | AstStatementKind::For { .. } => return None,
-                AstStatementKind::Store { .. }
+                AstStatementKind::Assert { .. }
+                | AstStatementKind::Store { .. }
                 | AstStatementKind::Free { .. }
                 | AstStatementKind::Evaluate { .. }
                 | AstStatementKind::Break
@@ -637,7 +637,6 @@ impl Elaborator {
                 break;
             }
             match &statement.kind {
-                AstStatementKind::Assert { .. } => {}
                 AstStatementKind::Declare { name, .. } => {
                     environment.insert(name, Origin::NotBorrow);
                 }
@@ -765,7 +764,8 @@ impl Elaborator {
                     }
                 }
                 AstStatementKind::Free { .. } => {}
-                AstStatementKind::Evaluate { expression } => {
+                AstStatementKind::Assert { expression }
+                | AstStatementKind::Evaluate { expression } => {
                     if self.infer_expression(
                         expression,
                         environment,
@@ -1184,12 +1184,12 @@ fn source_components(graph: &[BTreeSet<usize>]) -> Vec<Vec<usize>> {
 fn collect_called_functions(block: &AstBlock, names: &mut BTreeSet<String>) {
     for statement in &block.statements {
         match &statement.kind {
-            AstStatementKind::Assert { .. } => {}
             AstStatementKind::Declare { .. }
             | AstStatementKind::Free { .. }
             | AstStatementKind::Break
             | AstStatementKind::Continue => {}
-            AstStatementKind::Let { value, .. }
+            AstStatementKind::Assert { expression: value }
+            | AstStatementKind::Let { value, .. }
             | AstStatementKind::Store { value, .. }
             | AstStatementKind::Evaluate { expression: value } => {
                 collect_expression_calls(value, names)

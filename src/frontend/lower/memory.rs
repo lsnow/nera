@@ -342,7 +342,9 @@ fn collect_statement(
 ) -> Result<(), FrontendFailure> {
     match &statement.kind {
         HirStatementKind::Prove { .. } => Ok(()),
-        HirStatementKind::Let { value, .. } | HirStatementKind::Evaluate { expression: value } => {
+        HirStatementKind::Assert { expression: value }
+        | HirStatementKind::Let { value, .. }
+        | HirStatementKind::Evaluate { expression: value } => {
             collect_expression(hir, value, reachable, source_span)
         }
         HirStatementKind::Assign { destination, value } => {

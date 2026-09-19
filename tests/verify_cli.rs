@@ -304,8 +304,17 @@ fn pure_contract_cli_checks_calls_and_bodies_but_run_build_remain_unverified() {
         assert!(stdout.contains(&format!("{name}.nera")), "{output:?}");
         if name == "callee" {
             let output = run(fixture.command().arg("run").arg(&path));
-            assert!(output.status.success(), "{output:?}");
-            assert!(String::from_utf8_lossy(&output.stdout).contains("unverified"));
+            assert!(!output.status.success(), "{output:?}");
+            assert!(String::from_utf8_lossy(&output.stderr).contains("runtime check failed"));
+            // Contracts alone remain erased; only the explicit asserts abort.
+            let no_asserts = source
+                .replace("return value + 1;", "return value;")
+                .replace("assert first == 41;", "")
+                .replace("assert second == 42;", "");
+            let unchecked = fixture.file("callee-without-asserts.nera", no_asserts);
+            let execution = run(fixture.command().arg("run").arg(unchecked));
+            assert!(execution.status.success(), "{execution:?}");
+            assert!(String::from_utf8_lossy(&execution.stdout).contains("unverified"));
             let output = run(fixture
                 .command()
                 .args(["build", "--emit", "asm"])
@@ -341,65 +350,6 @@ fn local_arena_cli_checks_the_whole_program_not_just_prove_status() {
         let path = fixture.file(format!("{name}.nera"), source);
         let output = run(fixture.command().arg("verify").arg(path));
         assert_eq!(output.status.code(), Some(expected), "{output:?}");
-    }
-}
-
-#[test]
-fn local_assertions_have_real_exit_codes_and_execution_remains_unverified() {
-    let fixture = Fixture::new();
-    for (name, source, code, message) in [
-        (
-            "ok",
-            "fn main()->u64 { assert 1<2; return 7; }",
-            0,
-            "Spec: Proven=1",
-        ),
-        (
-            "false",
-            "fn main()->u64 { assert false; return 7; }",
-            1,
-            "logical predicate is false",
-        ),
-        (
-            "unknown",
-            "fn main()->u64 { return f(1); } fn f(x:u64)->u64 { assert x<8; return x; }",
-            1,
-            "insufficient current-state facts",
-        ),
-        (
-            "effect",
-            "fn main()->u64 { assert f()==7; return 7; } fn f()->u64{return 7;}",
-            2,
-            "unsupported static assertion",
-        ),
-    ] {
-        let path = fixture.file(format!("{name}.nera"), source);
-        let output = run(fixture.command().arg("verify").arg(&path));
-        assert_eq!(output.status.code(), Some(code), "{output:?}");
-        assert!(
-            String::from_utf8_lossy(&output.stdout).contains(message),
-            "{output:?}"
-        );
-        if name == "false" {
-            let assembly = fixture.0.join("false-assert.s");
-            let built = run(fixture
-                .command()
-                .args(["build", "--emit", "asm"])
-                .arg(&path)
-                .arg("-o")
-                .arg(&assembly));
-            assert!(built.status.success(), "{built:?}");
-            assert!(
-                String::from_utf8_lossy(&built.stdout).contains("built (unverified)"),
-                "{built:?}"
-            );
-            let output = run(fixture.command().arg("run").arg(&path));
-            assert!(output.status.success(), "{output:?}");
-            assert!(
-                String::from_utf8_lossy(&output.stdout).contains("unverified"),
-                "{output:?}"
-            );
-        }
     }
 }
 
@@ -618,4 +568,34 @@ fn broken_stdout_is_an_io_failure_not_a_panic_or_success() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("cannot write verification output"));
     assert!(!stderr.contains("panicked"));
+}
+
+#[test]
+fn runtime_assertions_fail_run_and_remain_in_built_assembly() {
+    let fixture = Fixture::new();
+    for (condition, succeeds) in [("true", true), ("false", false)] {
+        let path = fixture.file(
+            format!("runtime-assert-{condition}.nera"),
+            format!("fn main()->u64 {{ assert {condition}; return 7; }}"),
+        );
+        let output = run(fixture.command().arg("run").arg(&path));
+        assert_eq!(output.status.success(), succeeds, "{output:?}");
+        if !succeeds {
+            let text = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(text.contains("runtime check failed"), "{text}");
+        }
+        let assembly = fixture.0.join(format!("runtime-assert-{condition}.s"));
+        let output = run(fixture
+            .command()
+            .args(["build", "--emit", "asm"])
+            .arg(&path)
+            .arg("-o")
+            .arg(&assembly));
+        assert!(output.status.success(), "{output:?}");
+        assert!(fs::read_to_string(assembly).unwrap().contains("abort"));
+    }
 }

@@ -116,9 +116,13 @@ fn each_backedge_and_local_assert_remain_independent_obligations() {
     assert!(!report.is_memory_checked_core0());
     assert!(
         report.functions()[&VirFunctionId::new(0)]
-            .proofs()
+            .cfg()
+            .obligations()
             .iter()
-            .any(|p| !p.status().is_proven())
+            .any(|p| matches!(
+                p.obligation().kind(),
+                ResourceObligationKind::CheckTrue { .. }
+            ) && !p.obligation().is_proven())
     );
 }
 

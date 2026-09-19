@@ -678,6 +678,21 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
         })
     }
 
+    fn parse_assertion(&mut self) -> Result<AstStatement, FrontendFailure> {
+        let start = self.bump().span().start();
+        let kind = AstStatementKind::Assert {
+            expression: self.parse_expression(0)?,
+        };
+        let end = self
+            .expect_punctuation(Punctuation::Semicolon, "expected `;` after assert")?
+            .span()
+            .end();
+        Ok(AstStatement {
+            kind,
+            span: span(start, end),
+        })
+    }
+
     fn parse_statement(
         &mut self,
         block_depth: usize,
@@ -685,18 +700,7 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
     ) -> Result<AstStatement, FrontendFailure> {
         match self.current().kind() {
             TokenKind::Keyword(Keyword::Let) => self.parse_let(),
-            TokenKind::Keyword(Keyword::Assert) => {
-                let start = self.bump().span().start();
-                let expression = self.parse_logical_expression()?;
-                let end = self
-                    .expect_punctuation(Punctuation::Semicolon, "expected `;` after assert")?
-                    .span()
-                    .end();
-                Ok(AstStatement {
-                    kind: AstStatementKind::Assert { expression },
-                    span: span(start, end),
-                })
-            }
+            TokenKind::Keyword(Keyword::Assert) => self.parse_assertion(),
             TokenKind::Keyword(Keyword::Return) => self.parse_return(),
             TokenKind::Keyword(Keyword::If) => self.parse_if(block_depth, loop_depth),
             TokenKind::Keyword(Keyword::While) => self.parse_while(block_depth, loop_depth),

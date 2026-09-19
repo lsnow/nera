@@ -357,7 +357,7 @@ pub struct AstLoopInvariant {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AstStatementKind {
     Assert {
-        expression: AstLogicalExpression,
+        expression: AstExpression,
     },
     /// Mutable, explicitly typed storage declaration without a value.
     Declare {

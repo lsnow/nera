@@ -1936,3 +1936,41 @@ impl Drop for NativeArtifact {
         let _ = std::fs::remove_dir(&self.directory);
     }
 }
+
+#[test]
+fn runtime_assertions_execute_in_native_programs() {
+    use std::os::unix::process::ExitStatusExt;
+    for condition in ["true", "false"] {
+        let source = format!(
+            "fn main()->u64 {{ assert condition(); return 7; }} fn condition()->bool {{ return {condition}; }}"
+        );
+        let output = analyze(&SourceFile::from_text("native-runtime-assert.nera", source));
+        let unit = output.vir().unwrap();
+        if condition == "true" {
+            assert_interpreter_matches_native("runtime-assert-success", unit);
+            continue;
+        }
+        let resolved = unit.resolve().unwrap();
+        assert_eq!(
+            interpret(resolved.runtime()).unwrap_err().kind(),
+            &nera::VirExecutionErrorKind::CheckFailed
+        );
+        let machine = X86_64_UNKNOWN_LINUX_GNU
+            .codegen_program(resolved.runtime())
+            .unwrap();
+        let assembly = X86_64_UNKNOWN_LINUX_GNU.emit_assembly(&machine).unwrap();
+        let artifact = NativeArtifact::create("runtime-assert-failure");
+        X86_64SystemToolchain::default()
+            .build_executable(&assembly, artifact.executable())
+            .unwrap();
+        // Disable core dumps for the intentionally aborting child.
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg("ulimit -c 0; exec \"$1\"")
+            .arg("runtime-assert")
+            .arg(artifact.executable())
+            .status()
+            .unwrap();
+        assert_eq!(status.signal(), Some(6));
+    }
+}

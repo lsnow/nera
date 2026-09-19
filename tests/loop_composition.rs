@@ -24,8 +24,10 @@ fn checked(source: &str) {
 
 #[test]
 fn scalar_calls_use_real_requires_and_ensures_on_each_iteration() {
-    checked("fn main()->u64 {let mut i=0; while i<3 {invariant i<=3; i=next(i);} assert i==3; return i;}
-        fn next(i:u64)->u64 requires i<3; ensures result==i+1; {return i+1;}");
+    checked(
+        "fn main()->u64 {let mut i=0; while i<3 {invariant i<=3; i=next(i);} assert i==3; return i;}
+        fn next(i:u64)->u64 requires i<3; ensures result==i+1; {return i+1;}",
+    );
 }
 
 #[test]
@@ -280,8 +282,10 @@ fn loop_call_audit_binds_callee_body_instance_and_each_loop_check() {
 
 #[test]
 fn condition_calls_and_recursive_contract_closure_are_not_assumed() {
-    checked("fn main()->u64 {let mut i=0; while more(i) {invariant i<=3; i=i+1;} assert i==3; return i;}
-        fn more(i:u64)->bool ensures result==(i<3); {return i<3;}");
+    checked(
+        "fn main()->u64 {let mut i=0; while more(i) {invariant i<=3; i=i+1;} assert i==3; return i;}
+        fn more(i:u64)->bool ensures result==(i<3); {return i<3;}",
+    );
     checked("fn main()->u64 {let mut i=0; while i<3 {invariant i<=3; i=finish(i);} assert i==3; return i;}
         fn finish(n:u64)->u64 requires n<=2; ensures result==3; {if n==2 {return 3;} return finish(n+1);}");
     let source = "fn main()->u64 {let mut i=0; while i<3 {invariant i<=3; i=bad(i);} return i;}

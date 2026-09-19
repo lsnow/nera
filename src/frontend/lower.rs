@@ -924,6 +924,15 @@ impl<'hir> Lowerer<'hir> {
         live_after: &[HirLocalId],
     ) -> Result<(), FrontendFailure> {
         match &statement.kind {
+            HirStatementKind::Assert { expression } => {
+                let condition = self.lower_condition(expression)?;
+                self.emit(
+                    VirInstruction::Check {
+                        condition: condition.value.value,
+                    },
+                    statement.span,
+                )
+            }
             HirStatementKind::Prove { prove } => self.lower_local_prove(*prove, statement.span),
             HirStatementKind::Declare { local } => {
                 let object = self.local_object(*local, statement.span)?;
@@ -5792,7 +5801,8 @@ fn statement_falls_through(statement: &HirStatement) -> bool {
             else_block: Some(else_block),
             ..
         } => block_falls_through(then_block) || block_falls_through(else_block),
-        HirStatementKind::Prove { .. }
+        HirStatementKind::Assert { .. }
+        | HirStatementKind::Prove { .. }
         | HirStatementKind::Declare { .. }
         | HirStatementKind::Let { .. }
         | HirStatementKind::Assign { .. }

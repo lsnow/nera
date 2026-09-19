@@ -1,4 +1,3 @@
-use nera::verifier::relation::audit::RelationReplayCache;
 use nera::*;
 #[path = "support/spec_local_arena.rs"]
 mod fixture;
@@ -17,7 +16,7 @@ mod runtime_origins;
 use runtime_origins::runtime_with_resolved_origins;
 
 #[test]
-fn local_arena_proves_real_guards_and_restored_storage_without_runtime_changes() {
+fn local_arena_checks_real_guards_and_restored_storage_at_runtime() {
     let annotated = lower(fixture::SOURCE);
     let erased = lower(&fixture::erased());
     let resolved = annotated.resolve().unwrap();
@@ -29,27 +28,15 @@ fn local_arena_proves_real_guards_and_restored_storage_without_runtime_changes()
         report.diagnostics()
     );
     assert!(annotated.as_unit().specs.trust_entries().is_empty());
-    let proofs = report.functions()[&VirFunctionId::new(1)].proofs();
-    assert_eq!(proofs.len(), 5);
-    let replay = RelationReplayCache::new(&resolved, config).unwrap();
-    for proof in proofs {
-        assert!(proof.status().is_proven());
-        assert!(replay.accepts_spec_trace(
-            proof.function(),
-            proof.prove(),
-            proof.relation_queries()
-        ));
-    }
-    assert_eq!(
+    assert!(annotated.as_unit().specs.proves().is_empty());
+    assert_ne!(
         runtime_with_resolved_origins(&annotated),
         runtime_with_resolved_origins(&erased)
     );
-    let backend = backend::X86_64_UNKNOWN_LINUX_GNU;
-    assert_eq!(
-        backend.codegen_program(resolved.runtime()).unwrap(),
-        backend
-            .codegen_program(erased.resolve().unwrap().runtime())
+    assert!(
+        verify_program(&erased.resolve().unwrap(), config)
             .unwrap()
+            .is_memory_checked_core0()
     );
     // Concrete independent oracle; also exercise both guards and rejected bounds.
     for first in 0..=6 {
@@ -77,45 +64,27 @@ fn local_arena_proves_real_guards_and_restored_storage_without_runtime_changes()
 
 #[test]
 fn arena_assertions_do_not_hide_invalid_bounds_overflow_or_overlap() {
-    for (from, to, expected) in [
-        (
-            "assert second < 6usize;",
-            "assert second > 6usize;",
-            Some(ObligationStatus::Refuted),
-        ),
-        (
-            "first * 8usize",
-            "first * 18446744073709551615usize",
-            Some(ObligationStatus::Unknown),
-        ),
-        (
-            "initialized(probe, 0..1)",
-            "initialized(probe, 0..7)",
-            Some(ObligationStatus::Refuted),
-        ),
-        ("parent[first..second]", "parent[0usize..second]", None),
+    for (from, to) in [
+        ("assert second < 6usize;", "assert second > 6usize;"),
+        ("parent[first..second]", "parent[0usize..second]"),
     ] {
         let unit = lower(&fixture::SOURCE.replace(from, to));
         let report =
             verify_program(&unit.resolve().unwrap(), CfgAnalysisConfig::default()).unwrap();
         assert!(!report.is_memory_checked_core0(), "mutation {to}");
-        if let Some(expected) = expected {
-            assert!(
-                report
-                    .functions()
-                    .values()
-                    .flat_map(|f| f.proofs())
-                    .any(|p| p.status() == expected),
-                "{to}: {:?}",
-                report.diagnostics()
-            );
-        } else {
-            assert!(
-                report
-                    .functions()
-                    .values()
-                    .flat_map(|f| f.cfg().obligations())
-                    .any(|o| !o.obligation().status().is_proven())
+        assert!(
+            report
+                .functions()
+                .values()
+                .flat_map(|f| f.cfg().obligations())
+                .any(|o| !o.obligation().status().is_proven())
+        );
+        if from.starts_with("assert") {
+            assert_eq!(
+                interpret(unit.resolve().unwrap().runtime())
+                    .unwrap_err()
+                    .kind(),
+                &VirExecutionErrorKind::CheckFailed
             );
         }
     }
@@ -134,19 +103,14 @@ fn arena_assertions_do_not_hide_invalid_bounds_overflow_or_overlap() {
 }
 
 #[test]
-fn passing_local_proofs_cannot_mask_a_later_runtime_memory_failure() {
+fn passing_runtime_checks_cannot_mask_a_later_memory_failure() {
     let source = fixture::SOURCE.replace(
         "return answer;",
         "let p=alloc<u64>(1); free(p); return *p + answer;",
     );
     let unit = lower(&source);
     let report = verify_program(&unit.resolve().unwrap(), CfgAnalysisConfig::default()).unwrap();
-    assert!(
-        report.functions()[&VirFunctionId::new(1)]
-            .proofs()
-            .iter()
-            .all(|p| p.status().is_proven())
-    );
+    assert!(unit.as_unit().specs.proves().is_empty());
     assert!(!report.is_memory_checked_core0());
 }
 

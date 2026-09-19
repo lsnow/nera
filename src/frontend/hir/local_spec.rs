@@ -1,4 +1,4 @@
-//! Source assertions are elaborated without runtime expression evaluation.
+//! Contract and loop assertions are elaborated without runtime expression evaluation.
 use super::*;
 use crate::Punctuation as P;
 use crate::frontend::{AstLogicalExpression, AstLogicalExpressionKind as L};
@@ -71,35 +71,6 @@ impl Elaborator {
         }
         Ok(())
     }
-    pub(super) fn elaborate_assert(
-        &mut self,
-        expression: &AstLogicalExpression,
-        span: ByteSpan,
-    ) -> Result<HirStatementKind, FrontendFailure> {
-        let function = self
-            .current_function
-            .ok_or_else(|| FrontendFailure::elaboration(span, "assert requires a function body"))?;
-        let prove = HirSpecProveId::new(self.specs.proves.len() as u32);
-        let clause = HirSpecClauseId::new(self.specs.clauses.len() as u32);
-        let root = self.observation_root(clause, expression, span)?;
-        let location = HirSpecLocation::Statement { function, prove };
-        self.specs.clauses.push(HirSpecClause {
-            id: clause,
-            owner: HirSpecClauseOwner::Prove(prove),
-            location,
-            root,
-            span,
-        });
-        self.specs.proves.push(HirSpecProve {
-            id: prove,
-            function,
-            location,
-            clause,
-            span,
-        });
-        Ok(HirStatementKind::Prove { prove })
-    }
-
     fn observation_root(
         &mut self,
         clause: HirSpecClauseId,
@@ -248,7 +219,7 @@ impl Elaborator {
             if self.specs.terms[root.index()].ty != self.core_types.bool_ {
                 return Err(FrontendFailure::elaboration(
                     expression.span,
-                    "assert requires a boolean logical expression",
+                    "specification requires a boolean logical expression",
                 ));
             }
             root.into()
@@ -594,7 +565,7 @@ impl Elaborator {
                 {
                     return Err(FrontendFailure::unsupported(
                         span,
-                        "assert snapshots currently require Bool, U64 or 64-bit usize values",
+                        "specification snapshots currently require Bool, U64 or 64-bit usize values",
                     ));
                 }
                 (

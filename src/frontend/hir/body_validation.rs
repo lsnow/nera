@@ -501,6 +501,16 @@ impl Validator<'_> {
                     "return value does not match function return type",
                 )
             }
+            HirStatementKind::Assert { expression } => {
+                self.require_statement_span(statement, expression.span, statement_index)?;
+                self.validate_condition(
+                    visible,
+                    active_scopes,
+                    statement_index,
+                    expression,
+                    depth + 1,
+                )
+            }
             HirStatementKind::Evaluate { expression } => {
                 self.require_statement_span(statement, expression.span, statement_index)?;
                 self.validate_expression(

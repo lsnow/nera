@@ -74,7 +74,7 @@ impl LocalSpec {
         span: ByteSpan,
     ) -> Result<VirSpecSnapshot, FrontendFailure> {
         let value = self.values.get(&local).ok_or_else(|| {
-            FrontendFailure::unsupported(span, "assert snapshot is not retained at this CFG point")
+            FrontendFailure::unsupported(span, "Spec snapshot is not retained at this CFG point")
         })?;
         if !matches!(
             (value.ty, ty),
@@ -82,7 +82,7 @@ impl LocalSpec {
         ) {
             return Err(FrontendFailure::unsupported(
                 span,
-                "assert cannot read object-backed storage without a supported logical heap-value query",
+                "Spec cannot read object-backed storage without a supported logical heap-value query",
             ));
         }
         Ok(VirSpecSnapshot::Value {

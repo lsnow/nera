@@ -14,8 +14,8 @@ the verifier, and the direct x86_64 Linux backend, but it is not production-read
 - Inferred borrow relationships; source code uses `&T` and `&mut T` without
   spelling lifetime names.
 - Path-sensitive checks across branches and loops.
-- Static local assertions with bounded logic, checked arithmetic, and
-  allocation-liveness and initialization observations.
+- Runtime assertions that evaluate ordinary boolean expressions and stop
+  execution when the condition is false.
 - Function preconditions, postconditions, bounded memory observations, and
   explicit read/write frames, checked together with inferred borrow permissions.
 - Loop invariants for bounded scalar and memory-initialization reasoning, with
@@ -42,11 +42,6 @@ function call as an opaque operation.
 Every memory operation creates a safety condition. Verification succeeds only
 when all conditions are proven. A contradiction, an unsupported construct, an
 analysis limit, or an unknown result is rejected rather than silently accepted.
-
-Local `assert` statements add conditions at their source position. They inspect
-the facts available on each reachable branch without creating memory permissions
-or assumptions for later code. Assertions are erased by `run` and `build`;
-they are not runtime traps.
 
 `nera verify` reports a result relative to the compiler's stated capability
 profile and trust boundary. The compiler and native backend are not formally
@@ -84,37 +79,6 @@ See `spec/cases/verify/contract-arena.nera` for two disjoint reservations from
 one backing array, capacity failure, and borrow restoration on function return.
 It uses separate scalar reservation checks and slice transfers, not a general
 heap-cursor allocator abstraction.
-
-### Loop invariants
-
-```nera
-fn count(n: usize) -> usize
-requires n <= 8usize;
-{
-    let mut i = 0usize;
-    while i < n {
-        invariant i <= n;
-        i = i + 1usize;
-    }
-    return i;
-}
-
-fn main() -> u64 {
-    if count(6usize) == 6usize { return 42; }
-    return 99;
-}
-```
-
-The verifier proves the invariant on entry and checks that each path returning
-to the loop header preserves it, together with the actual memory permissions.
-Common loops can omit these annotations when automatic candidates are proved;
-inference is bounded and does not cover arbitrary loops. Invariants are erased
-at runtime and do not prove termination.
-
-See [the initialization example](spec/cases/verify/loop-initialize-target.nera)
-for a growing initialized prefix of raw storage, and
-[the arena example](spec/cases/verify/loop-arena-initialize.nera) for initialization
-and later bounded views of one backing allocation.
 
 ### Ownership and explicit allocation
 
@@ -179,23 +143,25 @@ fn main() -> u64 {
 More complete examples are available in
 [`examples/demo`](examples/demo) and [`spec/cases`](spec/cases).
 
-### Static assertions
+### Runtime assertions
 
 ```nera
 fn main() -> u64 {
     let value = 42;
-    assert value < 64 && value + 1 == 43;
+    assert value < 64;
+    assert value + 1 == 43;
     let p = alloc<u64>(1);
-    assert alive(p.region);
     *p = value;
-    assert initialized(p, 0..1);
+    assert *p == 42;
     free(p);
     return value;
 }
 ```
 
-The initialization range is half-open and measured in elements. Verification
-checks these assertions statically; running the program does not check them.
+Conditions use the ordinary runtime expression profile, including calls and
+memory reads. `assert false;` stops execution. Logical resource queries such as
+`alive` and `initialized` belong in supported contracts or loop invariants, not
+runtime assertions. There is no separate source-level static assertion syntax.
 See [the local arena example](spec/cases/verify/spec-arena-local.nera) for two
 dynamic slice cuts, borrow restoration, and local assertions over one backing array.
 
@@ -310,8 +276,9 @@ the program. `run` uses the interpreter, and `build` emits native artifacts.
 - Only `u64`, `usize`, and `bool` are available as scalar source types.
 - Raw and owning pointer allocation is currently limited to `u64` elements.
 - Runtime arithmetic is intentionally small: addition and comparisons are
-  supported. Static assertions additionally support bounded logical operators,
-  checked subtraction, and multiplication by literal constants.
+  supported. Runtime assertions use this same profile; `!`, `&&`, and `||` are
+  not yet supported in runtime expressions. Contract and invariant expressions
+  retain their bounded logical and checked arithmetic rules.
 - Function contracts support a bounded scalar/resource/frame profile. General
   heap relations, arbitrary recursive relations, loop invariants, opaque
   predicates, proof blocks, ghost code, and source quantifiers are unavailable.

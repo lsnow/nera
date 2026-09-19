@@ -57,11 +57,13 @@ pub enum HirVersion {
     V21,
     /// Conditional loop resource observations.
     V22,
+    /// Runtime boolean assertion statements.
+    V23,
 }
 
 impl HirVersion {
     /// The only supported in-memory schema. Older tags are not compatibility modes.
-    pub const CURRENT: Self = Self::V22;
+    pub const CURRENT: Self = Self::V23;
 }
 
 /// Deterministic module path within one compilation unit.

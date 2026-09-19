@@ -8,7 +8,6 @@ requires 1usize <= n;
 requires n <= 8usize;
 {
     let p = alloc<[u64; 8]>(1);
-    assert alive(p.region);
     let mut i = 0usize;
     while i < n {
         invariant i <= n;

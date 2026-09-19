@@ -46,9 +46,9 @@ pub(crate) fn walk_statement<'hir, V: HirVisitor<'hir> + ?Sized>(
         | HirStatementKind::Free { .. }
         | HirStatementKind::Break { .. }
         | HirStatementKind::Continue { .. } => {}
-        HirStatementKind::Let { value, .. } | HirStatementKind::Evaluate { expression: value } => {
-            visitor.visit_expression(value)
-        }
+        HirStatementKind::Assert { expression: value }
+        | HirStatementKind::Let { value, .. }
+        | HirStatementKind::Evaluate { expression: value } => visitor.visit_expression(value),
         HirStatementKind::Assign { destination, value } => {
             visitor.visit_place(destination);
             visitor.visit_expression(value);

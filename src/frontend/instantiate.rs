@@ -540,9 +540,6 @@ impl Instantiator<'_> {
                 _ => {}
             }
             match &mut statement.kind {
-                AstStatementKind::Assert { expression } => {
-                    self.logical_expression(module, expression, env, depth + 1)?
-                }
                 AstStatementKind::Declare { annotation, .. } => {
                     self.ty(module, annotation, env, statement.span, 0)?
                 }
@@ -558,7 +555,8 @@ impl Instantiator<'_> {
                     self.place(module, destination, env, depth + 1)?;
                     self.expression(module, value, env, depth + 1)?;
                 }
-                AstStatementKind::Store { value, .. }
+                AstStatementKind::Assert { expression: value }
+                | AstStatementKind::Store { value, .. }
                 | AstStatementKind::Evaluate { expression: value } => {
                     self.expression(module, value, env, depth + 1)?
                 }

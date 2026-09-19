@@ -84,6 +84,10 @@ pub struct HirStatement {
 /// Statement operands use `HirLocalId`; lowering never resolves source names again.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HirStatementKind {
+    /// Evaluates a boolean condition and aborts execution when it is false.
+    Assert {
+        expression: HirExpression,
+    },
     /// Erased static obligation; its operands live only in the Spec arena.
     Prove {
         prove: HirSpecProveId,
@@ -1754,7 +1758,14 @@ impl Elaborator {
     ) -> Result<HirStatement, FrontendFailure> {
         let kind = match &statement.kind {
             AstStatementKind::Assert { expression } => {
-                self.elaborate_assert(expression, statement.span)?
+                let (expression, semantic) = self.elaborate_expression(expression)?;
+                if semantic.ty != self.core_types.bool_ || semantic.allocation.is_some() {
+                    return Err(FrontendFailure::elaboration(
+                        statement.span,
+                        "assert condition must be bool",
+                    ));
+                }
+                HirStatementKind::Assert { expression }
             }
             AstStatementKind::Declare { name, annotation } => {
                 if self

@@ -33,8 +33,8 @@ fn source_contracts_keep_module_and_generic_instance_identity() {
 #[test]
 fn equal_spans_in_distinct_files_keep_spec_origins_and_unused_module_identity() {
     let app = "module app; use aaa::a; use bbb::b; fn main()->u64{return a()+b();}";
-    let a = "module aaa; pub fn a()->u64 {let x=1; assert x == 1; return x;}";
-    let b = "module bbb; pub fn b()->u64 {let x=2; assert x == 2; return x;}";
+    let a = "module aaa; pub fn a()->u64 ensures result == 1; {let x=1; return x;}";
+    let b = "module bbb; pub fn b()->u64 ensures result == 2; {let x=2; return x;}";
     let files = [("app", app), ("aaa", a), ("bbb", b), ("aab", "module aab;")];
     let compiler = session(&files);
     let analysis = compiler.analyze("app").unwrap();
@@ -48,14 +48,14 @@ fn equal_spans_in_distinct_files_keep_spec_origins_and_unused_module_identity() 
     let unit = frontend.vir().unwrap();
     let raw = unit.as_unit();
     assert_eq!(raw.source_map.sources().len(), 3);
-    assert_eq!(raw.specs.proves().len(), 2);
+    assert_eq!(raw.specs.clauses().len(), 2);
     let left = raw
         .source_map
-        .source_span_for_origin(raw.specs.proves()[0].origin)
+        .source_span_for_origin(raw.specs.clauses()[0].origin.origin())
         .unwrap();
     let right = raw
         .source_map
-        .source_span_for_origin(raw.specs.proves()[1].origin)
+        .source_span_for_origin(raw.specs.clauses()[1].origin.origin())
         .unwrap();
     assert_eq!(left.span, right.span);
     assert_ne!(left.source, right.source);
@@ -72,11 +72,11 @@ fn equal_spans_in_distinct_files_keep_spec_origins_and_unused_module_identity() 
     let reordered = session(&[files[3], files[2], files[1], files[0]]);
     assert_eq!(analysis, reordered.analyze("app").unwrap());
     // A proof in another file at the same byte span cannot satisfy this one.
-    let bad = b.replace("x == 2", "x == 1");
+    let bad = b.replace("result == 2", "result == 1");
     let rejected = session(&[("app", app), ("aaa", a), ("bbb", &bad)]);
     assert!(!rejected.verify("app").unwrap().is_checked());
     let mut forged = raw.clone();
-    forged.specs.proves_mut()[1].origin = raw.specs.proves()[0].origin;
+    forged.specs.clauses_mut()[1].origin = raw.specs.clauses()[0].origin;
     assert!(forged.into_validated().is_err());
 }
 
@@ -89,7 +89,7 @@ fn repeated_generic_instances_rename_clause_owners_without_changing_source_ident
         ),
         (
             "lib",
-            "module lib; pub fn item<T>(x:T)->u64 {assert true;return 21;}",
+            "module lib; pub fn item<T>(x:T)->u64 ensures result==21; {return 21;}",
         ),
     ]);
     let analysis = compiler.analyze("app").unwrap();
@@ -101,10 +101,10 @@ fn repeated_generic_instances_rename_clause_owners_without_changing_source_ident
         output.issues()
     );
     let unit = output.vir().unwrap();
-    let proves = unit.as_unit().specs.proves();
+    let proves = unit.as_unit().specs.clauses();
     assert_eq!(proves.len(), 2);
-    assert_ne!(proves[0].function, proves[1].function);
-    assert_ne!(proves[0].clause, proves[1].clause);
+    assert_ne!(proves[0].owner, proves[1].owner);
+    assert_ne!(proves[0].id, proves[1].id);
     assert_eq!(proves[0].origin, proves[1].origin);
     assert!(compiler.verify("app").unwrap().is_checked());
     assert_eq!(

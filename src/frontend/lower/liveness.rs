@@ -185,7 +185,9 @@ fn statement_live_in(
                 target.header.iter().copied().collect()
             };
         }
-        HirStatementKind::Evaluate { expression } => collect_expression(expression, &mut live),
+        HirStatementKind::Assert { expression } | HirStatementKind::Evaluate { expression } => {
+            collect_expression(expression, &mut live)
+        }
     }
     Ok(live)
 }

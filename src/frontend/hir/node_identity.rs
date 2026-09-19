@@ -64,7 +64,9 @@ fn visit_statement_mut<E>(
             }
             Ok(())
         }
-        HirStatementKind::Evaluate { expression } => visit_expression_mut(expression, visit),
+        HirStatementKind::Assert { expression } | HirStatementKind::Evaluate { expression } => {
+            visit_expression_mut(expression, visit)
+        }
         HirStatementKind::Block { block } => visit_block_mut(block, visit),
         HirStatementKind::If {
             condition,
@@ -234,7 +236,9 @@ fn visit_statement<E>(
             }
             Ok(())
         }
-        HirStatementKind::Evaluate { expression } => visit_expression(expression, visit),
+        HirStatementKind::Assert { expression } | HirStatementKind::Evaluate { expression } => {
+            visit_expression(expression, visit)
+        }
         HirStatementKind::Block { block } => visit_block(block, visit),
         HirStatementKind::If {
             condition,
