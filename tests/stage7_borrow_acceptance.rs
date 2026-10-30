@@ -214,7 +214,6 @@ fn call_region_metadata_is_ghost_non_interfering() {
 #[test]
 fn signature_relations_follow_the_current_supported_boundary() {
     for source in [
-        "fn select(a: &u64, b: &u64, flag: bool) -> &u64 { if flag { return a; } return b; }",
         "fn local(r: &u64) -> &u64 { let value = 1; return &value; }",
         "struct Holder { value: &u64, } fn read(r: &Holder) -> u64 { return *r.value; }",
     ] {
@@ -225,6 +224,25 @@ fn signature_relations_follow_the_current_supported_boundary() {
             "{source}"
         );
         assert!(!output.issues().is_empty());
+    }
+    for source in [
+        "fn select(a: &u64, b: &u64, flag: bool) -> &u64 { if flag { return a; } return b; }",
+        "struct Holder { value: &u64, } fn read(r: &Holder) -> u64 { let value=r.value; return *value; }",
+    ] {
+        let output = accepted(source);
+        let resolved = output.vir().unwrap().resolve().unwrap();
+        let report = verify_program(&resolved, Default::default()).unwrap();
+        assert!(
+            report.is_memory_checked_core0(),
+            "{source}: {:?}",
+            report
+                .functions()
+                .values()
+                .flat_map(|f| f.cfg().obligations())
+                .filter(|r| !r.obligation().is_proven())
+                .map(|r| r.obligation().kind())
+                .collect::<Vec<_>>()
+        );
     }
     accepted("fn child(r: &mut u64) -> &mut u64 { return &mut *r; }");
     let output = accepted(

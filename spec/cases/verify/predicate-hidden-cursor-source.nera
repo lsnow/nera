@@ -1,0 +1,42 @@
+// A hidden count is linked to an actual runtime cursor by a saved guarantee.
+struct Buffer { slots:[u64;4], }
+predicate Ready(p:ptr<Buffer>,n:usize) {
+    exists used:usize = 0usize;
+    owns(p);
+    initialized(p.slots,0usize..used);
+    used==n;
+    used<=4usize;
+}
+fn main()->u64 {
+    let p=alloc<Buffer>(1);
+    p.slots[0]=42;
+    fold Ready(p,1usize) with (used=1usize);
+    return consume(p,1usize);
+}
+fn relay(p:Own<Buffer>,n:usize)->Own<Buffer>
+requires Ready(p,n);
+ensures Ready(result,n);
+{
+    return p;
+}
+fn consume(p:Own<Buffer>,n:usize)->u64
+requires Ready(p,n);
+{
+    let q=relay(p,n);
+    unfold Ready(q,n) as (saved);
+    let mut i=0usize;
+    while i<n {
+        invariant i<=n;
+        invariant saved==n;
+        i=i+1usize;
+    }
+    if n>=1usize {
+        let value=q.slots[0];
+        free(q);
+        finish Ready(q,n);
+        return value;
+    }
+    free(q);
+    finish Ready(q,n);
+    return 0;
+}

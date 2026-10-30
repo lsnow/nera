@@ -35,6 +35,10 @@ pub(super) struct LoweredValue {
 
 /// Loan metadata attached to the changing pointer/permission SSA pair.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Bounded deferred cleanup stays inline to preserve Copy metadata across CFG environments"
+)]
 pub(super) enum LoweredLoan {
     /// A reference produced directly by a canonical loan site.
     Static(LoweredLoanMetadata),
@@ -58,17 +62,62 @@ pub(super) enum LoweredLoan {
 pub(super) enum DeferredLoanEnd {
     Static {
         loan: LoweredLoanMetadata,
-        pointer: VirValueId,
+        pointer: VirValue,
         permission: VirValueId,
     },
     Authority {
         reference: VirMemoryAccess,
-        pointer: VirValueId,
+        pointer: VirValue,
         permission: VirValueId,
     },
 }
 
 impl LoweredLoan {
+    /// Deferred cleanup owns real SSA operands, just like the visible local.
+    /// Keep their order stable on every CFG edge; loan identity and geometry
+    /// stay immutable while the pointer/permission pair is renamed.
+    fn map_deferred_values(
+        mut self,
+        mut map: impl FnMut(VirValue) -> Result<VirValueId, FrontendFailure>,
+    ) -> Result<Self, FrontendFailure> {
+        if let Self::ConditionalAuthority { deferred, .. } = &mut self {
+            for end in deferred.iter_mut().flatten() {
+                let (pointer, permission) = match end {
+                    DeferredLoanEnd::Static {
+                        pointer,
+                        permission,
+                        ..
+                    }
+                    | DeferredLoanEnd::Authority {
+                        pointer,
+                        permission,
+                        ..
+                    } => (pointer, permission),
+                };
+                pointer.id = map(*pointer)?;
+                *permission = map(VirValue {
+                    id: *permission,
+                    ty: VirType::Permission,
+                })?;
+            }
+        }
+        Ok(self)
+    }
+
+    fn deferred_values(self) -> Vec<VirValue> {
+        let mut values = Vec::new();
+        let _ = self.map_deferred_values(|value| {
+            values.push(value);
+            Ok(value.id)
+        });
+        values
+    }
+
+    fn shape(self) -> Self {
+        self.map_deferred_values(|_| Ok(VirValueId::new(0)))
+            .expect("erasing SSA names cannot fail")
+    }
+
     pub(super) const fn kind(self) -> VirLoanKind {
         match self {
             Self::Static(metadata) => metadata.kind,
@@ -244,6 +293,12 @@ impl EnvironmentBlock {
         self.bindings.iter().any(|binding| binding.local == local)
     }
 
+    pub(super) fn loan_locals(&self) -> impl Iterator<Item = HirLocalId> + '_ {
+        self.bindings
+            .iter()
+            .filter_map(|binding| binding.loan.is_some().then_some(binding.local))
+    }
+
     pub(super) fn entry_environment(&self) -> LocalEnvironment {
         let mut environment = LocalEnvironment::new(self.local_count);
         for binding in &self.bindings {
@@ -293,7 +348,7 @@ impl EnvironmentBlock {
                 || source.metadata.is_some() != binding.metadata.is_some()
                 || source.permission.is_some() != binding.permission.is_some()
                 || source.drop_flag.is_some() != binding.drop_flag.is_some()
-                || source.loan != binding.loan
+                || source.loan.map(LoweredLoan::shape) != binding.loan.map(LoweredLoan::shape)
             {
                 return Err(invalid_hir(source_span));
             }
@@ -306,6 +361,9 @@ impl EnvironmentBlock {
             }
             if let Some(drop_flag) = source.drop_flag {
                 arguments.push(drop_flag);
+            }
+            if let Some(loan) = source.loan {
+                arguments.extend(loan.deferred_values().into_iter().map(|value| value.id));
             }
         }
         if extras.len() != self.extra_parameters.len()
@@ -591,6 +649,7 @@ impl CfgBuilder {
                         || value.metadata.is_some() != first.metadata.is_some()
                         || value.permission.is_some() != first.permission.is_some()
                         || value.drop_flag.is_some() != first.drop_flag.is_some()
+                        || value.loan.map(LoweredLoan::shape) != first.loan.map(LoweredLoan::shape)
                 })
             {
                 return Err(invalid_hir(source_span));
@@ -612,6 +671,11 @@ impl CfgBuilder {
                 .iter()
                 .filter(|(_, value)| value.drop_flag.is_some())
                 .count()
+            + common_values
+                .iter()
+                .filter_map(|(_, value)| value.loan)
+                .map(|loan| loan.deferred_values().len())
+                .sum::<usize>()
             + extra_types.len();
         let parameter_count = u32::try_from(parameter_count)
             .map_err(|_| FrontendFailure::elaboration(source_span, "too many VIR values"))?;
@@ -667,13 +731,28 @@ impl CfgBuilder {
             } else {
                 None
             };
+            let loan = first
+                .loan
+                .map(|loan| {
+                    loan.map_deferred_values(|source| {
+                        let parameter = self.fresh_value(source.ty, source_span)?;
+                        self.push_parameter(
+                            block,
+                            parameter,
+                            Some(VirGeneratedReason::BlockParameter),
+                            source_span,
+                        )?;
+                        Ok(parameter.id)
+                    })
+                })
+                .transpose()?;
             bindings.push(EnvironmentBinding {
                 local,
                 value,
                 metadata,
                 permission,
                 drop_flag,
-                loan: first.loan,
+                loan,
             });
         }
         let mut extra_parameters = Vec::with_capacity(extra_types.len());
@@ -1071,13 +1150,16 @@ fn strictly_increasing(locals: &[HirLocalId]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{CfgBuilder, LocalEnvironment, LoweredValue, ScopeExitPlan, terminate_scope_exit};
+    use super::{
+        CfgBuilder, DeferredLoanEnd, LocalEnvironment, LoweredLoan, LoweredLoanMetadata,
+        LoweredValue, ScopeExitPlan, terminate_scope_exit,
+    };
     use crate::ByteSpan;
     use crate::frontend::hir::{HirLocalId, HirScopeId};
     use crate::vir::{
-        VirBlockId, VirConstant, VirContractId, VirFunction, VirFunctionId, VirInstruction,
-        VirMemoryAccess, VirMemorySchema, VirRegionId, VirSignature, VirTerminator, VirType,
-        VirUnit, VirValueId,
+        VirBlockId, VirBorrowRegionId, VirConstant, VirContractId, VirFunction, VirFunctionId,
+        VirInstruction, VirLoanId, VirLoanKind, VirLoanRange, VirMemoryAccess, VirMemorySchema,
+        VirRegionId, VirSignature, VirTerminator, VirType, VirUnit, VirValue, VirValueId,
     };
 
     fn span() -> ByteSpan {
@@ -1112,6 +1194,84 @@ mod tests {
             drop_flag: None,
             loan: None,
         }
+    }
+
+    #[test]
+    fn deferred_authorities_follow_edges_and_reject_incompatible_cleanup() {
+        let local = HirLocalId::new(0);
+        let access = VirMemoryAccess::core_u64();
+        let mut value = pointer(10, 11);
+        value.loan = Some(LoweredLoan::ConditionalAuthority {
+            kind: VirLoanKind::Mutable,
+            reference: access,
+            deferred: [
+                Some(DeferredLoanEnd::Static {
+                    loan: LoweredLoanMetadata {
+                        id: VirLoanId::new(2),
+                        kind: VirLoanKind::Mutable,
+                        region: VirBorrowRegionId::new(0),
+                        parent: None,
+                        reference: access,
+                        range: VirLoanRange {
+                            start_bytes: 0,
+                            end_bytes: 8,
+                        },
+                    },
+                    pointer: VirValue {
+                        id: VirValueId::new(12),
+                        ty: value.ty,
+                    },
+                    permission: VirValueId::new(13),
+                }),
+                None,
+                None,
+                None,
+            ],
+        });
+        let mut environment = LocalEnvironment::new(1);
+        environment.initialize(local, value, span()).unwrap();
+        let mut builder = builder();
+        let join = builder
+            .create_environment_block(HirScopeId::new(0), &[local], &[&environment], span())
+            .unwrap();
+        assert_eq!(
+            join.target_from_with_extras(&environment, &[], span())
+                .unwrap()
+                .arguments,
+            [10, 11, 12, 13].map(VirValueId::new)
+        );
+        let renamed = join.entry_environment();
+        let next = builder
+            .create_environment_block(HirScopeId::new(0), &[local], &[&renamed], span())
+            .unwrap();
+        assert!(next.target_from_with_extras(&renamed, &[], span()).is_ok());
+        // The same cleanup plan can arrive with renamed SSA operands, but
+        // changing its static loan identity cannot silently restore another loan.
+        assert!(join.target_from_with_extras(&renamed, &[], span()).is_ok());
+        let Some(LoweredLoan::ConditionalAuthority { deferred, .. }) = &mut value.loan else {
+            unreachable!()
+        };
+        let Some(DeferredLoanEnd::Static { loan, .. }) = &mut deferred[0] else {
+            unreachable!()
+        };
+        loan.id = VirLoanId::new(3);
+        environment.reassign(local, value, span()).unwrap();
+        assert!(
+            join.target_from_with_extras(&environment, &[], span())
+                .is_err()
+        );
+        let before = builder.block_count();
+        assert!(
+            builder
+                .create_environment_block(
+                    HirScopeId::new(0),
+                    &[local],
+                    &[&renamed, &environment],
+                    span()
+                )
+                .is_err()
+        );
+        assert_eq!(builder.block_count(), before);
     }
 
     #[test]

@@ -25,6 +25,29 @@ impl ObligationStatus {
 /// One memory/resource condition required by a VIR instruction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ResourceObligationKind {
+    /// Remaining destruction duties are tracked; this proves no representation.
+    PredicateCleanupPreserved {
+        holder: u32,
+    },
+    PredicateInvariantPreserved {
+        holder: u32,
+    },
+    PredicateInterfaceValid {
+        predicate: crate::VirPredicateId,
+        ensures: bool,
+    },
+    PredicateCarrierMovable {
+        permission: VirValueId,
+    },
+    PredicateActionValid {
+        action: u32,
+    },
+    /// Open representations cannot cross an observing call. At function exit
+    /// every holder must be explicitly transferred or retired after cleanup.
+    PredicateBoundaryRestored {
+        holder: u32,
+        function_exit: bool,
+    },
     /// The complete stable ledger, jointly with all scalar/resource clauses.
     LoopResourcesPreserved {
         invariant: crate::VirSpecLoopInvariantId,
@@ -388,9 +411,6 @@ impl ResourceObligation {
 /// Result of one instruction transfer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InstructionTransfer {
-    /// Complete call outcomes; `state` remains their conservative join for
-    /// single-state clients and instruction-local evidence capture.
-    pub(crate) cases: Option<Vec<ResourceState>>,
     pub(crate) queries: Option<Vec<crate::verifier::relation::audit::QueryObservation>>,
     pub(super) state: ResourceState,
     pub(super) obligations: Vec<ResourceObligation>,
@@ -434,5 +454,19 @@ impl InstructionSequenceTransfer {
     #[must_use]
     pub fn all_obligations_proven(&self) -> bool {
         self.obligations.iter().all(ResourceObligation::is_proven)
+    }
+}
+
+/// Internal CFG transfer. Every alternative is a complete resource state;
+/// a single-state projection is never required merely to advance a call.
+pub(in crate::verifier) struct ConditionalInstructionTransfer {
+    pub states: Vec<ResourceState>,
+    pub queries: Option<Vec<crate::verifier::relation::audit::QueryObservation>>,
+    pub obligations: Vec<ResourceObligation>,
+}
+
+impl ConditionalInstructionTransfer {
+    pub fn obligations(&self) -> &[ResourceObligation] {
+        &self.obligations
     }
 }

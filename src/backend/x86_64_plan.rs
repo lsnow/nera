@@ -1062,16 +1062,8 @@ impl FunctionPlanner<'_> {
                     ))
                 }
                 VirInstruction::ObjectDrop { access, .. } => {
-                    let shape = self.native_object_observation_shape(
-                        block,
-                        index,
-                        spanned.source_span,
-                        *access,
-                    )?;
-                    if shape.variants().iter().any(|case| {
-                        !case.path().segments().is_empty() || case.tag().len_bytes() != 1
-                    }) {
-                        return Err(instruction_error(
+                    let plan = self.memory.object_drop_plan(*access).ok_or_else(|| {
+                        instruction_error(
                             self.function,
                             block,
                             index,
@@ -1079,7 +1071,24 @@ impl FunctionPlanner<'_> {
                             X86_64PlanningErrorKind::UnsupportedObjectEffectType {
                                 access: *access,
                             },
-                        ));
+                        )
+                    })?;
+                    let mut pending = vec![&plan];
+                    while let Some(node) = pending.pop() {
+                        if node.shape.variants().iter().any(|case| {
+                            !case.path().segments().is_empty() || case.tag().len_bytes() != 1
+                        }) {
+                            return Err(instruction_error(
+                                self.function,
+                                block,
+                                index,
+                                spanned.source_span,
+                                X86_64PlanningErrorKind::UnsupportedObjectEffectType {
+                                    access: node.access,
+                                },
+                            ));
+                        }
+                        pending.extend(node.children.iter().map(|(_, _, child)| child));
                     }
                     Ok(X86_64InstructionPlan::Runtime)
                 }
@@ -1377,11 +1386,7 @@ impl FunctionPlanner<'_> {
         let supported = self
             .memory
             .type_capabilities(access.ty)
-            .is_some_and(|capability| capability.size == crate::SizeCapability::Sized)
-            && shape
-                .resource_leaves()
-                .iter()
-                .all(|leaf| leaf.kind() != crate::VirPointerKind::Raw);
+            .is_some_and(|capability| capability.size == crate::SizeCapability::Sized);
         if !supported {
             return Err(instruction_error(
                 self.function,
@@ -1420,16 +1425,13 @@ impl FunctionPlanner<'_> {
                     capability.value == crate::ValueCapability::Copy
                         && capability.size == crate::SizeCapability::Sized
                 }) && shape.resource_leaves().iter().all(|leaf| {
-                    leaf.kind() == crate::VirPointerKind::Reference
-                        && leaf.mutability() == crate::VirMutability::Const
+                    leaf.kind() == crate::VirPointerKind::Raw
+                        || (leaf.kind() == crate::VirPointerKind::Reference
+                            && leaf.mutability() == crate::VirMutability::Const)
                 })
             }
             crate::VirObjectSourceMode::Move => {
                 capability.is_some_and(|capability| capability.size == crate::SizeCapability::Sized)
-                    && shape
-                        .resource_leaves()
-                        .iter()
-                        .all(|leaf| leaf.kind() != crate::VirPointerKind::Raw)
                     && (matches!(
                         destination_mode,
                         crate::VirObjectDestinationMode::Initialize

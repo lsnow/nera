@@ -111,7 +111,33 @@ impl VirRuntimeSemanticProfile {
             | VirUnitVersion::V25
             | VirUnitVersion::V26
             | VirUnitVersion::V27
-            | VirUnitVersion::V28 => Some(VIR_SYSTEM_SEMANTICS_V2),
+            | VirUnitVersion::V28
+            | VirUnitVersion::V29
+            | VirUnitVersion::V30
+            | VirUnitVersion::V31
+            | VirUnitVersion::V32
+            | VirUnitVersion::V33
+            | VirUnitVersion::V34
+            | VirUnitVersion::V35
+            | VirUnitVersion::V36
+            | VirUnitVersion::V37
+            | VirUnitVersion::V38
+            | VirUnitVersion::V39
+            | VirUnitVersion::V40
+            | VirUnitVersion::V41
+            | VirUnitVersion::V42
+            | VirUnitVersion::V43
+            | VirUnitVersion::V44
+            | VirUnitVersion::V45
+            | VirUnitVersion::V46
+            | VirUnitVersion::V47
+            | VirUnitVersion::V48
+            | VirUnitVersion::V49
+            | VirUnitVersion::V50
+            | VirUnitVersion::V51
+            | VirUnitVersion::V52
+            | VirUnitVersion::V53
+            | VirUnitVersion::V54 => Some(VIR_SYSTEM_SEMANTICS_V2),
             VirUnitVersion::V6
             | VirUnitVersion::V7
             | VirUnitVersion::V8

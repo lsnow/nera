@@ -128,12 +128,10 @@ fn wrong_range_early_parent_use_and_local_escape_fail_closed() {
 }
 
 #[test]
-fn unexpressed_region_and_payload_interfaces_remain_frontend_gated() {
+fn local_escape_and_conditional_slice_shapes_remain_frontend_gated() {
     for source in [
         "fn bad(r:&u64)->&u64 { let value=42; return &value; }",
-        "fn choose(a:&u64,b:&u64,flag:bool)->&u64 { if flag { return a; } return b; }",
         "fn tail(v:&[u64])->&[u64] { if len(v)>0usize { return &v[1..]; } return v; }",
-        "struct Holder { r: &u64, n: u64 } fn id(v:Holder)->Holder { return v; }",
     ] {
         let output = analyze(&SourceFile::from_text("gated.nera", source));
         assert_ne!(
@@ -242,5 +240,21 @@ fn returned_subslice_wrappers_apply_body_summaries() {
                 [VirRuntimeValue::U64(30)]
             );
         },
+    );
+}
+
+#[test]
+fn conditional_and_stored_reference_summaries_keep_the_actual_carrier() {
+    for flag in [true, false] {
+        checked(
+            &format!(
+                "fn main()->u64 {{let a=42;let b=7;let r=choose(&a,&b,{flag});return *r;}} fn choose(a:&u64,b:&u64,flag:bool)->&u64 {{if flag {{return a;}}return b;}}"
+            ),
+            if flag { 42 } else { 7 },
+        );
+    }
+    checked(
+        "struct Holder { r: &u64, n: u64, } fn main()->u64 {let value=40;let h=Holder{r:&value,n:2};let q=id(h);let r=q.r;return *r+q.n;} fn id(v:Holder)->Holder {return v;}",
+        42,
     );
 }

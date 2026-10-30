@@ -69,12 +69,12 @@ pub(super) fn plan_with_specs(
     let mut remapped = BTreeMap::new();
 
     for block in blocks {
-        // Anchor before the next non-movable operation. Ends moved across this
-        // boundary are observed in their final order without making Spec a use.
+        // Pure observations follow the next non-movable operation. Resource
+        // actions instead participate in authority ordering inside plan_block.
         let following: Vec<_> = local_specs
             .iter()
             .enumerate()
-            .filter(|(_, s)| s.block == block.id)
+            .filter(|(_, s)| s.block == block.id && s.predicate_action.is_none())
             .map(|(index, s)| {
                 (
                     index,
@@ -90,7 +90,7 @@ pub(super) fn plan_with_specs(
                 )
             })
             .collect();
-        let block_summary = plan_block(block, &parents, &mut remapped)?;
+        let block_summary = plan_block(block, &parents, &mut remapped, local_specs)?;
         for (index, next) in following {
             local_specs[index].boundary = if let Some(ordinal) = next {
                 *remapped.get(&(block.id, ordinal)).ok_or(
@@ -115,6 +115,7 @@ fn plan_block(
     block: &mut DraftBlock,
     parents: &BTreeMap<VirLoanId, VirLoanId>,
     remapped: &mut BTreeMap<(VirBlockId, u64), u64>,
+    specs: &mut [super::local_spec::LocalSpec],
 ) -> Result<LoanEndPlanSummary, LoanEndPlanningError> {
     let old = std::mem::take(&mut block.instructions);
     let mut retained = Vec::new();
@@ -141,6 +142,23 @@ fn plan_block(
         }
     }
 
+    // Resource actions are zero-width authority uses, not pure assertions.
+    // Keep their original ordering against ends at the same runtime boundary.
+    let actions = specs
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.block == block.id && s.predicate_action.is_some())
+        .map(|(i, s)| {
+            (
+                i,
+                s.boundary,
+                retained
+                    .iter()
+                    .filter(|r| r.old_ordinal < s.boundary)
+                    .count(),
+            )
+        })
+        .collect::<Vec<_>>();
     if ends.is_empty() {
         for (new_ordinal, instruction) in retained.into_iter().enumerate() {
             remapped.insert(
@@ -204,6 +222,18 @@ fn plan_block(
                 if instruction_escapes_authority(&instruction.instruction, &authority) {
                     end.movable = false;
                 }
+            }
+        }
+        for (index, old_boundary, boundary) in &actions {
+            if specs[*index].values.values().any(|v| {
+                authority.contains(&v.value) || v.permission.is_some_and(|p| authority.contains(&p))
+            }) {
+                if *old_boundary > end.old_ordinal {
+                    return Err(LoanEndPlanningError::EndBeforeLastUse(
+                        end.effect.effect.loan(),
+                    ));
+                }
+                last_use = last_use.max(*boundary);
             }
         }
         terminator.terminator.visit_operands(|operand| {
@@ -279,11 +309,19 @@ fn plan_block(
     let mut retained = retained.into_iter().peekable();
     let mut ends = ends.into_iter().peekable();
     for boundary in 0.. {
+        let mut actions_here = actions.iter().filter(|(_, _, b)| *b == boundary).peekable();
         while ends
             .peek()
             .is_some_and(|end| end.planned_boundary == boundary)
         {
             let end = ends.next().expect("peeked end exists");
+            while actions_here
+                .peek()
+                .is_some_and(|(_, old, _)| *old <= end.old_ordinal)
+            {
+                let (index, _, _) = actions_here.next().unwrap();
+                specs[*index].boundary = block.instructions.len();
+            }
             let new_ordinal = block.instructions.len() as u64;
             remapped.insert((block.id, end.old_ordinal as u64), new_ordinal);
             block
@@ -291,6 +329,9 @@ fn plan_block(
                 .push(DraftInstruction::Pending(PendingEffect::LoanEnd(
                     end.effect,
                 )));
+        }
+        for (index, _, _) in actions_here {
+            specs[*index].boundary = block.instructions.len();
         }
         let Some(instruction) = retained.next() else {
             break;

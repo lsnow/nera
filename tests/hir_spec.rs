@@ -59,6 +59,8 @@ fn typed_spec_tables() -> HirProgramTables {
     let u64_ty = type_id(&base, HirTypeKind::Integer(nera::HirIntegerType::U64));
 
     tables.specs = HirSpecEnvironment {
+        predicate_actions: vec![],
+        predicate_interfaces: vec![],
         assertions: vec![],
         binders: vec![HirSpecBinder {
             id: HirSpecBinderId::new(0),

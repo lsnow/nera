@@ -1,0 +1,23 @@
+struct Buffer { slots:[u64;4], }
+predicate Ready(p:ptr<Buffer>,n:usize) {
+    owns(p);
+    initialized(p.slots,0usize..n);
+}
+fn main()->u64 {
+    let p=alloc<Buffer>(1);
+    p.slots[0]=20;
+    p.slots[1]=22;
+    fold Ready(p,2usize);
+    let q=relay(p,2usize);
+    unfold Ready(q,2usize);
+    let value=q.slots[0]+q.slots[1];
+    free(q);
+    finish Ready(q,2usize);
+    return value;
+}
+fn relay(p:Own<Buffer>,n:usize)->Own<Buffer>
+requires Ready(p,n);
+ensures Ready(result,n);
+{
+    return p;
+}

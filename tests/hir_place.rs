@@ -67,6 +67,7 @@ fn type_id(tables: &HirProgramTables, kind: &HirTypeKind) -> HirTypeId {
 fn push_type(tables: &mut HirProgramTables, name: &str, kind: HirTypeKind) -> HirTypeId {
     let id = HirTypeId::new(u32::try_from(tables.types.len()).expect("small type table"));
     tables.types.push(HirTypeDefinition {
+        opaque: None,
         id,
         name: Some(name.to_owned()),
         kind,

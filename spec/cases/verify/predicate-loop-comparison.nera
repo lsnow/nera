@@ -1,0 +1,30 @@
+// The comparison is true on entry and false after count reaches three.
+// Every iteration must re-establish the package with the updated argument.
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>,fits:bool) {
+    exists used:usize = 0usize;
+    owns(p);
+    initialized(p.value,0..1);
+    p.value<=42;
+    used<=7usize;
+}
+fn main()->u64 {
+    return run();
+}
+fn run()->u64 {
+    let p=alloc<Cell>(1);
+    p.value=42;
+    let mut count=0usize;
+    fold Ready(p,count<3usize) with (used=count);
+    while count<7usize {
+        invariant count<=7usize;
+        unfold Ready(p,count<3usize);
+        count=count+1usize;
+        fold Ready(p,count<3usize) with (used=count);
+    }
+    unfold Ready(p,count<3usize);
+    let outcome=p.value;
+    free(p);
+    finish Ready(p,count<3usize);
+    return outcome;
+}

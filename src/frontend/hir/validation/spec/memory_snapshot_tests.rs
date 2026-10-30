@@ -119,3 +119,61 @@ fn independently_rejects_forged_memory_snapshot_visibility_and_type() {
         .id;
     assert!(!validate_spec_snapshot(program, &term, snapshot));
 }
+
+#[test]
+fn independently_rejects_forged_nested_memory_paths() {
+    let output = crate::analyze(&crate::SourceFile::from_text(
+        "nested-hir.nera",
+        "struct Inner {cursor:usize,flag:bool,} struct Outer {state:Inner,} fn main()->u64 {return 0;} fn inspect(p:&Outer) requires p.state.cursor<8usize; {return;}",
+    ));
+    let program = output.hir().unwrap();
+    let term = program
+        .specs()
+        .terms
+        .iter()
+        .find(|t| {
+            matches!(
+                t.kind,
+                HirSpecTermKind::Snapshot(HirSpecSnapshot::Memory {
+                    projection: crate::SpecMemoryProjection::Fields(_),
+                    ..
+                })
+            )
+        })
+        .unwrap();
+    let HirSpecTermKind::Snapshot(
+        snapshot @ HirSpecSnapshot::Memory {
+            function,
+            parameter,
+            old,
+            projection: crate::SpecMemoryProjection::Fields(path),
+        },
+    ) = term.kind
+    else {
+        unreachable!()
+    };
+    assert!(validate_spec_snapshot(program, term, snapshot));
+    let fields = path.fields();
+    let flag = program
+        .fields()
+        .iter()
+        .find(|f| f.name == "flag")
+        .unwrap()
+        .id;
+    for fields in [
+        vec![fields[1], fields[0]],
+        vec![fields[0], crate::HirFieldId::new(999)],
+        vec![fields[0], flag],
+        vec![fields[0], fields[1], fields[1]],
+    ] {
+        let forged = HirSpecSnapshot::Memory {
+            function,
+            parameter,
+            old,
+            projection: crate::SpecMemoryProjection::Fields(
+                crate::SpecMemoryFieldPath::new(&fields).unwrap(),
+            ),
+        };
+        assert!(!validate_spec_snapshot(program, term, forged));
+    }
+}

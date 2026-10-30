@@ -31,6 +31,7 @@ fn recheck(
     let anchors =
         loops::Induction::new(&program, function, config, &BTreeSet::new(), None)?.anchors();
     let context = BlockEvaluationContext {
+        function_entry: &result.function_entry_state,
         loop_blocks: &result.loop_blocks,
         scalar_anchors: &anchors,
         summary_context: super::super::super::summary::SummaryTransferContext {

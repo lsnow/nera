@@ -34,7 +34,8 @@ fn scalar_local_storage_is_verified_executed_dumped_and_lowered() {
     let state = &analysis
         .block(VirBlockId::new(0))
         .expect("entry block analysis")
-        .instruction_states()[0];
+        .instruction_states()
+        .unwrap()[0];
     let allocation_id = AbstractAllocationId::vir_local_storage_site(VirValueId::new(0));
     let allocation = state
         .allocation(allocation_id)

@@ -40,14 +40,19 @@ pub use resource::{
     AbstractProvenance, AbstractValue, AccessPermission, ActiveVariantState, AffineExpression,
     ByteRange, ByteRangeError, ByteSet, EnumDiscriminantFact, FreeCapability, GuaranteedAlignment,
     GuaranteedAlignmentError, InitializationClass, InitializationState, LivenessState,
-    LoanActivity, LoanPrecisionLoss, MemoryFootprint, MovePathState, ObjectState, ObjectStateKey,
-    OwnershipState, PathCondition, PathFact, PermissionAuthority, PermissionAvailability,
-    ResourceCase, ResourceJoinError, ResourcePayloadKey, ResourceState,
+    LoanActivity, LoanPrecisionLoss, MAX_PREDICATE_INSTANCES, MAX_PREDICATE_RESOURCES,
+    MemoryFootprint, MovePathState, ObjectState, ObjectStateKey, OwnershipState, PathCondition,
+    PathFact, PermissionAuthority, PermissionAvailability, PredicateBinding, PredicateCallBinding,
+    PredicateCallFrame, PredicateDefinition, PredicateEffect, PredicateError, PredicateEvidence,
+    PredicateHolder, PredicateInstance, PredicateResourceShape, PredicateScalarCallBinding,
+    PredicateScalarConstraint, ResourceCase, ResourceJoinError, ResourcePayloadKey, ResourceState,
     ResourceStateDefinitionError, SymbolicRangeBound, TypedResourcePayload, U64Interval,
     U64IntervalError, VERIFIER_ACTIVE_VARIANT_MAX_ALTERNATIVES, VERIFIER_BYTE_SET_MAX_RANGES,
     VERIFIER_MAX_ACTIVE_LOANS_PER_CASE, VERIFIER_MAX_ALIASES_PER_LOAN, VERIFIER_MAX_REBORROW_DEPTH,
     VERIFIER_MAX_REGION_CONSTRAINTS_PER_FUNCTION, VERIFIER_OBJECT_OFFSET_MAX_CANDIDATES,
     VERIFIER_OBJECT_STATE_MAX_ENTRIES, VERIFIER_RESOURCE_PAYLOAD_MAX_ENTRIES,
+    check_predicate_evidence, enter_predicate_call, enter_predicate_call_with_scalars,
+    transfer_predicate,
 };
 pub use spec::{SpecFailure, SpecProof, TrustReportEntry};
 pub use transfer::{

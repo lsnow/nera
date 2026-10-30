@@ -144,7 +144,7 @@ fn free_and_opaque_owner_calls_invalidate_old_live_proposals() {
     for release in ["free(p);", "consume(p);"] {
         let source = format!(
             "fn main() -> u64 {{ let p=alloc<u64>(1); *p=42; let x=&raw *p;
-            let before=x==x; {release} let after=x==x; return 0; }}
+            let before=x<=x; {release} let after=x<=x; return 0; }}
             fn consume(p: Own<u64>) {{ free(p); return; }}"
         );
         let output = frontend_checks::accepted("old-instance.nera", &source);
@@ -198,7 +198,7 @@ fn free_and_opaque_owner_calls_invalidate_old_live_proposals() {
 fn provenance_diagnostics_distinguish_boundary_authority_and_initialization() {
     for (body, issue) in [
         (
-            "let p=alloc<u64>(1); let q=alloc<u64>(1); let x=&raw *p; let y=&raw *q; let same=x==y; free(p); free(q);",
+            "let p=alloc<u64>(1); let q=alloc<u64>(1); let x=&raw *p; let y=&raw *q; let same=x<=y; free(p); free(q);",
             ProvenanceIssue::DifferentInstances,
         ),
         (
@@ -309,7 +309,7 @@ fn path_budget_loss_is_observed_without_becoming_authority() {
     }
     let source = format!(
         "fn main() -> u64 {{ let a={value}; let x=&raw a{};
-        let same=x==x; return 0; }}",
+        let same=x<=x; return 0; }}",
         "[0]".repeat(10)
     );
     let output = frontend_checks::accepted("path-limit.nera", &source);

@@ -39,6 +39,592 @@ mod spec_arithmetic;
 #[path = "support/spec_exists.rs"]
 mod spec_exists;
 
+#[path = "support/opaque_arena.rs"]
+mod opaque_arena;
+
+#[test]
+fn opaque_arena_modules_preserve_native_results_and_real_cleanup() {
+    for capacity in [6, 8] {
+        let (library, forward, app) = opaque_arena::instance(capacity);
+        for entry in opaque_arena::ENTRIES {
+            let compiler = if entry == "app::main" {
+                opaque_arena::session(&library, &forward, &app)
+            } else {
+                opaque_arena::session_entry(&library, &forward, &app, entry)
+            };
+            let analysis = compiler.analyze("app").unwrap();
+            assert!(
+                analysis.frontend().vir().is_some(),
+                "{:?}",
+                analysis.frontend().issues()
+            );
+            let unit = analysis.frontend().vir().unwrap();
+            assert_eq!(
+                interpret(unit.resolve().unwrap().runtime())
+                    .unwrap()
+                    .values(),
+                [VirRuntimeValue::U64(49)]
+            );
+            assert_interpreter_matches_native("opaque-arena-modules", unit);
+            // One owner and its temporary, partially initialized construction buffer.
+            assert_program_resource_ledger(unit, 2, None);
+        }
+    }
+}
+
+#[test]
+fn resource_exports_and_raw_nodes_preserve_native_execution_and_cleanup() {
+    for (name, source, allocations) in [
+        (
+            "predicate-dynamic-prefix",
+            include_str!("../spec/cases/verify/predicate-dynamic-prefix.nera"),
+            1,
+        ),
+        (
+            "predicate-prefix-update",
+            include_str!("../spec/cases/verify/predicate-prefix-update.nera"),
+            1,
+        ),
+        (
+            "predicate-prefix-call",
+            include_str!("../spec/cases/verify/predicate-prefix-call.nera"),
+            1,
+        ),
+        (
+            "predicate-dynamic-call",
+            include_str!("../spec/cases/verify/predicate-dynamic-call.nera"),
+            1,
+        ),
+        (
+            "predicate-symbolic-write",
+            include_str!("../spec/cases/verify/predicate-symbolic-write.nera"),
+            1,
+        ),
+        (
+            "predicate-full-prefix-call",
+            include_str!("../spec/cases/verify/predicate-full-prefix-call.nera"),
+            1,
+        ),
+        (
+            "predicate-borrow-prefix",
+            include_str!("../spec/cases/verify/predicate-borrow-prefix.nera"),
+            1,
+        ),
+        (
+            "predicate-owner-borrow",
+            include_str!("../spec/cases/verify/predicate-owner-borrow.nera"),
+            1,
+        ),
+        (
+            "predicate-arena-encapsulation",
+            include_str!("../spec/cases/verify/predicate-arena-encapsulation.nera"),
+            1,
+        ),
+        (
+            "predicate-logical-prefix",
+            include_str!("../spec/cases/verify/predicate-logical-prefix.nera"),
+            1,
+        ),
+        (
+            "predicate-logical-result-field",
+            include_str!("../spec/cases/verify/predicate-logical-result-field.nera"),
+            1,
+        ),
+        (
+            "predicate-hidden-prefix",
+            include_str!("../spec/cases/verify/predicate-hidden-prefix.nera"),
+            1,
+        ),
+        (
+            "predicate-correlated-prefix",
+            include_str!("../spec/cases/verify/predicate-correlated-prefix.nera"),
+            1,
+        ),
+        (
+            "predicate-refold-relations",
+            include_str!("../spec/cases/verify/predicate-refold-relations.nera"),
+            1,
+        ),
+        (
+            "predicate-opened-argument-equality",
+            include_str!("../spec/cases/verify/predicate-opened-argument-equality.nera"),
+            1,
+        ),
+        (
+            "predicate-loop-refold",
+            include_str!("../spec/cases/verify/predicate-loop-refold.nera"),
+            1,
+        ),
+        (
+            "predicate-loop-write",
+            include_str!("../spec/cases/verify/predicate-loop-write.nera"),
+            1,
+        ),
+        (
+            "predicate-loop-observation",
+            include_str!("../spec/cases/verify/predicate-loop-observation.nera"),
+            1,
+        ),
+        (
+            "predicate-branch-call",
+            include_str!("../spec/cases/verify/predicate-branch-call.nera"),
+            1,
+        ),
+        (
+            "predicate-branch-order",
+            include_str!("../spec/cases/verify/predicate-branch-order.nera"),
+            2,
+        ),
+        (
+            "predicate-branch-witness",
+            include_str!("../spec/cases/verify/predicate-branch-witness.nera"),
+            1,
+        ),
+        (
+            "predicate-branch-capture",
+            include_str!("../spec/cases/verify/predicate-branch-capture.nera"),
+            1,
+        ),
+        (
+            "predicate-captured-comparison-type",
+            include_str!("../spec/cases/verify/predicate-captured-comparison-type.nera"),
+            1,
+        ),
+        (
+            "predicate-opened-mixed-consequences",
+            include_str!("../spec/cases/verify/predicate-opened-mixed-consequences.nera"),
+            1,
+        ),
+        (
+            "predicate-opened-boolean-consequences",
+            include_str!("../spec/cases/verify/predicate-opened-boolean-consequences.nera"),
+            1,
+        ),
+        (
+            "predicate-current-affine-facts",
+            include_str!("../spec/cases/verify/predicate-current-affine-facts.nera"),
+            1,
+        ),
+        (
+            "predicate-opened-current-relations",
+            include_str!("../spec/cases/verify/predicate-opened-current-relations.nera"),
+            1,
+        ),
+        (
+            "predicate-opened-package-relations",
+            include_str!("../spec/cases/verify/predicate-opened-package-relations.nera"),
+            2,
+        ),
+        (
+            "predicate-opened-package-boolean",
+            include_str!("../spec/cases/verify/predicate-opened-package-boolean.nera"),
+            2,
+        ),
+        (
+            "predicate-opened-expression-inputs",
+            include_str!("../spec/cases/verify/predicate-opened-expression-inputs.nera"),
+            1,
+        ),
+        (
+            "predicate-opened-arithmetic-query",
+            include_str!("../spec/cases/verify/predicate-opened-arithmetic-query.nera"),
+            1,
+        ),
+        (
+            "predicate-hidden-cursor-source",
+            include_str!("../spec/cases/verify/predicate-hidden-cursor-source.nera"),
+            1,
+        ),
+        (
+            "predicate-compound-cursor-source",
+            include_str!("../spec/cases/verify/predicate-compound-cursor-source.nera"),
+            1,
+        ),
+        (
+            "predicate-hidden-cursor-offset",
+            include_str!("../spec/cases/verify/predicate-hidden-cursor-offset.nera"),
+            1,
+        ),
+        (
+            "predicate-affine-cursor-domain",
+            include_str!("../spec/cases/verify/predicate-affine-cursor-domain.nera"),
+            1,
+        ),
+        (
+            "predicate-compound-cursor-domain",
+            include_str!("../spec/cases/verify/predicate-compound-cursor-domain.nera"),
+            1,
+        ),
+        (
+            "predicate-hidden-compound-cursor",
+            include_str!("../spec/cases/verify/predicate-hidden-compound-cursor.nera"),
+            1,
+        ),
+        (
+            "predicate-current-aggregate-parameter",
+            include_str!("../spec/cases/verify/predicate-current-aggregate-parameter.nera"),
+            1,
+        ),
+        (
+            "predicate-opened-numeric-models",
+            include_str!("../spec/cases/verify/predicate-opened-numeric-models.nera"),
+            1,
+        ),
+        (
+            "predicate-opened-joint-numeric",
+            include_str!("../spec/cases/verify/predicate-opened-joint-numeric.nera"),
+            1,
+        ),
+        (
+            "predicate-opened-joint-guarantees",
+            include_str!("../spec/cases/verify/predicate-opened-joint-guarantees.nera"),
+            1,
+        ),
+        (
+            "predicate-opened-boolean-query",
+            include_str!("../spec/cases/verify/predicate-opened-boolean-query.nera"),
+            1,
+        ),
+        (
+            "predicate-branch-boolean-equivalence",
+            include_str!("../spec/cases/verify/predicate-branch-boolean-equivalence.nera"),
+            1,
+        ),
+        (
+            "predicate-branch-boolean-normalization",
+            include_str!("../spec/cases/verify/predicate-branch-boolean-normalization.nera"),
+            1,
+        ),
+        (
+            "predicate-branch-boolean-expression",
+            include_str!("../spec/cases/verify/predicate-branch-boolean-expression.nera"),
+            1,
+        ),
+        (
+            "predicate-loop-boolean-expression",
+            include_str!("../spec/cases/verify/predicate-loop-boolean-expression.nera"),
+            1,
+        ),
+        (
+            "predicate-branch-dependent-history",
+            include_str!("../spec/cases/verify/predicate-branch-dependent-history.nera"),
+            1,
+        ),
+        (
+            "predicate-branch-composite-history",
+            include_str!("../spec/cases/verify/predicate-branch-composite-history.nera"),
+            1,
+        ),
+        (
+            "predicate-branch-history",
+            include_str!("../spec/cases/verify/predicate-branch-history.nera"),
+            1,
+        ),
+        (
+            "predicate-branch-bool-history",
+            include_str!("../spec/cases/verify/predicate-branch-bool-history.nera"),
+            1,
+        ),
+        (
+            "predicate-branch-boolean",
+            include_str!("../spec/cases/verify/predicate-branch-boolean.nera"),
+            1,
+        ),
+        (
+            "predicate-branch-bounds",
+            include_str!("../spec/cases/verify/predicate-branch-bounds.nera"),
+            1,
+        ),
+        (
+            "predicate-branch-parameter",
+            include_str!("../spec/cases/verify/predicate-branch-parameter.nera"),
+            1,
+        ),
+        (
+            "predicate-loop-call",
+            include_str!("../spec/cases/verify/predicate-loop-call.nera"),
+            1,
+        ),
+        (
+            "predicate-loop-parameter",
+            include_str!("../spec/cases/verify/predicate-loop-parameter.nera"),
+            1,
+        ),
+        (
+            "predicate-loop-expression",
+            include_str!("../spec/cases/verify/predicate-loop-expression.nera"),
+            1,
+        ),
+        (
+            "predicate-loop-mixed-parameter",
+            include_str!("../spec/cases/verify/predicate-loop-mixed-parameter.nera"),
+            1,
+        ),
+        (
+            "predicate-loop-difference",
+            include_str!("../spec/cases/verify/predicate-loop-difference.nera"),
+            1,
+        ),
+        (
+            "predicate-loop-history",
+            include_str!("../spec/cases/verify/predicate-loop-history.nera"),
+            1,
+        ),
+        (
+            "predicate-loop-boolean",
+            include_str!("../spec/cases/verify/predicate-loop-boolean.nera"),
+            1,
+        ),
+        (
+            "predicate-loop-comparison",
+            include_str!("../spec/cases/verify/predicate-loop-comparison.nera"),
+            1,
+        ),
+        (
+            "predicate-loop-zero",
+            include_str!("../spec/cases/verify/predicate-loop-zero.nera"),
+            1,
+        ),
+        (
+            "predicate-loop-fixed-composite",
+            include_str!("../spec/cases/verify/predicate-loop-fixed-composite.nera"),
+            1,
+        ),
+        (
+            "predicate-loop-overlapping-history",
+            include_str!("../spec/cases/verify/predicate-loop-overlapping-history.nera"),
+            1,
+        ),
+        (
+            "predicate-loop-composite-history",
+            include_str!("../spec/cases/verify/predicate-loop-composite-history.nera"),
+            1,
+        ),
+        (
+            "predicate-loop-prefix",
+            include_str!("../spec/cases/verify/predicate-loop-prefix.nera"),
+            1,
+        ),
+        (
+            "predicate-opened-affine-loop",
+            include_str!("../spec/cases/verify/predicate-opened-affine-loop.nera"),
+            1,
+        ),
+        (
+            "predicate-opened-symbolic-loop",
+            include_str!("../spec/cases/verify/predicate-opened-symbolic-loop.nera"),
+            1,
+        ),
+        (
+            "predicate-opened-loop",
+            include_str!("../spec/cases/verify/predicate-opened-loop.nera"),
+            1,
+        ),
+        (
+            "predicate-memory-coordinates",
+            include_str!("../spec/cases/verify/predicate-memory-coordinates.nera"),
+            1,
+        ),
+        (
+            "predicate-logical-result",
+            include_str!("../spec/cases/verify/predicate-logical-result.nera"),
+            1,
+        ),
+        (
+            "predicate-abstract-existential",
+            include_str!("../spec/cases/verify/predicate-abstract-existential.nera"),
+            1,
+        ),
+        (
+            "predicate-logical-ensures",
+            include_str!("../spec/cases/verify/predicate-logical-ensures.nera"),
+            1,
+        ),
+        (
+            "predicate-logical-requires",
+            include_str!("../spec/cases/verify/predicate-logical-requires.nera"),
+            1,
+        ),
+        (
+            "predicate-logical-arguments",
+            include_str!("../spec/cases/verify/predicate-logical-arguments.nera"),
+            1,
+        ),
+        (
+            "predicate-opened-witness",
+            include_str!("../spec/cases/verify/predicate-opened-witness.nera"),
+            1,
+        ),
+        (
+            "predicate-explicit-witness",
+            include_str!("../spec/cases/verify/predicate-explicit-witness.nera"),
+            1,
+        ),
+        (
+            "predicate-existential",
+            include_str!("../spec/cases/verify/predicate-existential.nera"),
+            1,
+        ),
+        (
+            "predicate-stored-borrow",
+            include_str!("../spec/cases/verify/predicate-stored-borrow.nera"),
+            1,
+        ),
+        (
+            "predicate-cursor-parameter",
+            include_str!("../spec/cases/verify/predicate-cursor-parameter.nera"),
+            1,
+        ),
+        (
+            "predicate-multi-borrow",
+            include_str!("../spec/cases/verify/predicate-multi-borrow.nera"),
+            2,
+        ),
+        (
+            "predicate-cursor-repeat",
+            include_str!("../spec/cases/verify/predicate-cursor-repeat.nera"),
+            1,
+        ),
+        (
+            "predicate-cursor-step",
+            include_str!("../spec/cases/verify/predicate-cursor-step.nera"),
+            1,
+        ),
+        (
+            "predicate-nested-cursor",
+            include_str!("../spec/cases/verify/predicate-nested-cursor.nera"),
+            1,
+        ),
+        (
+            "predicate-cursor-return",
+            include_str!("../spec/cases/verify/predicate-cursor-return.nera"),
+            1,
+        ),
+        (
+            "predicate-cursor-increment",
+            include_str!("../spec/cases/verify/predicate-cursor-increment.nera"),
+            1,
+        ),
+        (
+            "predicate-cursor-observation",
+            include_str!("../spec/cases/verify/predicate-cursor-observation.nera"),
+            1,
+        ),
+        (
+            "predicate-aggregate-result",
+            include_str!("../spec/cases/verify/predicate-aggregate-result.nera"),
+            1,
+        ),
+        (
+            "predicate-aggregate-parameter",
+            include_str!("../spec/cases/verify/predicate-aggregate-parameter.nera"),
+            1,
+        ),
+        (
+            "predicate-group-drop",
+            include_str!("../spec/cases/verify/predicate-group-drop.nera"),
+            2,
+        ),
+        (
+            "predicate-aggregate-storage",
+            include_str!("../spec/cases/verify/predicate-aggregate-storage.nera"),
+            2,
+        ),
+        (
+            "predicate-nested-borrow",
+            include_str!("../spec/cases/verify/predicate-nested-borrow.nera"),
+            1,
+        ),
+        (
+            "predicate-partial-fields",
+            include_str!("../spec/cases/verify/predicate-partial-fields.nera"),
+            1,
+        ),
+        (
+            "predicate-heap-start",
+            include_str!("../spec/cases/verify/predicate-heap-start.nera"),
+            1,
+        ),
+        (
+            "predicate-heap-range",
+            include_str!("../spec/cases/verify/predicate-heap-range.nera"),
+            1,
+        ),
+        (
+            "predicate-heap-prefix",
+            include_str!("../spec/cases/verify/predicate-heap-prefix.nera"),
+            1,
+        ),
+        (
+            "predicate-returned-view",
+            include_str!("../spec/cases/verify/predicate-returned-view.nera"),
+            1,
+        ),
+        (
+            "predicate-arena-slice",
+            include_str!("../spec/cases/verify/predicate-arena-slice.nera"),
+            1,
+        ),
+        (
+            "predicate-in-place",
+            include_str!("../spec/cases/verify/predicate-in-place.nera"),
+            1,
+        ),
+        (
+            "predicate-borrowed-arena",
+            include_str!("../spec/cases/verify/predicate-borrowed-arena.nera"),
+            1,
+        ),
+        (
+            "predicate-borrow-calls",
+            include_str!("../spec/cases/verify/predicate-borrow-calls.nera"),
+            1,
+        ),
+        (
+            "predicate-opaque-arena",
+            include_str!("../spec/cases/verify/predicate-opaque-arena.nera"),
+            1,
+        ),
+        (
+            "predicate-calls",
+            include_str!("../spec/cases/verify/predicate-calls.nera"),
+            1,
+        ),
+        (
+            "predicate-owner-abi",
+            include_str!("../spec/cases/verify/predicate-owner-abi.nera"),
+            1,
+        ),
+        (
+            "predicate-move",
+            include_str!("../spec/cases/verify/predicate-move.nera"),
+            1,
+        ),
+        (
+            "predicate-storage",
+            include_str!("../spec/cases/verify/predicate-storage.nera"),
+            1,
+        ),
+        (
+            "resource-export",
+            include_str!("../spec/cases/verify/resource-export.nera"),
+            1,
+        ),
+        (
+            "raw-node",
+            include_str!("../spec/cases/verify/raw-node.nera"),
+            3,
+        ),
+    ] {
+        let output = analyze(&SourceFile::from_text(name, source));
+        let unit = output
+            .vir()
+            .unwrap_or_else(|| panic!("{:?}", output.issues()));
+        assert_interpreter_matches_native(name, unit);
+        assert_program_resource_ledger(unit, allocations, None);
+    }
+}
+
 #[test]
 fn loop_review_fixes_preserve_native_execution_and_cleanup() {
     #[path = "support/loop_review.rs"]
@@ -1972,5 +2558,819 @@ fn runtime_assertions_execute_in_native_programs() {
             .status()
             .unwrap();
         assert_eq!(status.signal(), Some(6));
+    }
+}
+
+#[test]
+fn ordinary_reference_field_calls_match_native_and_interpreter() {
+    let output = analyze(&SourceFile::from_text(
+        "reference-fields.nera",
+        include_str!("../spec/cases/verify/predicate-reference-fields.nera"),
+    ));
+    assert_eq!(
+        output.status(),
+        FrontendStatus::AcceptedProposal,
+        "{:?}",
+        output.issues()
+    );
+    let program = output.vir().unwrap();
+    let resolved = program.resolve().unwrap();
+    let report = verify_program(&resolved, Default::default()).unwrap();
+    assert!(
+        report.is_memory_checked_core0(),
+        "{:?}",
+        report.diagnostics()
+    );
+    let replay =
+        nera::verifier::relation::audit::RelationReplayCache::new(&resolved, Default::default())
+            .unwrap();
+    for (&id, function) in report.functions() {
+        assert_eq!(
+            function.summary().state,
+            nera::verifier::summary::SummaryState::Closed,
+            "function {id:?} did not export a closed summary"
+        );
+        let cfg = function.cfg();
+        assert!(replay.accepts_memory_trace(
+            id,
+            cfg.provenance_evidence(),
+            cfg.relation_queries(),
+            cfg.relation_evidence()
+        ));
+    }
+    assert_eq!(
+        interpret(resolved.runtime()).unwrap().values(),
+        [VirRuntimeValue::U64(192)]
+    );
+    assert_program_resource_ledger(program, 1, None);
+}
+
+#[test]
+fn raw_aggregate_calls_preserve_native_addresses_without_allocating_resources() {
+    let output = analyze(&SourceFile::from_text(
+        "raw-aggregate-call.nera",
+        include_str!("../spec/cases/verify/raw-aggregate-call.nera"),
+    ));
+    let unit = output.vir().expect("raw aggregate call lowers");
+    let report = verify_program(&unit.resolve().unwrap(), Default::default()).unwrap();
+    assert!(
+        report.is_memory_checked_core0(),
+        "{:?}",
+        report.diagnostics()
+    );
+    assert_eq!(
+        interpret(unit.resolve().unwrap().runtime())
+            .unwrap()
+            .values(),
+        [VirRuntimeValue::U64(42)]
+    );
+    assert_interpreter_matches_native("raw-aggregate-call", unit);
+    assert_program_resource_ledger(unit, 0, None);
+}
+
+#[test]
+fn logical_initialization_contract_preserves_native_result_and_cleanup() {
+    let source = include_str!("../spec/cases/verify/predicate-logical-initialization.nera");
+    let output = analyze(&SourceFile::from_text(
+        "logical-initialization.nera",
+        source,
+    ));
+    let unit = output.vir().expect("logical initialization source lowers");
+    assert!(
+        verify_program(&unit.resolve().unwrap(), Default::default())
+            .unwrap()
+            .is_memory_checked_core0()
+    );
+    assert_eq!(
+        interpret(unit.resolve().unwrap().runtime())
+            .unwrap()
+            .values(),
+        [VirRuntimeValue::U64(42)]
+    );
+    assert_interpreter_matches_native("logical-initialization", unit);
+    assert_program_resource_ledger(unit, 1, None);
+}
+
+#[test]
+fn arena_subviews_and_reset_preserve_native_result_and_cleanup() {
+    let source = include_str!("../spec/cases/verify/predicate-arena-encapsulation.nera");
+    let output = analyze(&SourceFile::from_text("arena-subviews.nera", source));
+    let unit = output.vir().expect("arena source lowers");
+    assert!(
+        verify_program(&unit.resolve().unwrap(), Default::default())
+            .unwrap()
+            .is_memory_checked_core0()
+    );
+    assert_eq!(
+        interpret(unit.resolve().unwrap().runtime())
+            .unwrap()
+            .values(),
+        [VirRuntimeValue::U64(49)]
+    );
+    assert_interpreter_matches_native("arena-subviews", unit);
+    assert_program_resource_ledger(unit, 1, None);
+}
+
+#[test]
+fn dynamic_prefix_call_alternatives_preserve_native_result_and_cleanup() {
+    for (name, source) in [
+        (
+            "dynamic-prefix-cases",
+            include_str!("../spec/cases/verify/predicate-dynamic-call.nera"),
+        ),
+        (
+            "existential-call-cases",
+            include_str!("../spec/cases/verify/predicate-call-alternatives.nera"),
+        ),
+    ] {
+        let output = analyze(&SourceFile::from_text(name, source));
+        let unit = output.vir().expect("call alternatives source lowers");
+        assert!(
+            verify_program(&unit.resolve().unwrap(), Default::default())
+                .unwrap()
+                .is_memory_checked_core0()
+        );
+        assert_eq!(
+            interpret(unit.resolve().unwrap().runtime())
+                .unwrap()
+                .values(),
+            [VirRuntimeValue::U64(42)]
+        );
+        assert_interpreter_matches_native(name, unit);
+        assert_program_resource_ledger(unit, 1, None);
+    }
+}
+
+#[test]
+fn aggregate_predicate_observations_preserve_native_result_and_cleanup() {
+    for (name, source, allocations) in [
+        (
+            "predicate-multi-borrow",
+            include_str!("../spec/cases/verify/predicate-multi-borrow.nera"),
+            2,
+        ),
+        (
+            "predicate-logical-result-field",
+            include_str!("../spec/cases/verify/predicate-logical-result-field.nera"),
+            1,
+        ),
+    ] {
+        let output = analyze(&SourceFile::from_text(name, source));
+        let unit = output.vir().expect("aggregate predicate source lowers");
+        assert!(
+            verify_program(&unit.resolve().unwrap(), Default::default())
+                .unwrap()
+                .is_memory_checked_core0()
+        );
+        assert_eq!(
+            interpret(unit.resolve().unwrap().runtime())
+                .unwrap()
+                .values(),
+            [VirRuntimeValue::U64(42)]
+        );
+        assert_interpreter_matches_native(name, unit);
+        assert_program_resource_ledger(unit, allocations, None);
+    }
+}
+
+#[test]
+fn predicate_branch_and_arithmetic_adapters_preserve_native_execution() {
+    for (name, source, allocations) in [
+        (
+            "predicate-branch-boolean",
+            include_str!("../spec/cases/verify/predicate-branch-boolean.nera"),
+            1,
+        ),
+        (
+            "predicate-branch-boolean-expression",
+            include_str!("../spec/cases/verify/predicate-branch-boolean-expression.nera"),
+            1,
+        ),
+        (
+            "predicate-branch-boolean-equivalence",
+            include_str!("../spec/cases/verify/predicate-branch-boolean-equivalence.nera"),
+            1,
+        ),
+        (
+            "predicate-branch-literal-disequality",
+            include_str!("../spec/cases/verify/predicate-branch-literal-disequality.nera"),
+            2,
+        ),
+        (
+            "predicate-current-affine-facts",
+            include_str!("../spec/cases/verify/predicate-current-affine-facts.nera"),
+            1,
+        ),
+    ] {
+        let output = analyze(&SourceFile::from_text(name, source));
+        let unit = output.vir().expect("branch/arithmetic fixture lowers");
+        let report = verify_program(&unit.resolve().unwrap(), Default::default()).expect(name);
+        assert!(
+            report.is_memory_checked_core0(),
+            "{name}: {:?}",
+            report.diagnostics()
+        );
+        assert_eq!(
+            interpret(unit.resolve().unwrap().runtime())
+                .unwrap()
+                .values(),
+            [VirRuntimeValue::U64(42)]
+        );
+        assert_interpreter_matches_native(name, unit);
+        assert_program_resource_ledger(unit, allocations, None);
+    }
+}
+
+#[test]
+fn logical_prefix_loop_and_dynamic_consumers_preserve_native_cleanup() {
+    for (name, source) in [
+        (
+            "predicate-logical-prefix-loop",
+            include_str!("../spec/cases/verify/predicate-logical-prefix-loop.nera"),
+        ),
+        (
+            "predicate-logical-prefix-access",
+            include_str!("../spec/cases/verify/predicate-logical-prefix-access.nera"),
+        ),
+        (
+            "predicate-logical-prefix-borrow",
+            include_str!("../spec/cases/verify/predicate-logical-prefix-borrow.nera"),
+        ),
+    ] {
+        let output = analyze(&SourceFile::from_text(name, source));
+        let unit = output.vir().expect("logical prefix consumer lowers");
+        let report = verify_program(&unit.resolve().unwrap(), Default::default()).expect(name);
+        assert!(
+            report.is_memory_checked_core0(),
+            "{name}: {:?}",
+            report.diagnostics()
+        );
+        assert_eq!(
+            interpret(unit.resolve().unwrap().runtime())
+                .unwrap()
+                .values(),
+            [VirRuntimeValue::U64(42)]
+        );
+        assert_interpreter_matches_native(name, unit);
+        assert_program_resource_ledger(unit, 1, None);
+    }
+}
+
+#[test]
+fn predicate_qualified_inputs_and_bounded_reasoning_preserve_native_cleanup() {
+    for (name, source) in [
+        (
+            "predicate-current-aggregate-parameter",
+            include_str!("../spec/cases/verify/predicate-current-aggregate-parameter.nera"),
+        ),
+        (
+            "predicate-refold-relations",
+            include_str!("../spec/cases/verify/predicate-refold-relations.nera"),
+        ),
+        (
+            "predicate-opened-current-relations",
+            include_str!("../spec/cases/verify/predicate-opened-current-relations.nera"),
+        ),
+        (
+            "predicate-opened-mixed-consequences",
+            include_str!("../spec/cases/verify/predicate-opened-mixed-consequences.nera"),
+        ),
+        (
+            "predicate-captured-comparison-type",
+            include_str!("../spec/cases/verify/predicate-captured-comparison-type.nera"),
+        ),
+        (
+            "predicate-opened-joint-numeric",
+            include_str!("../spec/cases/verify/predicate-opened-joint-numeric.nera"),
+        ),
+        (
+            "predicate-opened-numeric-models",
+            include_str!("../spec/cases/verify/predicate-opened-numeric-models.nera"),
+        ),
+        (
+            "predicate-branch-capture",
+            include_str!("../spec/cases/verify/predicate-branch-capture.nera"),
+        ),
+        (
+            "predicate-branch-parameter",
+            include_str!("../spec/cases/verify/predicate-branch-parameter.nera"),
+        ),
+        (
+            "predicate-branch-composite-history",
+            include_str!("../spec/cases/verify/predicate-branch-composite-history.nera"),
+        ),
+    ] {
+        let output = analyze(&SourceFile::from_text(name, source));
+        let unit = output.vir().expect("qualified predicate input lowers");
+        let resolved = unit.resolve().unwrap();
+        let report = verify_program(&resolved, Default::default()).expect(name);
+        assert!(
+            report.is_memory_checked_core0(),
+            "{name}: {:?}",
+            report.diagnostics()
+        );
+        let replay = nera::verifier::relation::audit::RelationReplayCache::new(
+            &resolved,
+            Default::default(),
+        )
+        .unwrap();
+        for (&id, function) in report.functions() {
+            assert_eq!(
+                function.summary().state,
+                nera::verifier::summary::SummaryState::Closed
+            );
+            let cfg = function.cfg();
+            assert!(
+                replay.accepts_memory_trace(
+                    id,
+                    cfg.provenance_evidence(),
+                    cfg.relation_queries(),
+                    cfg.relation_evidence()
+                ),
+                "{name}"
+            );
+        }
+        assert_eq!(
+            interpret(resolved.runtime()).unwrap().values(),
+            [VirRuntimeValue::U64(42)]
+        );
+        assert_interpreter_matches_native(name, unit);
+        assert_program_resource_ledger(unit, 1, None);
+    }
+}
+
+#[test]
+fn predicate_entry_boolean_histories_match_runtime_and_native_after_updates() {
+    let source = include_str!("../spec/cases/verify/predicate-memory-coordinates.nera");
+    let boolean = source
+        .replace("cursor:usize", "cursor:bool")
+        .replace("saved:usize", "saved:bool")
+        .replace(
+            "fn advance(p:&mut Cell)->usize",
+            "fn advance(p:&mut Cell)->bool",
+        )
+        .replace(
+            "if old<4usize { p.cursor=old+1usize; }",
+            "if old { p.cursor=false; } else { p.cursor=true; }",
+        )
+        .replace("p.cursor=0usize;", "p.cursor=false;");
+    for (name, source) in [
+        ("entry-word", source.to_owned()),
+        ("entry-bool-false", boolean.clone()),
+        (
+            "entry-bool-true",
+            boolean.replace(
+                "p.cursor=false;\n    p.value=42;",
+                "p.cursor=true;\n    p.value=42;",
+            ),
+        ),
+    ] {
+        let output = analyze(&SourceFile::from_text(name, source));
+        let unit = output.vir().expect("typed entry observation lowers");
+        let resolved = unit.resolve().unwrap();
+        let report = verify_program(&resolved, Default::default()).unwrap();
+        assert!(
+            report.is_memory_checked_core0(),
+            "{name}: {:?}",
+            report.diagnostics()
+        );
+        let replay = nera::verifier::relation::audit::RelationReplayCache::new(
+            &resolved,
+            Default::default(),
+        )
+        .unwrap();
+        for (&id, function) in report.functions() {
+            assert_eq!(
+                function.summary().state,
+                nera::verifier::summary::SummaryState::Closed,
+                "{name}: {id:?}"
+            );
+            let cfg = function.cfg();
+            assert!(replay.accepts_memory_trace(
+                id,
+                cfg.provenance_evidence(),
+                cfg.relation_queries(),
+                cfg.relation_evidence()
+            ));
+        }
+        assert_eq!(
+            interpret(resolved.runtime()).unwrap().values(),
+            [VirRuntimeValue::U64(42)]
+        );
+        assert_interpreter_matches_native(name, unit);
+        assert_program_resource_ledger(unit, 1, None);
+    }
+}
+
+#[test]
+fn returned_slice_contract_observations_survive_calls_replay_and_native() {
+    let source = include_str!("../spec/cases/verify/contract-borrowed-cursor.nera");
+    let forward = format!(
+        "{}\nfn forward(p:&mut Buffer,count:usize)->&mut [u64]
+        requires p.cursor<=4usize;
+        requires count<=4usize;
+        ensures len(result)==count;
+        ensures p.cursor==old(p.cursor)+count;
+        {{ return take(p,count); }}",
+        source.replace("let view=take", "let view=forward")
+    );
+    for (name, source) in [
+        ("borrowed-cursor", source),
+        ("borrowed-cursor-forward", forward.as_str()),
+    ] {
+        let output = analyze(&SourceFile::from_text(name, source));
+        let unit = output
+            .vir()
+            .unwrap_or_else(|| panic!("{name}: {:?}", output.issues()));
+        let resolved = unit.resolve().unwrap();
+        let report = verify_program(&resolved, Default::default()).unwrap();
+        assert!(
+            report.is_memory_checked_core0(),
+            "{name}: {:?}",
+            report.diagnostics()
+        );
+        let replay = nera::verifier::relation::audit::RelationReplayCache::new(
+            &resolved,
+            Default::default(),
+        )
+        .unwrap();
+        for (&id, function) in report.functions() {
+            assert_eq!(
+                function.summary().state,
+                nera::verifier::summary::SummaryState::Closed,
+                "{name}: {id:?}"
+            );
+            let cfg = function.cfg();
+            assert!(replay.accepts_memory_trace(
+                id,
+                cfg.provenance_evidence(),
+                cfg.relation_queries(),
+                cfg.relation_evidence()
+            ));
+        }
+        assert_eq!(
+            interpret(resolved.runtime()).unwrap().values(),
+            [VirRuntimeValue::U64(42)]
+        );
+        assert_interpreter_matches_native(name, unit);
+        assert_program_resource_ledger(unit, 0, None);
+    }
+}
+
+#[test]
+fn mutable_owner_replacement_and_predicate_calls_preserve_native_cleanup() {
+    let branch = include_str!("../spec/cases/verify/predicate-branch-call.nera");
+    let order = include_str!("../spec/cases/verify/predicate-branch-order.nera");
+    let cases = [
+        ("owner-replacement", include_str!("../spec/cases/verify/mutable-owner.nera").to_owned(), 4),
+        ("owner-loop-call", include_str!("../spec/cases/verify/predicate-loop-call.nera").to_owned(), 1),
+        ("owner-branch-true", branch.to_owned(), 1),
+        ("owner-branch-false", branch.replace("choose(p,true)", "choose(p,false)"), 1),
+        ("owner-order-true", order.to_owned(), 2),
+        ("owner-order-false", order.replace("choose(p,q,true)", "choose(p,q,false)"), 2),
+        ("owner-refill", "fn main()->u64 {let mut p=alloc<u64>(1); *p=1; free(p); p=make(); return *p;} fn make()->Own<u64> {let q=alloc<u64>(1); *q=42; return q;}".to_owned(), 2),
+    ];
+    for (name, source, allocations) in cases {
+        let output = analyze(&SourceFile::from_text(name, source));
+        let unit = output
+            .vir()
+            .unwrap_or_else(|| panic!("{name}: {:?}", output.issues()));
+        let resolved = unit.resolve().unwrap();
+        let report = verify_program(&resolved, Default::default()).unwrap();
+        assert!(
+            report.is_memory_checked_core0(),
+            "{name}: {:?}",
+            report.diagnostics()
+        );
+        let replay = nera::verifier::relation::audit::RelationReplayCache::new(
+            &resolved,
+            Default::default(),
+        )
+        .unwrap();
+        for (&id, function) in report.functions() {
+            assert_eq!(
+                function.summary().state,
+                nera::verifier::summary::SummaryState::Closed,
+                "{name}: {id:?}"
+            );
+            let cfg = function.cfg();
+            assert!(replay.accepts_memory_trace(
+                id,
+                cfg.provenance_evidence(),
+                cfg.relation_queries(),
+                cfg.relation_evidence()
+            ));
+        }
+        assert_eq!(
+            interpret(resolved.runtime()).unwrap().values(),
+            [VirRuntimeValue::U64(42)]
+        );
+        assert_interpreter_matches_native(name, unit);
+        assert_program_resource_ledger(unit, allocations, None);
+    }
+}
+
+#[test]
+fn branch_array_returns_preserve_deferred_cleanup_and_native_result() {
+    let source = include_str!("../spec/cases/verify/borrow-array-branches.nera");
+    for arguments in [
+        "1usize,true,true",
+        "0usize,true,true",
+        "1usize,false,true",
+        "1usize,true,false",
+    ] {
+        assert_resource_ledger(&source.replace("1usize,true,true", arguments), 1, None);
+    }
+}
+
+#[test]
+fn sealed_reserve_contracts_preserve_replay_native_and_cleanup() {
+    let source = include_str!("../spec/cases/verify/predicate-arena-reserve.nera");
+    let output = analyze(&SourceFile::from_text("sealed-reserve", source));
+    let unit = output
+        .vir()
+        .unwrap_or_else(|| panic!("{:?}", output.issues()));
+    let resolved = unit.resolve().unwrap();
+    let report = verify_program(&resolved, Default::default()).unwrap();
+    assert!(
+        report.is_memory_checked_core0(),
+        "{:?}",
+        report.diagnostics()
+    );
+    let replay =
+        nera::verifier::relation::audit::RelationReplayCache::new(&resolved, Default::default())
+            .unwrap();
+    for (&id, function) in report.functions() {
+        assert_eq!(
+            function.summary().state,
+            nera::verifier::summary::SummaryState::Closed
+        );
+        let cfg = function.cfg();
+        assert!(replay.accepts_memory_trace(
+            id,
+            cfg.provenance_evidence(),
+            cfg.relation_queries(),
+            cfg.relation_evidence()
+        ));
+    }
+    assert_eq!(
+        interpret(resolved.runtime()).unwrap().values(),
+        [VirRuntimeValue::U64(42)]
+    );
+    assert_interpreter_matches_native("sealed-reserve", unit);
+    assert_program_resource_ledger(unit, 1, None);
+}
+
+#[test]
+fn predicate_query_contexts_preserve_replay_native_and_cleanup() {
+    for (name, source) in [
+        (
+            "loop-fixed-composite",
+            include_str!("../spec/cases/verify/predicate-loop-fixed-composite.nera"),
+        ),
+        (
+            "opened-expression-inputs",
+            include_str!("../spec/cases/verify/predicate-opened-expression-inputs.nera"),
+        ),
+        (
+            "opened-arithmetic-query",
+            include_str!("../spec/cases/verify/predicate-opened-arithmetic-query.nera"),
+        ),
+        (
+            "opened-boolean-query",
+            include_str!("../spec/cases/verify/predicate-opened-boolean-query.nera"),
+        ),
+        (
+            "hidden-compound-cursor",
+            include_str!("../spec/cases/verify/predicate-hidden-compound-cursor.nera"),
+        ),
+        (
+            "compound-cursor-domain",
+            include_str!("../spec/cases/verify/predicate-compound-cursor-domain.nera"),
+        ),
+        (
+            "branch-dependent-history",
+            include_str!("../spec/cases/verify/predicate-branch-dependent-history.nera"),
+        ),
+        (
+            "loop-difference",
+            include_str!("../spec/cases/verify/predicate-loop-difference.nera"),
+        ),
+        (
+            "loop-history",
+            include_str!("../spec/cases/verify/predicate-loop-history.nera"),
+        ),
+        (
+            "loop-observation",
+            include_str!("../spec/cases/verify/predicate-loop-observation.nera"),
+        ),
+        (
+            "loop-composite-history",
+            include_str!("../spec/cases/verify/predicate-loop-composite-history.nera"),
+        ),
+        (
+            "loop-overlapping-history",
+            include_str!("../spec/cases/verify/predicate-loop-overlapping-history.nera"),
+        ),
+    ] {
+        let output = analyze(&SourceFile::from_text(name, source));
+        let unit = output
+            .vir()
+            .unwrap_or_else(|| panic!("{:?}", output.issues()));
+        let resolved = unit.resolve().unwrap();
+        let report = verify_program(&resolved, Default::default()).unwrap();
+        assert!(
+            report.is_memory_checked_core0(),
+            "{:?}",
+            report.diagnostics()
+        );
+        let replay = nera::verifier::relation::audit::RelationReplayCache::new(
+            &resolved,
+            Default::default(),
+        )
+        .unwrap();
+        for (&id, function) in report.functions() {
+            assert_eq!(
+                function.summary().state,
+                nera::verifier::summary::SummaryState::Closed
+            );
+            let cfg = function.cfg();
+            assert!(replay.accepts_memory_trace(
+                id,
+                cfg.provenance_evidence(),
+                cfg.relation_queries(),
+                cfg.relation_evidence()
+            ));
+        }
+        assert_eq!(
+            interpret(resolved.runtime()).unwrap().values(),
+            [VirRuntimeValue::U64(42)]
+        );
+        assert_interpreter_matches_native(name, unit);
+        assert_program_resource_ledger(unit, 1, None);
+    }
+}
+
+#[test]
+fn predicate_resource_fields_preserve_native_result_and_cleanup() {
+    let borrowed = include_str!("../spec/cases/verify/predicate-borrowed-exit-paths.nera");
+    let group = include_str!("../spec/cases/verify/predicate-group-drop.nera");
+    let variants = [
+        ("owner-sealed-replacement", format!("predicate Cell(p:ptr<u64>) {{ owns(p); }}\n{}", group.replace("let moved=storage;", "let mut moved=storage; let replacement=alloc<u64>(1); fold Cell(replacement); moved.left=replacement;")), 3),
+        (
+            "borrowed-mixed-ssa-first",
+            borrowed.replace("left.item=moved;", ""),
+            4,
+        ),
+        (
+            "borrowed-mixed-storage-first",
+            borrowed
+                .replace("let right=Storage {item:vb};", "")
+                .replace("left.item=moved;", "let right=Storage {item:vb};"),
+            4,
+        ),
+        (
+            "borrowed-early-return",
+            borrowed.replace("paths(false)", "paths(true)"),
+            2,
+        ),
+        (
+            "borrowed-normal-loop-exit",
+            borrowed.replace("if iteration==2", "if iteration==4"),
+            6,
+        ),
+        (
+            "borrowed-branch-cleanup",
+            borrowed
+                .replace(
+                    "fold Pair(a,b);\n        {",
+                    "fold Pair(a,b);\n        if iteration<3 {",
+                )
+                .replace("if iteration==2", "if iteration==4"),
+            6,
+        ),
+        (
+            "borrowed-nested-group",
+            borrowed
+                .replace(
+                    "let mut left=Storage {item:va};",
+                    "let ca=&mut *va; let cb=&mut *vb; let mut left=Storage {item:ca};",
+                )
+                .replace(
+                    "let right=Storage {item:vb};",
+                    "let right=Storage {item:cb};",
+                ),
+            4,
+        ),
+        (
+            "owner-mixed-carriers",
+            group.replace(
+                "let moved=storage;",
+                "let moved=storage; let extracted=moved.left;",
+            ),
+            2,
+        ),
+        (
+            "owner-partial-overwrite",
+            group.replace(
+                "let moved=storage;",
+                "let mut moved=storage; let replacement=alloc<u64>(1); moved.left=replacement;",
+            ),
+            3,
+        ),
+    ];
+    for (name, source, allocations) in [
+        (
+            "shared-field-exit",
+            include_str!("../spec/cases/verify/predicate-shared-field-exit.nera"),
+            0,
+        ),
+        (
+            "shared-field-copies",
+            include_str!("../spec/cases/verify/predicate-shared-field-copies.nera"),
+            0,
+        ),
+        (
+            "field-source-change",
+            include_str!("../spec/cases/verify/predicate-field-source-change.nera"),
+            2,
+        ),
+        (
+            "borrowed-exit-paths",
+            include_str!("../spec/cases/verify/predicate-borrowed-exit-paths.nera"),
+            4,
+        ),
+        (
+            "nested-reference-drop",
+            include_str!("../spec/cases/verify/predicate-nested-reference-drop.nera"),
+            1,
+        ),
+        (
+            "exit-paths",
+            include_str!("../spec/cases/verify/predicate-exit-paths.nera"),
+            4,
+        ),
+        (
+            "owner-field-return",
+            include_str!("../spec/cases/verify/predicate-owner-field-return.nera"),
+            1,
+        ),
+        (
+            "shared-container-read",
+            include_str!("../spec/cases/verify/predicate-shared-container-read.nera"),
+            0,
+        ),
+        (
+            "nested-owner-drop",
+            include_str!("../spec/cases/verify/predicate-nested-owner-drop.nera"),
+            4,
+        ),
+        (
+            "split-borrow-drop",
+            include_str!("../spec/cases/verify/predicate-split-borrow-drop.nera"),
+            2,
+        ),
+        (
+            "ghost-loan-end",
+            include_str!("../spec/cases/verify/predicate-ghost-loan-end.nera"),
+            1,
+        ),
+        (
+            "split-group-drop",
+            include_str!("../spec/cases/verify/predicate-split-group-drop.nera"),
+            2,
+        ),
+        (
+            "owner-field-predicate",
+            include_str!("../spec/cases/verify/predicate-resource-fields.nera"),
+            2,
+        ),
+        (
+            "reference-field-predicate",
+            include_str!("../spec/cases/verify/predicate-resource-reference-fields.nera"),
+            1,
+        ),
+    ]
+    .into_iter()
+    .chain(
+        variants
+            .iter()
+            .map(|(name, source, count)| (*name, source.as_str(), *count)),
+    ) {
+        let output = analyze(&SourceFile::from_text(name, source));
+        let unit = output.vir().unwrap();
+        assert!(
+            verify_program(&unit.resolve().unwrap(), Default::default())
+                .unwrap()
+                .is_memory_checked_core0()
+        );
+        assert_eq!(
+            interpret(unit.resolve().unwrap().runtime())
+                .unwrap()
+                .values(),
+            [VirRuntimeValue::U64(42)]
+        );
+        assert_interpreter_matches_native(name, unit);
+        assert_program_resource_ledger(unit, allocations, None);
     }
 }

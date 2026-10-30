@@ -83,6 +83,7 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
         let mut public = std::collections::BTreeSet::new();
         let mut cst = Vec::new();
         let mut structs = Vec::new();
+        let mut predicates = Vec::new();
         let mut enums = Vec::new();
         let mut functions = Vec::new();
         while self.current().kind() != TokenKind::Eof {
@@ -91,6 +92,28 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
                 self.bump();
             }
             match self.current().kind() {
+                TokenKind::Identifier if self.current().raw(self.source) == b"predicate" => {
+                    let item = self.parse_predicate()?;
+                    if is_public {
+                        public.insert(item.name.clone());
+                    }
+                    predicates.push(item);
+                }
+                TokenKind::Identifier if self.current().raw(self.source) == b"opaque" => {
+                    self.bump();
+                    if self.current().kind() != TokenKind::Keyword(Keyword::Struct) {
+                        return Err(FrontendFailure::syntax(
+                            self.current().span(),
+                            "expected `struct` after `opaque`",
+                        ));
+                    }
+                    let mut item = self.parse_struct()?;
+                    item.opaque = true;
+                    if is_public {
+                        public.insert(item.name.clone());
+                    }
+                    structs.push(item);
+                }
                 TokenKind::Keyword(Keyword::Struct) => {
                     let item = self.parse_struct()?;
                     if is_public {
@@ -140,6 +163,7 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
                 module,
                 imports,
                 public,
+                predicates,
                 structs,
                 enums,
                 functions,
@@ -289,6 +313,7 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
         }
         let end = self.bump().span().end();
         Ok(AstStruct {
+            opaque: false,
             name,
             generics,
             fields,
@@ -507,26 +532,36 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
                         self.bump();
                         Ok(AstType::Bool)
                     }
-                    b"Own" | b"ptr" => {
-                        let raw = token.raw(self.source);
+                    b"ptr" => {
                         self.bump();
                         self.expect_punctuation(Punctuation::Less, "expected `<` in pointer type")?;
-                        let pointee =
-                            self.expect(TokenKind::Identifier, "expected pointer element type")?;
-                        if pointee.raw(self.source) != b"u64" {
-                            return Err(FrontendFailure::unsupported(
-                                pointee.span(),
-                                "the current pointer slice only supports pointers to `u64`",
-                            ));
-                        }
+                        let pointee = self.parse_type(nesting + 1)?;
                         self.expect_punctuation(
                             Punctuation::Greater,
                             "expected `>` in pointer type",
                         )?;
-                        Ok(if raw == b"Own" {
+                        Ok(if pointee == AstType::U64 {
+                            AstType::RawU64
+                        } else {
+                            AstType::RawPointer {
+                                pointee: Box::new(pointee),
+                            }
+                        })
+                    }
+                    b"Own" => {
+                        self.bump();
+                        self.expect_punctuation(Punctuation::Less, "expected `<` in owner type")?;
+                        let pointee = self.parse_type(nesting + 1)?;
+                        self.expect_punctuation(
+                            Punctuation::Greater,
+                            "expected `>` in owner type",
+                        )?;
+                        Ok(if pointee == AstType::U64 {
                             AstType::OwnU64
                         } else {
-                            AstType::RawU64
+                            AstType::OwnPointer {
+                                pointee: Box::new(pointee),
+                            }
                         })
                     }
                     _ => {
@@ -698,6 +733,16 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
         block_depth: usize,
         loop_depth: usize,
     ) -> Result<AstStatement, FrontendFailure> {
+        if self.current().kind() == TokenKind::Identifier
+            && matches!(
+                self.current().raw(self.source),
+                b"fold" | b"unfold" | b"finish"
+            )
+            && self.nth_significant(1).kind() == TokenKind::Identifier
+        {
+            return self.parse_predicate_action();
+        }
+
         match self.current().kind() {
             TokenKind::Keyword(Keyword::Let) => self.parse_let(),
             TokenKind::Keyword(Keyword::Assert) => self.parse_assertion(),
@@ -1378,6 +1423,19 @@ impl<'source, 'tokens> Parser<'source, 'tokens> {
                         explicit_usize: suffix == Some(IntegerSuffix::Usize),
                     },
                     span: token.span(),
+                })
+            }
+            TokenKind::Keyword(Keyword::Null) => {
+                let start = self.bump().span().start();
+                self.expect_punctuation(Punctuation::Less, "expected `<` after `null`")?;
+                let pointee = self.parse_type(nesting + 1)?;
+                self.expect_punctuation(Punctuation::Greater, "expected `>` after null pointee")?;
+                self.expect_punctuation(Punctuation::LeftParen, "expected `(` after null type")?;
+                let close = self
+                    .expect_punctuation(Punctuation::RightParen, "expected `)` after null type")?;
+                Ok(AstExpression {
+                    kind: AstExpressionKind::NullPointer { pointee },
+                    span: span(start, close.span().end()),
                 })
             }
             TokenKind::Keyword(Keyword::True | Keyword::False) => {
@@ -2248,6 +2306,7 @@ fn block_falls_through(block: &AstBlock) -> bool {
 
 fn statement_falls_through(statement: &AstStatement) -> bool {
     match &statement.kind {
+        AstStatementKind::Predicate { .. } => true,
         AstStatementKind::Return { .. } | AstStatementKind::Break | AstStatementKind::Continue => {
             false
         }

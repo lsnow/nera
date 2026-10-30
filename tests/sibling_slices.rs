@@ -179,6 +179,7 @@ fn empty_children_can_really_coexist_without_nll_hiding_their_lifetimes() {
                 .block(nera::VirBlockId::new(0))
                 .unwrap()
                 .instruction_states()
+                .unwrap()
                 .iter()
                 .any(|s| s
                     .loan(VirLoanId::new(0))
@@ -231,7 +232,7 @@ fn dynamic_siblings_restore_the_parent_after_both_end() {
     let states = unit.runtime().functions[1]
         .blocks
         .iter()
-        .flat_map(|b| analysis.block(b.id).unwrap().instruction_states());
+        .flat_map(|b| analysis.block(b.id).unwrap().instruction_states().unwrap());
     let mut both = false;
     let mut one = false;
     let mut restored = false;

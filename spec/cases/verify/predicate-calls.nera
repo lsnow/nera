@@ -1,0 +1,36 @@
+predicate Slots(storage: ptr<[u64; 8]>) {
+    owns(storage);
+    initialized(storage, 0usize..1usize);
+    storage[0] <= 8;
+}
+fn main() -> u64 {
+    let a = make();
+    let b = update(a);
+    return destroy(b);
+}
+fn make() -> Own<[u64; 8]>
+ensures Slots(result);
+{
+    let p = alloc<[u64; 8]>(1);
+    p[0] = 0;
+    fold Slots(p);
+    return p;
+}
+fn update(p: Own<[u64; 8]>) -> Own<[u64; 8]>
+requires Slots(p);
+ensures Slots(result);
+{
+    unfold Slots(p);
+    p[0] = 5;
+    fold Slots(p);
+    return p;
+}
+fn destroy(p: Own<[u64; 8]>) -> u64
+requires Slots(p);
+{
+    unfold Slots(p);
+    let total = p[0];
+    free(p);
+    finish Slots(p);
+    return total;
+}

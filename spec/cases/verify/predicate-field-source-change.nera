@@ -1,0 +1,18 @@
+// Both branch sources constrain the returned field; the actual loan follows
+// the executed branch and the empty carrier is released.
+struct Holder { value:&mut u64, }
+fn main()->u64 { return select(false)+select(true); }
+fn select(flag:bool)->u64 {
+    let mut first=20;
+    let mut second=22;
+    let p=alloc<Holder>(1);
+    p.value=&mut first;
+    if flag { p.value=&mut second; }
+    let q=take(p);
+    return *q;
+}
+fn take(p:Own<Holder>)->&mut u64 {
+    let q=p.value;
+    free(p);
+    return q;
+}

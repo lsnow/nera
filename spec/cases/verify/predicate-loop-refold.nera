@@ -1,0 +1,36 @@
+// Each iteration re-establishes a sealed package, with a different hidden value.
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>,limit:usize) {
+    exists used:usize = 0usize;
+    owns(p);
+    initialized(p.value,0..1);
+    used<=limit;
+}
+fn main()->u64 {
+    let p=alloc<Cell>(1);
+    p.value=42;
+    fold Ready(p,7usize) with (used=1usize);
+    let q=repack(p,7usize,3usize);
+    unfold Ready(q,7usize);
+    let outcome=q.value;
+    free(q);
+    finish Ready(q,7usize);
+    return outcome;
+}
+fn repack(p:Own<Cell>,limit:usize,steps:usize)->Own<Cell>
+requires Ready(p,limit);
+ensures Ready(result,limit);
+{
+    let mut i=0usize;
+    while i<steps {
+        invariant i<=steps;
+        unfold Ready(p,limit) as (saved);
+        if i==0usize {
+            fold Ready(p,limit) with (used=limit);
+        } else {
+            fold Ready(p,limit) with (used=0usize);
+        }
+        i=i+1usize;
+    }
+    return p;
+}

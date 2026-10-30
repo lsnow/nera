@@ -1,0 +1,42 @@
+// Two opened packages retain separate binders while sharing actual scalar sources.
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>,n:usize) {
+    exists used:usize = 0usize;
+    owns(p);
+    initialized(p.value,0..1);
+    used==n;
+}
+fn main()->u64 {
+    let p=alloc<Cell>(1);
+    let q=alloc<Cell>(1);
+    p.value=20;
+    q.value=22;
+    fold Ready(p,6usize) with (used=6usize);
+    fold Ready(q,7usize) with (used=7usize);
+    return consume(p,q,6usize,7usize);
+}
+fn consume(p:Own<Cell>,q:Own<Cell>,count:usize,limit:usize)->u64
+requires count<limit;
+requires Ready(p,count);
+requires Ready(q,limit);
+{
+    unfold Ready(p,count) as (saved);
+    unfold Ready(q,limit) as (stop);
+    let mut i=0usize;
+    while i<3usize {
+        invariant i<=3usize;
+        invariant saved<stop;
+        i=i+1usize;
+    }
+    fold Ready(p,count) with (used=saved);
+    fold Ready(q,limit) with (used=stop);
+    unfold Ready(p,count);
+    unfold Ready(q,limit);
+    let first=p.value;
+    let second=q.value;
+    free(p);
+    finish Ready(p,count);
+    free(q);
+    finish Ready(q,limit);
+    return first+second;
+}

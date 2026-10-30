@@ -1,0 +1,14 @@
+// Moving a stored loan to SSA preserves it after its empty container is freed.
+struct Holder { value:&mut u64, }
+fn main()->u64 {
+    let mut value=42;
+    let p=alloc<Holder>(1);
+    p.value=&mut value;
+    let q=take(p);
+    return *q;
+}
+fn take(p:Own<Holder>)->&mut u64 {
+    let q=p.value;
+    free(p);
+    return q;
+}

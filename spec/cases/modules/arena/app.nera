@@ -1,0 +1,88 @@
+module app;
+use arena::Arena;
+use arena::Ready;
+use forward::create;
+use forward::allocate;
+use forward::clear;
+use forward::release;
+fn main()->u64 {
+    let arena=create();
+    let total=client(&mut *arena,1usize,3usize);
+    clear(&mut *arena);
+    release(arena);
+    return total;
+}
+fn client(arena:&mut Arena,first:usize,second:usize)->u64
+requires Ready(arena);
+ensures Ready(arena);
+{
+    let parent=allocate(&mut *arena,6usize);
+    if first>0usize {
+        if first<second {
+            if second<len(parent) {
+                let left=&mut parent[..first];
+                let middle=&mut parent[first..second];
+                let remaining=&mut parent[second..];
+                remaining[0]=7;
+                left[0]=12;
+                middle[0]=30;
+                let sum=left[0]+middle[0];
+                let sentinel=remaining[0];
+                parent[0]=sum;
+                return parent[0]+sentinel;
+            }
+        }
+    }
+    return 0;
+}
+
+// End the exported view inside an ordinary call before the next allocation.
+fn fill(arena:&mut Arena,count:usize,value:u64)->u64
+requires Ready(arena);
+requires count<=6usize;
+ensures Ready(arena);
+{
+    let view=allocate(&mut *arena,count);
+    if len(view)>0usize {
+        view[0]=value;
+        return view[0];
+    }
+    return 0;
+}
+// A successful second allocation uses the same owner after the first view ends.
+fn lifecycle()->u64 {
+    let arena=create();
+    let first_ok=fill(&mut *arena,1usize,12);
+    let second_ok=fill(&mut *arena,5usize,30);
+    clear(&mut *arena);
+    release(arena);
+    if first_ok==12 { if second_ok==30 { return first_ok+second_ok+7; } }
+    return 0;
+}
+fn empty()->u64 {
+    let arena=create();
+    let zero=allocate(&mut *arena,0usize);
+    let empty=len(zero)==0usize;
+    clear(&mut *arena);
+    release(arena);
+    if empty { return 49; }
+    return 0;
+}
+fn exhaustion()->u64 {
+    let arena=create();
+    let full=fill(&mut *arena,6usize,42);
+    let failed=allocate(&mut *arena,1usize);
+    let empty=len(failed)==0usize;
+    release(arena);
+    if full==42 { if empty { return 49; } }
+    return 0;
+}
+fn reset_reuse()->u64 {
+    let arena=create();
+    let first=fill(&mut *arena,2usize,42);
+    clear(&mut *arena);
+    let total=client(&mut *arena,1usize,3usize);
+    release(arena);
+    if first==42 { return total; }
+    return 0;
+}

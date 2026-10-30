@@ -1,4 +1,5 @@
 use super::*;
+use crate::verifier::{PredicateBinding, PredicateHolder};
 
 impl<'environment> TransferBuilder<'environment> {
     pub(super) fn loan_begin(
@@ -11,11 +12,25 @@ impl<'environment> TransferBuilder<'environment> {
             .loan_context
             .ok_or(TransferError::MissingLoanTransferContext)?;
         let range = loan_range(effect)?;
+        let access = reference_pointee(self.memory, effect.reference)?;
+        let size = self
+            .memory
+            .object_shape(access)
+            .map_err(|_| TransferError::InvalidValidatedMemoryAccess(access))?
+            .size_bytes();
+        let predicate = if matches!(
+            self.memory.kind(effect.reference.ty),
+            Some(VirMemoryTypeKind::Slice { .. })
+        ) {
+            None
+        } else {
+            self.state.prepare_predicate_borrow(effect, size)
+        };
         let pointer = pointer_fact(&self.state, effect.source_pointer)?;
         let permission = permission_fact(&self.state, effect.source_permission)?;
         let source_status = combine_statuses([
             self.require_loan_source(effect, pointer, permission, range),
-            self.require_loan_value(effect, pointer, range)?,
+            self.require_loan_representation(effect, pointer, range, predicate.is_some())?,
         ]);
         let instance_status = self.require_previous_loan_instance_ended(effect.loan);
         let authority_status = owner_authority_status(permission.authority());
@@ -67,7 +82,33 @@ impl<'environment> TransferBuilder<'environment> {
                 },
             )?;
         }
-        self.define_loan_results(effect, pointer, reference_result, permission_result, exact)
+        self.define_loan_results(effect, pointer, reference_result, permission_result, exact)?;
+        if let Some(holder) = predicate {
+            let restored = exact
+                && self
+                    .state
+                    .seal_predicate_borrow(
+                        holder,
+                        effect.loan,
+                        PredicateBinding {
+                            pointer: reference_result.id,
+                            permission: permission_result.id,
+                        },
+                    )
+                    .is_ok();
+            self.require(
+                ResourceObligationKind::PredicateBoundaryRestored {
+                    holder: holder.0,
+                    function_exit: false,
+                },
+                if restored {
+                    ObligationStatus::Proven
+                } else {
+                    ObligationStatus::Unknown
+                },
+            );
+        }
+        Ok(())
     }
 
     pub(super) fn loan_alias_shared(
@@ -253,11 +294,25 @@ impl<'environment> TransferBuilder<'environment> {
             .loan_context
             .ok_or(TransferError::MissingLoanTransferContext)?;
         let range = loan_range(effect)?;
+        let access = reference_pointee(self.memory, effect.reference)?;
+        let size = self
+            .memory
+            .object_shape(access)
+            .map_err(|_| TransferError::InvalidValidatedMemoryAccess(access))?
+            .size_bytes();
+        let predicate = if matches!(
+            self.memory.kind(effect.reference.ty),
+            Some(VirMemoryTypeKind::Slice { .. })
+        ) {
+            None
+        } else {
+            self.state.prepare_predicate_borrow(effect, size)
+        };
         let pointer = pointer_fact(&self.state, effect.source_pointer)?;
         let permission = permission_fact(&self.state, effect.source_permission)?;
         let source_status = combine_statuses([
             self.require_loan_source(effect, pointer, permission, range),
-            self.require_loan_value(effect, pointer, range)?,
+            self.require_loan_representation(effect, pointer, range, predicate.is_some())?,
         ]);
         let instance_status = self.require_previous_loan_instance_ended(effect.loan);
         let parent_id = effect
@@ -397,7 +452,75 @@ impl<'environment> TransferBuilder<'environment> {
                 },
             )?;
         }
-        self.define_loan_results(effect, pointer, reference_result, permission_result, exact)
+        self.define_loan_results(effect, pointer, reference_result, permission_result, exact)?;
+        if let Some(holder) = predicate {
+            let restored = exact
+                && self
+                    .state
+                    .seal_predicate_borrow(
+                        holder,
+                        effect.loan,
+                        PredicateBinding {
+                            pointer: reference_result.id,
+                            permission: permission_result.id,
+                        },
+                    )
+                    .is_ok();
+            self.require(
+                ResourceObligationKind::PredicateBoundaryRestored {
+                    holder: holder.0,
+                    function_exit: false,
+                },
+                if restored {
+                    ObligationStatus::Proven
+                } else {
+                    ObligationStatus::Unknown
+                },
+            );
+        }
+        Ok(())
+    }
+
+    fn prepare_loan_predicate_restore(
+        &mut self,
+        loan: VirLoanId,
+        pointer: VirValueId,
+        permission: VirValueId,
+    ) -> Option<PredicateHolder> {
+        match self.state.prepare_predicate_restore(
+            loan,
+            PredicateBinding {
+                pointer,
+                permission,
+            },
+        ) {
+            Ok(holder) => holder,
+            Err(_) => {
+                self.require(
+                    ResourceObligationKind::LoanEndedExactlyOnce { loan },
+                    ObligationStatus::Unknown,
+                );
+                None
+            }
+        }
+    }
+
+    fn finish_loan_predicate_restore(&mut self, holder: Option<PredicateHolder>, loan: VirLoanId) {
+        if let Some(holder) = holder {
+            let restored = self.obligations.iter().all(|o| o.is_proven())
+                && self.state.restore_predicate_lender(holder, loan).is_ok();
+            self.require(
+                ResourceObligationKind::PredicateBoundaryRestored {
+                    holder: holder.0,
+                    function_exit: false,
+                },
+                if restored {
+                    ObligationStatus::Proven
+                } else {
+                    ObligationStatus::Unknown
+                },
+            );
+        }
     }
 
     pub(super) fn loan_end(&mut self, effect: VirLoanEffect) -> Result<(), TransferError> {
@@ -405,6 +528,14 @@ impl<'environment> TransferBuilder<'environment> {
             .loan_context
             .ok_or(TransferError::MissingLoanTransferContext)?;
         let range = loan_range(effect)?;
+        if self.end_sealed_ssa_loan(effect)? {
+            return Ok(());
+        }
+        let predicate = self.prepare_loan_predicate_restore(
+            effect.loan,
+            effect.source_pointer,
+            effect.source_permission,
+        );
         let pointer = pointer_fact(&self.state, effect.source_pointer)?;
         let permission = permission_fact(&self.state, effect.source_permission)?;
         // Ending an authority is not a memory access and does not reevaluate
@@ -463,6 +594,7 @@ impl<'environment> TransferBuilder<'environment> {
         }
         if exact && remaining.is_proven() {
             self.restore_parent_after_child(effect.loan, parent_id);
+            self.finish_loan_predicate_restore(predicate, effect.loan);
         }
         Ok(())
     }
@@ -472,6 +604,20 @@ impl<'environment> TransferBuilder<'environment> {
         effect: VirLoanAuthorityEffect,
     ) -> Result<(), TransferError> {
         let pointer = pointer_fact(&self.state, effect.source_pointer)?;
+        let permission = permission_fact(&self.state, effect.source_permission)?;
+        if let Some(resolved) = self.resolve_authority_effect(effect, permission)
+            && self.end_sealed_ssa_loan(resolved)?
+        {
+            return Ok(());
+        }
+        let predicate = match permission.authority() {
+            PermissionAuthority::Loan(loan) => self.prepare_loan_predicate_restore(
+                loan,
+                effect.source_pointer,
+                effect.source_permission,
+            ),
+            _ => None,
+        };
         let permission = permission_fact(&self.state, effect.source_permission)?;
         if let Some(resolved) = self.resolve_authority_effect(effect, permission) {
             let range = loan_range(resolved)?;
@@ -532,6 +678,7 @@ impl<'environment> TransferBuilder<'environment> {
             });
             if ended {
                 self.restore_parent_after_child(resolved.loan, parent);
+                self.finish_loan_predicate_restore(predicate, resolved.loan);
             }
             return Ok(());
         }
@@ -545,6 +692,60 @@ impl<'environment> TransferBuilder<'environment> {
             ObligationStatus::Unknown,
         );
         mark_permission_consumed(&mut self.state, effect.source_permission)
+    }
+
+    fn end_sealed_ssa_loan(&mut self, effect: VirLoanEffect) -> Result<bool, TransferError> {
+        let pointer = pointer_fact(&self.state, effect.source_pointer)?;
+        let permission = permission_fact(&self.state, effect.source_permission)?;
+        let Some(holder) =
+            self.state
+                .predicate_ssa_borrow_to_drop(effect.source_permission, pointer, permission)
+        else {
+            return Ok(false);
+        };
+        let range = loan_range(effect)?;
+        let status = self
+            .state
+            .loan(effect.loan)
+            .map_or(ObligationStatus::Unknown, |loan| {
+                combine_statuses([
+                    tracked_loan_authority_status(
+                        loan,
+                        effect.source_permission,
+                        permission.authority(),
+                        effect.loan,
+                    ),
+                    loan_activity_access_status(loan.activity()),
+                    loan_metadata_status(loan, effect, pointer.provenance(), range),
+                    no_active_child_status(&self.state, effect.loan),
+                ])
+            });
+        self.require(
+            ResourceObligationKind::LoanEndedExactlyOnce { loan: effect.loan },
+            status,
+        );
+        if !status.is_proven() {
+            return Ok(true);
+        }
+        let before = self.state.clone();
+        let loan = self.state.loan_mut(effect.loan).unwrap();
+        let parent = loan.parent();
+        loan.remove_authority(effect.source_permission);
+        loan.set_activity(LoanActivity::Ended);
+        self.restore_parent_after_child(effect.loan, parent);
+        let progressed = self.state.advance_dropped_predicate(holder);
+        self.require(
+            ResourceObligationKind::PredicateCleanupPreserved { holder: holder.0 },
+            if progressed {
+                ObligationStatus::Proven
+            } else {
+                ObligationStatus::Unknown
+            },
+        );
+        if !progressed {
+            self.state = before;
+        }
+        Ok(true)
     }
 
     pub(super) fn end_stored_loan_authority(
@@ -603,6 +804,9 @@ impl<'environment> TransferBuilder<'environment> {
             .loan(loan)
             .map_or(ObligationStatus::Proven, |previous| {
                 match previous.activity() {
+                    LoanActivity::Ended if self.state.predicate_references_loan(loan) => {
+                        ObligationStatus::Refuted
+                    }
                     LoanActivity::Ended => ObligationStatus::Proven,
                     LoanActivity::Active | LoanActivity::Suspended => ObligationStatus::Refuted,
                     LoanActivity::MaybeActive => ObligationStatus::Unknown,
@@ -673,6 +877,16 @@ impl<'environment> TransferBuilder<'environment> {
         effect: VirLoanEffect,
         pointer: AbstractPointer,
         range: ByteRange,
+    ) -> Result<ObligationStatus, TransferError> {
+        self.require_loan_representation(effect, pointer, range, false)
+    }
+
+    fn require_loan_representation(
+        &mut self,
+        effect: VirLoanEffect,
+        pointer: AbstractPointer,
+        range: ByteRange,
+        predicate: bool,
     ) -> Result<ObligationStatus, TransferError> {
         let start = self.obligations.len();
         let footprint = self.borrow_footprint(effect, pointer, range);
@@ -755,6 +969,11 @@ impl<'environment> TransferBuilder<'environment> {
         );
         // A complete trivial byte envelope proves all its possible elements
         // without enumerating a signature-owned, unknown-length slice.
+        if predicate {
+            // The real sealed representation was checked before opening the
+            // owner. Do not relabel its partial guarantee as initialized T.
+            return Ok(combine_statuses([bounds, alignment, live, domain_status]));
+        }
         if complete_trivial || prefix_complete {
             self.require(
                 ResourceObligationKind::MemoryInitialized {

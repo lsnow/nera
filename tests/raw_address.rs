@@ -125,21 +125,38 @@ fn readonly_recovery_and_authority_free_access_fail_at_explicit_gates() {
 }
 
 #[test]
-fn raw_call_and_return_cannot_fill_the_legacy_authority_slot() {
+fn raw_call_and_return_use_one_address_slot_without_authority() {
     for source in [
         "fn f() -> ptr<u64> { let mut x = 42; return &raw mut x; }",
         "fn main() -> u64 { let mut x = 42; consume(&raw mut x); return x; } fn consume(p: ptr<u64>) { return; }",
     ] {
         let output = nera::analyze(&nera::SourceFile::from_text("raw-abi.nera", source));
-        assert!(output.vir().is_none());
-        assert!(
-            output
-                .issues()
+        let unit = output
+            .vir()
+            .unwrap_or_else(|| panic!("{:?}", output.issues()));
+        for function in &unit.as_unit().runtime.abis.functions {
+            for binding in function
+                .signature
+                .parameters()
                 .iter()
-                .any(|i| i.diagnostic().message().contains("7.5.7")),
-            "{:?}",
-            output.issues()
-        );
+                .chain(function.signature.results())
+            {
+                if let nera::VirAbiValue::Scalar {
+                    ty: nera::VirType::Pointer { .. },
+                    ..
+                } = binding.value()
+                {
+                    assert_eq!(
+                        binding.interface().transfer,
+                        nera::VirInterfaceTransfer::Copy
+                    );
+                    assert_eq!(
+                        binding.parameter_slots().len() + binding.result_slots().len(),
+                        1
+                    );
+                }
+            }
+        }
     }
 }
 

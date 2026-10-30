@@ -1,0 +1,24 @@
+// Opened names are erased; the pointer witness names an already-owned resource.
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>) {
+    exists used:usize;
+    exists enabled:bool = true;
+    exists location:ptr<Cell> = p;
+    owns(p);
+    initialized(p.value,0..1);
+    used <= 7usize;
+    enabled;
+    location == p;
+}
+fn main()->u64 {
+    let p=alloc<Cell>(1);
+    p.value=42;
+    fold Ready(p) with (used = 5usize);
+    unfold Ready(p) as (saved, active, storage);
+    fold Ready(p) with (used = saved + 1usize, enabled = active, location = storage);
+    unfold Ready(p);
+    let value=p.value;
+    free(p);
+    finish Ready(p);
+    return value;
+}

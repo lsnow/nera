@@ -78,7 +78,7 @@ fn normalize(
     obligation: ResourceObligationKind,
     instruction: &VirInstruction,
     before: &ResourceState,
-    after: &ResourceState,
+    after: Option<&ResourceState>,
 ) -> Option<(
     RelationGoal,
     Vec<RelationPremise>,
@@ -208,7 +208,7 @@ fn normalize(
             let state = if before.value(pointer).is_some() {
                 before
             } else {
-                after
+                after?
             };
             let (term, fact) = q.pointer(pointer, state)?;
             let AbstractProvenance::Known(id) = fact.provenance() else {
@@ -255,7 +255,7 @@ pub(in crate::verifier) fn capture(
     instruction: &VirInstruction,
     memory: &crate::VirMemorySchema,
     before: &ResourceState,
-    after: &ResourceState,
+    after: Option<&ResourceState>,
     obligation: ResourceObligation,
 ) -> Result<Option<RelationEvidence>, ()> {
     if let ResourceObligationKind::PermissionCoversAccess { permission, .. } = obligation.kind() {

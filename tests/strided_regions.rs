@@ -23,6 +23,7 @@ fn three_live_two_dimensional_elements_use_both_row_and_column_relations() {
             .block(b.id)
             .unwrap()
             .instruction_states()
+            .unwrap()
             .iter()
             .any(|s| {
                 s.loans()
@@ -202,6 +203,7 @@ fn region_pair_budget_is_shared_and_exhaustion_never_creates_a_partial_authority
             .block(b.id)
             .unwrap()
             .instruction_states()
+            .unwrap()
             .iter()
             .all(|s| {
                 s.loan(VirLoanId::new(2))
@@ -268,6 +270,7 @@ fn region_query_growth_is_bounded_by_region_count_not_array_length() {
                     .block(nera::VirBlockId::new(0))
                     .unwrap()
                     .instruction_states()
+                    .unwrap()
                     .iter()
                     .map(|s| s
                         .loans()

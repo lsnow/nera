@@ -99,6 +99,7 @@ fn validate(mut tables: HirProgramTables) -> Result<HirProgram, nera::HirProgram
 fn push_type(tables: &mut HirProgramTables, name: &str, kind: HirTypeKind) -> HirTypeId {
     let id = HirTypeId::new(u32::try_from(tables.types.len()).expect("small type table"));
     tables.types.push(HirTypeDefinition {
+        opaque: None,
         id,
         name: Some(name.to_owned()),
         kind,
@@ -235,7 +236,7 @@ fn local_borrow_tables() -> HirProgramTables {
 fn v5_preserves_signature_regions_and_canonical_outlives_constraints() {
     let program = validate(signature_region_tables()).expect("canonical signature regions");
 
-    assert_eq!(program.version(), HirVersion::V23);
+    assert_eq!(program.version(), HirVersion::CURRENT);
     assert_eq!(program.regions().len(), 2);
     assert_eq!(
         program
@@ -405,4 +406,62 @@ fn region_and_constraint_spans_must_stay_inside_the_owner_function() {
     constraint_span.region_constraints[0].span = outside;
     let error = validate(constraint_span).expect_err("constraint span must be owned");
     assert_eq!(error.table(), "region constraint");
+}
+
+#[test]
+fn distinct_parameters_cannot_share_one_parameter_region() {
+    let independent =
+        accepted_program("fn main()->u64{return 0;} fn read(a:&u64,b:&u64)->u64{return *a+*b;}");
+    validate(program_tables(&independent)).expect("each parameter retains its own region");
+    let mut tables = signature_region_tables();
+    let first = tables.functions[0].signature.parameters[0];
+    tables.functions[0].signature.parameters.push(first);
+    let signature = tables.functions[0].signature.ty;
+    let HirTypeKind::Function(ty) = &mut tables.types[signature.index()].kind else {
+        unreachable!()
+    };
+    ty.parameters.push(first);
+    let error = validate(tables).expect_err("parameter one cannot reuse parameter zero's region");
+    assert_eq!(error.table(), "function");
+    assert_eq!(
+        error.problem(),
+        "parameter type contains a borrow region from another parameter or owner"
+    );
+}
+
+#[test]
+fn stored_field_source_meet_requires_both_independently_reconstructed_inputs() {
+    let base = accepted_program(include_str!(
+        "../spec/cases/verify/predicate-field-source-change.nera"
+    ));
+    validate(program_tables(&base)).unwrap();
+    let constraints = base.region_constraints();
+    let meet = base
+        .regions()
+        .iter()
+        .find(|region| {
+            constraints
+                .iter()
+                .filter(|c| c.subregion == region.id)
+                .count()
+                == 2
+        })
+        .unwrap()
+        .id;
+    let indices = constraints
+        .iter()
+        .enumerate()
+        .filter_map(|(i, c)| (c.subregion == meet).then_some(i))
+        .collect::<Vec<_>>();
+    for index in indices {
+        let mut tables = program_tables(&base);
+        tables.region_constraints.remove(index);
+        for (i, c) in tables.region_constraints.iter_mut().enumerate() {
+            c.id = HirRegionConstraintId::new(i as u32);
+        }
+        assert!(
+            validate(tables).is_err(),
+            "missing source constraint {index}"
+        );
+    }
 }

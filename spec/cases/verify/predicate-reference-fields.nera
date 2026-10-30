@@ -1,0 +1,124 @@
+// P2 ordinary reference fields: no predicate syntax or arena-specific rule.
+struct Views { left: &mut u64, right: &mut u64, }
+struct SharedViews { left: &u64, right: &u64, }
+struct Mixed { owner: Own<u64>, link: ptr<u64>, view: &mut u64, }
+struct Nested { marker: u64, items: (Views, [Views; 1]), }
+
+fn main() -> u64 {
+    return moved_case() + selected_case(true) + selected_case(false)
+        + alias_case() + mixed_case() + nested_case() + stored_case() + two_parameters_case() + composed_case() + anonymous_case() + subaggregate_case();
+}
+fn extract(input: Views) -> &mut u64 {
+    let moved = input;
+    return moved.left;
+}
+fn relay(input: Views) -> &mut u64 { return extract(input); }
+fn select(flag: bool, input: Views) -> &mut u64 {
+    if flag { return input.left; }
+    return input.right;
+}
+fn second(first: Views, other: Views) -> &mut u64 { return other.left; }
+fn shared(input: SharedViews) -> &u64 { return input.left; }
+fn mixed(input: Mixed) -> &mut u64 { return input.view; }
+fn nested(input: Nested) -> &mut u64 { return input.items.1[0].right; }
+fn reshuffle(input: Views) -> &mut u64 {
+    let stored = Views { left: input.right, right: input.left };
+    return stored.left;
+}
+fn subaggregate(input: Nested) -> &mut u64 {
+    let items = input.items;
+    let part = items.1[0];
+    return extract(part);
+}
+fn after_stored(input: Views) -> &mut u64 {
+    let stored = forward(input);
+    return stored.right;
+}
+fn tuple_extract(input: (&mut u64, &mut u64)) -> &mut u64 { return input.1; }
+fn array_extract(input: [&mut u64; 2]) -> &mut u64 { return input[0]; }
+fn keep(input: Views) -> Views { return input; }
+fn forward(input: Views) -> Views { return keep(input); }
+
+fn moved_case() -> u64 {
+    let mut a = 40;
+    let mut b = 2;
+    let outcome = relay(Views { left: &mut a, right: &mut b });
+    return *outcome + b;
+}
+fn selected_case(flag: bool) -> u64 {
+    let mut a = 1;
+    let mut b = 2;
+    let outcome = select(flag, Views { left: &mut a, right: &mut b });
+    return *outcome;
+}
+fn alias_case() -> u64 {
+    let value = 7;
+    let original = &value;
+    let outcome = shared(SharedViews { left: original, right: original });
+    return *original + *outcome;
+}
+fn mixed_case() -> u64 {
+    let mut value = 11;
+    let owner = alloc<u64>(1);
+    *owner = 3;
+    let outcome = mixed(Mixed { owner: owner, link: null<u64>(), view: &mut value });
+    return *outcome;
+}
+fn nested_case() -> u64 {
+    let mut a = 1;
+    let mut b = 2;
+    let mut c = 3;
+    let mut d = 30;
+    let outcome = nested(Nested { marker: 0, items: (
+        Views { left: &mut a, right: &mut b },
+        [Views { left: &mut c, right: &mut d }]
+    ) });
+    return *outcome;
+}
+fn stored_case() -> u64 {
+    let mut a = 6;
+    let mut b = 7;
+    let outcome = forward(Views { left: &mut a, right: &mut b });
+    let left = outcome.left;
+    let right = outcome.right;
+    return *left + *right;
+}
+fn two_parameters_case() -> u64 {
+    let mut a = 1;
+    let mut b = 2;
+    let mut c = 30;
+    let mut d = 4;
+    let outcome = second(Views { left: &mut a, right: &mut b }, Views { left: &mut c, right: &mut d });
+    return *outcome;
+}
+fn composed_case() -> u64 {
+    let mut a = 1;
+    let mut b = 5;
+    let outcome = reshuffle(Views { left: &mut a, right: &mut b });
+    let value = *outcome;
+    let mut c = 2;
+    let mut d = 8;
+    let later = after_stored(Views { left: &mut c, right: &mut d });
+    return value + *later;
+}
+fn anonymous_case() -> u64 {
+    let mut a = 1;
+    let mut b = 5;
+    let outcome = tuple_extract((&mut a, &mut b));
+    let value = *outcome;
+    let mut c = 8;
+    let mut d = 2;
+    let later = array_extract([&mut c, &mut d]);
+    return value + *later;
+}
+fn subaggregate_case() -> u64 {
+    let mut a = 1;
+    let mut b = 2;
+    let mut c = 23;
+    let mut d = 4;
+    let outcome = subaggregate(Nested { marker: 0, items: (
+        Views { left: &mut a, right: &mut b },
+        [Views { left: &mut c, right: &mut d }]
+    ) });
+    return *outcome;
+}

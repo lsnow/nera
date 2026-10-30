@@ -1,4 +1,5 @@
 use super::*;
+mod slice;
 
 impl<'environment> TransferBuilder<'environment> {
     pub(super) fn index_address(
@@ -62,6 +63,15 @@ impl<'environment> TransferBuilder<'environment> {
     ) -> Result<(), TransferError> {
         let index = word_fact(&self.state, index_id)?;
         let length = word_fact(&self.state, length_id)?;
+        if let Some((start, _)) = slice::paired_source_bounds(
+            &self.state,
+            pointer_fact(&self.state, base)?,
+            length_id,
+            element,
+            stride_bytes,
+        ) {
+            self.state.narrow_pointer_offset(base, start.interval());
+        }
         let bounds = self.compare_words(
             RelationComparison::LessThan,
             word(index_id),
@@ -126,6 +136,16 @@ impl<'environment> TransferBuilder<'environment> {
             VirIndexBounds::Array { length } => U64Interval::exact(length),
             VirIndexBounds::Slice { length } => word_fact(&self.state, length)?,
         };
+        use crate::verifier::resource::ScalarOriginDifference;
+        let historical_length = self.state.word_origin(end_id).and_then(|end| {
+            if let Some(start) = self.state.word_origin(start_id) {
+                end.difference(start)
+            } else if start.exact_value() == Some(0) {
+                Some(ScalarOriginDifference::Origin(end))
+            } else {
+                None
+            }
+        });
         self.require(
             ResourceObligationKind::SliceRangeOrdered {
                 start: start_id,
@@ -133,6 +153,9 @@ impl<'environment> TransferBuilder<'environment> {
                 end: end_id,
                 end_values: end,
             },
+            // Ordering must use the same budgeted producer as evidence replay.
+            // Historical subtraction below describes the resulting length;
+            // it is not an independent source of an unaudited range proof.
             self.compare_words(
                 RelationComparison::LessOrEqual,
                 word(start_id),
@@ -200,9 +223,20 @@ impl<'environment> TransferBuilder<'environment> {
             memory_access_status(base.memory_access(), expected_base_access),
         );
 
-        let (start_offset, start_add) = add_pointer_intervals(base.offset_bytes(), start_delta);
-        let (end_offset, end_add) = add_pointer_intervals(base.offset_bytes(), end_delta);
-        let (source_end, source_add) = add_pointer_intervals(base.offset_bytes(), source_delta);
+        let paired = match bounds {
+            VirIndexBounds::Slice { length: id } => {
+                slice::paired_source_bounds(&self.state, base, id, element, stride_bytes)
+            }
+            VirIndexBounds::Array { .. } => None,
+        };
+        let base_offset = paired.map_or(base.offset_bytes(), |(start, _)| start.interval());
+        if paired.is_some() {
+            self.state.narrow_pointer_offset(base_id, base_offset);
+        }
+        let (start_offset, start_add) = add_pointer_intervals(base_offset, start_delta);
+        let (end_offset, end_add) = add_pointer_intervals(base_offset, end_delta);
+        let (source_end, source_add) = add_pointer_intervals(base_offset, source_delta);
+        let source_end = paired.map_or(source_end, |(_, end)| end.interval());
         for (delta, status) in [
             (start_delta, start_add),
             (end_delta, end_add),
@@ -226,8 +260,9 @@ impl<'environment> TransferBuilder<'environment> {
             word_expression(&self.state, id, interval)
                 .and_then(|expression| expression.checked_scale(stride_bytes))
         };
+        let start_scaled_expression = scaled_expression(start_id, start);
         let start_expression = base_expression
-            .zip(scaled_expression(start_id, start))
+            .zip(start_scaled_expression)
             .and_then(|(base, delta)| base.checked_add(delta));
         let end_expression = base_expression
             .zip(scaled_expression(end_id, end))
@@ -242,13 +277,23 @@ impl<'environment> TransferBuilder<'environment> {
                 .zip(scaled_expression(length_id, length))
                 .and_then(|(base, delta)| base.checked_add(delta)),
         };
-        let selected_range =
-            abstract_range_from_offsets(start_offset, start_expression, end_offset, end_expression);
-        let source_range = abstract_range_from_offsets(
-            base.offset_bytes(),
-            base_expression,
-            source_end,
-            source_end_expression,
+        let selected_range = if paired.is_some() {
+            // Preserve the paired coordinates even when narrowed to singletons:
+            // parent/child containment can cancel their shared pointer offset.
+            slice::coordinate_range(start_offset, start_expression, end_offset, end_expression)
+        } else {
+            abstract_range_from_offsets(start_offset, start_expression, end_offset, end_expression)
+        };
+        let source_range = paired.map_or_else(
+            || {
+                abstract_range_from_offsets(
+                    base_offset,
+                    base_expression,
+                    source_end,
+                    source_end_expression,
+                )
+            },
+            |(start, end)| AbstractByteRange::Symbolic { start, end },
         );
         self.require_domain_range(base_id, base, source_range);
 
@@ -289,7 +334,9 @@ impl<'environment> TransferBuilder<'environment> {
                 ..
             })
         );
-        let start_alignment = start_expression.map_or_else(
+        // The base's real alignment is independent of whether its absolute
+        // byte offset can be expressed as an aligned scalar SSA expression.
+        let start_alignment = start_scaled_expression.map_or_else(
             || offset_alignment(base.alignment(), start_delta),
             AffineExpression::guaranteed_alignment,
         );
@@ -342,9 +389,30 @@ impl<'environment> TransferBuilder<'environment> {
         {
             result_length = U64Interval::new(1, result_length.upper()).expect("nonempty range");
         }
+        let history_interval = historical_length.and_then(|length| match length {
+            ScalarOriginDifference::Constant(n) => Some(U64Interval::exact(n)),
+            ScalarOriginDifference::Origin(origin) => origin.initial_interval(),
+        });
+        let historical_length =
+            if let Some(refined) = history_interval.and_then(|v| v.intersection(result_length)) {
+                result_length = refined;
+                historical_length
+            } else {
+                None
+            };
         self.define(pointer_result, AbstractValue::Pointer(derived))?;
         self.define(length_result, AbstractValue::U64(result_length))?;
-        if start.exact_value() == Some(0)
+        match historical_length {
+            Some(ScalarOriginDifference::Origin(origin)) => {
+                self.state.set_word_origin(length_result.id, origin)
+            }
+            Some(ScalarOriginDifference::Constant(n)) => self
+                .state
+                .set_word_expression(length_result.id, AffineExpression::constant(n)),
+            None => {}
+        }
+        if !matches!(historical_length, Some(ScalarOriginDifference::Constant(_)))
+            && start.exact_value() == Some(0)
             && let Some(expression) = word_expression(&self.state, end_id, end)
         {
             self.state.set_word_expression(length_result.id, expression);
@@ -796,6 +864,7 @@ impl<'environment> TransferBuilder<'environment> {
             permission_id,
             permission,
             PermissionAccessContext {
+                purpose: AccessPurpose::Runtime,
                 allocation: allocation_id,
                 envelope,
                 pointer,

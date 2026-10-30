@@ -10,10 +10,14 @@ mod aggregate_abi;
 mod borrow;
 mod borrow_interface;
 pub(crate) use borrow::interface_loan_id;
+pub(crate) use borrow::{BoundarySourcePlan, plan_boundary_source, plan_parameter_field_result};
+pub(crate) use borrow::{ParameterReferenceEntry, plan_parameter_reference_entries};
+mod drop_plan;
 mod dump;
 mod interpreter;
 mod memory;
 mod object_shape;
+pub(crate) use drop_plan::ObjectDropPlan;
 mod provenance;
 mod resolve;
 mod semantics;
@@ -24,6 +28,8 @@ mod validate;
 use std::fmt;
 
 use crate::ByteSpan;
+
+pub(crate) use aggregate_abi::plan_reference_parameter_slots;
 
 pub use aggregate_abi::{
     VIR_AGGREGATE_ABI_MAX_DIRECT_BYTES, VIR_AGGREGATE_ABI_MAX_DIRECT_LEAVES, VirAbiBinding,
@@ -71,21 +77,27 @@ pub use source_map::{
     VirGeneratedReason, VirLocation, VirLocationOrigin, VirOrigin, VirOriginKind, VirSource,
     VirSourceMap, VirSourceMapErrorKind, VirSourceSpan,
 };
-pub(crate) use spec::{
-    ResourceLoopAtom, ScalarLoopAtom, ScalarOperand, conditional_resource_atom, resource_atom,
-    scalar_atoms,
-};
+pub(crate) use spec::validate_predicate_logic;
 pub use spec::{
-    VirContract, VirContractAccess, VirContractBinder, VirContractBinderId, VirContractFree,
-    VirContractInitialization, VirContractLiveness, VirContractOwnership, VirContractPermission,
-    VirContractPointer, VirContractPosition, VirContractResource, VirContractResourceId,
-    VirContractResourceSummary, VirLoopBinding, VirLoopBoundary, VirLoopEdge, VirPredicate,
-    VirPredicateId, VirSpecAssertion, VirSpecAssertionId, VirSpecAssertionKind, VirSpecBinder,
-    VirSpecBinderId, VirSpecBinderOwner, VirSpecClause, VirSpecClauseId, VirSpecClauseKind,
-    VirSpecClauseOrigin, VirSpecClauseOwner, VirSpecEnvironment, VirSpecLocation,
-    VirSpecLoopInvariant, VirSpecLoopInvariantId, VirSpecProve, VirSpecProveId, VirSpecSnapshot,
-    VirSpecTables, VirSpecTerm, VirSpecTermId, VirSpecTermKind, VirSpecType, VirTrustEntry,
-    VirTrustEntryId, VirTrustPolicyKind, VirTrustScope,
+    PredicateInitializedPrefix, PredicateInterface, PredicatePrefixCount, PredicateRepresentation,
+    PredicateStorage, PredicateWitness, PredicateWordBound, VirContract, VirContractAccess,
+    VirContractBinder, VirContractBinderId, VirContractFree, VirContractInitialization,
+    VirContractLiveness, VirContractOwnership, VirContractPermission, VirContractPointer,
+    VirContractPosition, VirContractResource, VirContractResourceId, VirContractResourceSummary,
+    VirLoopBinding, VirLoopBoundary, VirLoopEdge, VirPredicate, VirPredicateAction,
+    VirPredicateActionKind, VirPredicateBinding, VirPredicateId, VirPredicateInterface,
+    VirPredicateRepresentation, VirSpecAssertion, VirSpecAssertionId, VirSpecAssertionKind,
+    VirSpecBinder, VirSpecBinderId, VirSpecBinderOwner, VirSpecClause, VirSpecClauseId,
+    VirSpecClauseKind, VirSpecClauseOrigin, VirSpecClauseOwner, VirSpecEnvironment,
+    VirSpecLocation, VirSpecLoopInvariant, VirSpecLoopInvariantId, VirSpecProve, VirSpecProveId,
+    VirSpecSnapshot, VirSpecTables, VirSpecTerm, VirSpecTermId, VirSpecTermKind, VirSpecType,
+    VirTrustEntry, VirTrustEntryId, VirTrustPolicyKind, VirTrustScope,
+};
+pub(crate) use spec::{
+    PredicateResourceField, ResourceLoopAtom, ScalarLoopAtom, ScalarOperand,
+    conditional_resource_atom, predicate_owner_field, predicate_resource_access,
+    predicate_resource_fields, predicate_word_access, prefix_bounds_valid, resource_atom,
+    scalar_atoms,
 };
 pub use validate::{VirValidationError, VirValidationErrorKind};
 
@@ -139,6 +151,58 @@ pub enum VirUnitVersion {
     V27,
     /// Conditional loop resource observations (no authority-producing assumption).
     V28,
+    /// Typed nulls, raw pointer cells and authority-free raw ABI slots.
+    V29,
+    /// Located erased predicate effects and finite representation schemas.
+    V30,
+    /// Linear predicate contracts at ordinary owner ABI boundaries.
+    V31,
+    /// Finite predicate word bounds on canonical struct leaves.
+    V32,
+    /// Borrowed finite predicate interfaces preserve actual loan authority.
+    V33,
+    /// In-place predicate postconditions and array-field slice projections.
+    V34,
+    /// Dynamic prefix projections bind actual returned slice lengths.
+    V35,
+    /// Paired returned slice coordinates and checked range normalization.
+    V36,
+    /// Call-scoped returned pointer offset coordinates for heap-selected views.
+    V37,
+    /// Heap-selected initialized prefix predicate representations.
+    V38,
+    /// Struct field owner predicate interfaces.
+    V39,
+    /// Aggregate result predicates bind hidden storage and returned permission.
+    V40,
+    /// Bounded nested inline scalar contract observations.
+    V41,
+    /// Scoped finite predicate witnesses.
+    V42,
+    /// Function parameter reference-field region declarations.
+    V43,
+    /// Explicit reference-field borrow-result source coordinates.
+    V44,
+    /// Typed predicate logic and scoped instance witnesses.
+    V45,
+    /// Opened predicate inputs tied to an active opening action.
+    V46,
+    /// Ordered logical predicate parameters and effect actuals.
+    V47,
+    /// Typed logical actuals on predicate precondition interfaces.
+    V48,
+    /// Predicate logical inputs distinguish entry and scalar result ABI slots.
+    V49,
+    /// Typed logical counts for initialized predicate prefixes.
+    V50,
+    /// Predicate actuals preserve typed memory coordinates and result leaves.
+    V51,
+    /// Ghost snapshots identify an active existential opening.
+    V52,
+    /// Finish arguments may observe the same active existential opening.
+    V53,
+    /// Finite predicate field payloads and pointee parameter field binders.
+    V54,
 }
 
 /// Stable identifier of a function within one VIR unit.
@@ -271,7 +335,7 @@ impl VirUnit {
         assign_loan_effect_origins(&mut runtime, &source_map);
         let specs = VirSpecEnvironment::implicit(&runtime);
         Self {
-            version: VirUnitVersion::V28,
+            version: VirUnitVersion::V54,
             memory,
             borrows: VirBorrowEnvironment::empty(),
             runtime,
@@ -496,6 +560,7 @@ pub struct SpannedVirInstruction {
 /// Integer and boolean literals are distinct in typed VIR.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum VirConstant {
+    NullPointer(VirMemoryAccess),
     U64(u64),
     Bool(bool),
 }
@@ -504,6 +569,7 @@ impl VirConstant {
     #[must_use]
     pub const fn ty(self) -> VirType {
         match self {
+            Self::NullPointer(access) => VirType::Pointer { access },
             Self::U64(_) => VirType::U64,
             Self::Bool(_) => VirType::Bool,
         }
@@ -534,6 +600,10 @@ pub struct VirCallTarget {
 
 /// Runtime VIR instructions. Every memory/resource action has one explicit variant.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Canonical instruction operands remain explicit in the public VIR schema"
+)]
 pub enum VirInstruction {
     /// Compare offsets only after establishing one live instance and compatible
     /// canonical arithmetic domains. Does not access the pointees.

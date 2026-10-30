@@ -8,7 +8,7 @@ use crate::{
     ResourceState, VerifierFinding, VirInstruction, VirValueId,
 };
 
-pub const PROVENANCE_OBSERVATION_VERSION: u32 = 1;
+pub const PROVENANCE_OBSERVATION_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PointerObservation {
@@ -40,6 +40,8 @@ pub struct ProvenanceEvidence {
     pub finding: VerifierFinding,
     pub config: CfgAnalysisConfig,
     pub case_ordinal: usize,
+    /// Return alternative within this input case and instruction.
+    pub outcome_ordinal: usize,
     pub guard: PathCondition,
     pub instruction: VirInstruction,
     pub sources: Vec<VerifierFinding>,
@@ -217,6 +219,7 @@ pub(crate) struct Capture<'a> {
     pub finding: VerifierFinding,
     pub config: CfgAnalysisConfig,
     pub case_ordinal: usize,
+    pub outcome_ordinal: usize,
     pub instruction: &'a VirInstruction,
     pub before: &'a ResourceState,
     pub after: &'a ResourceState,
@@ -322,6 +325,7 @@ impl Capture<'_> {
             finding: self.finding,
             config: self.config,
             case_ordinal: self.case_ordinal,
+            outcome_ordinal: self.outcome_ordinal,
             guard: self.before.path_condition().clone(),
             instruction: self.instruction.clone(),
             sources,
@@ -389,6 +393,7 @@ mod tests {
             finding,
             config: CfgAnalysisConfig::default(),
             case_ordinal: 0,
+            outcome_ordinal: 0,
             instruction: &instruction.instruction,
             before: &before,
             after: &after,

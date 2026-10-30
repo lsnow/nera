@@ -1,0 +1,23 @@
+module forward;
+use arena::Arena;
+use arena::Ready;
+use arena::make;
+use arena::reserve;
+use arena::reset;
+use arena::destroy;
+pub fn create()->Own<Arena>
+ensures Ready(result);
+{ return make(); }
+pub fn allocate(p:&mut Arena,count:usize)->&mut [u64]
+requires Ready(p);
+requires count<=6usize;
+ensures Ready(p);
+ensures len(result)<=count;
+{ return reserve(p,count); }
+pub fn clear(p:&mut Arena)
+requires Ready(p);
+ensures Ready(p);
+{ reset(p); return; }
+pub fn release(p:Own<Arena>)
+requires Ready(p);
+{ destroy(p); return; }

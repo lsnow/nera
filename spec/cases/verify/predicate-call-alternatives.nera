@@ -1,0 +1,38 @@
+// A closed existential may carry different initialized prefixes on return.
+struct Buffer { slots:[u64;4], }
+predicate Ready(p:ptr<Buffer>) {
+    exists used:usize;
+    owns(p);
+    initialized(p.slots,0usize..used);
+    1usize<=used;
+    used<=3usize;
+}
+fn main()->u64 {
+    let p=alloc<Buffer>(1);
+    p.slots[0]=42;
+    fold Ready(p) with (used=1usize);
+    return consume(p);
+}
+fn choose(p:Own<Buffer>)->Own<Buffer>
+requires Ready(p);
+ensures Ready(result);
+{
+    unfold Ready(p);
+    if p.slots[0]==0 {
+        p.slots[1]=7;
+        fold Ready(p) with (used=2usize);
+        return p;
+    }
+    fold Ready(p) with (used=1usize);
+    return p;
+}
+fn consume(p:Own<Buffer>)->u64
+requires Ready(p);
+{
+    let q=choose(p);
+    unfold Ready(q);
+    let value=q.slots[0];
+    free(q);
+    finish Ready(q);
+    return value;
+}

@@ -14,7 +14,15 @@ use super::{
 use crate::AbstractByteRange;
 
 #[derive(Clone, Copy)]
+pub(super) enum AccessPurpose {
+    Runtime,
+    /// Observe initialized scalar contents without activating a runtime loan.
+    LogicalRead,
+}
+
+#[derive(Clone, Copy)]
 pub(super) struct PermissionAccessContext {
+    pub(super) purpose: AccessPurpose,
     pub(super) allocation: Option<AbstractAllocationId>,
     pub(super) envelope: Option<ByteRange>,
     pub(super) pointer: AbstractPointer,
@@ -46,6 +54,7 @@ impl TransferBuilder<'_> {
             access,
             required_access,
             pointer,
+            AccessPurpose::Runtime,
         )
     }
 
@@ -56,6 +65,7 @@ impl TransferBuilder<'_> {
         access: VirMemoryAccess,
         required_access: AccessPermission,
         pointer: AbstractPointer,
+        purpose: AccessPurpose,
     ) -> Result<ObjectAccessFacts, TransferError> {
         let shape = self
             .memory
@@ -137,6 +147,7 @@ impl TransferBuilder<'_> {
             permission_id,
             permission,
             PermissionAccessContext {
+                purpose,
                 allocation: allocation_id,
                 envelope,
                 pointer,
@@ -314,28 +325,46 @@ impl TransferBuilder<'_> {
                 permission_writable_status(permission.access()),
             );
         }
-        let (loan, status) = permission_loan_access_status(
-            &self.state,
-            permission_id,
-            permission,
-            selected.map_or_else(
-                || {
-                    LoanAccess::bytes(
-                        context.pointer,
-                        context.access_bytes,
-                        context.required_access,
-                    )
-                },
-                |range| LoanAccess {
-                    pointer: context.pointer,
-                    envelope: context.envelope,
-                    range,
-                    required: context.required_access,
-                },
-            ),
-            self.relation_limits,
-            &self.relations,
+        let access = selected.map_or_else(
+            || {
+                LoanAccess::bytes(
+                    context.pointer,
+                    context.access_bytes,
+                    context.required_access,
+                )
+            },
+            |range| LoanAccess {
+                pointer: context.pointer,
+                envelope: context.envelope,
+                range,
+                required: context.required_access,
+            },
         );
+        let (loan, status) = if matches!(context.purpose, AccessPurpose::LogicalRead)
+            && context.required_access == AccessPermission::Read
+            && let super::PermissionAuthority::Loan(loan) = permission.authority()
+        {
+            (
+                Some(loan),
+                super::spec::observation::loan_read_status(
+                    &self.state,
+                    loan,
+                    permission_id,
+                    access,
+                    self.relation_limits,
+                    &self.relations,
+                ),
+            )
+        } else {
+            permission_loan_access_status(
+                &self.state,
+                permission_id,
+                permission,
+                access,
+                self.relation_limits,
+                &self.relations,
+            )
+        };
         self.require(
             ResourceObligationKind::LoanCompatible {
                 loan,

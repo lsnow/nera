@@ -1,0 +1,12 @@
+// Shared storage needs only read permission to copy a shared reference field.
+struct Holder { value:&u64, }
+fn main()->u64 {
+    let value=21;
+    let h=Holder {value:&value};
+    return read(&h,true)+read(&h,false);
+}
+fn read(p:&Holder,first:bool)->u64 {
+    if first { let q=p.value; return *q; }
+    let q=p.value;
+    return *q;
+}

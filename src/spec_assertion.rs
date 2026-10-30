@@ -7,11 +7,35 @@ pub enum SpecMemoryIndex {
     Parameter(u32),
 }
 
+/// A canonical path through 2..=16 inline fields. Pointer chasing is absent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SpecMemoryFieldPath<F> {
+    fields: [F; 16],
+    length: u8,
+}
+impl<F: Copy> SpecMemoryFieldPath<F> {
+    pub fn new(fields: &[F]) -> Option<Self> {
+        if !(2..=16).contains(&fields.len()) {
+            return None;
+        }
+        let mut storage = [fields[0]; 16];
+        storage[..fields.len()].copy_from_slice(fields);
+        Some(Self {
+            fields: storage,
+            length: fields.len() as u8,
+        })
+    }
+    pub fn fields(&self) -> &[F] {
+        &self.fields[..usize::from(self.length)]
+    }
+}
+
 /// One canonical projection; nested pointer chasing is deliberately absent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SpecMemoryProjection<F> {
     Cell,
     Field(F),
+    Fields(SpecMemoryFieldPath<F>),
     Index(SpecMemoryIndex),
 }
 

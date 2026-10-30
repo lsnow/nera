@@ -1,0 +1,45 @@
+// The head retains a prefix related to the current stored count, not entry zero.
+opaque struct Arena { cursor:usize, slots:[u64;8], }
+predicate Ready(p:ptr<Arena>) {
+    owns(p);
+    initialized(p.cursor,0usize..1usize);
+    initialized(p.slots,0usize..p.cursor);
+    p.cursor<=8usize;
+}
+fn main()->u64 {
+    let p=alloc<Arena>(1);
+    p.cursor=0usize;
+    fold Ready(p);
+    let q=fill(p,3usize);
+    unfold Ready(q);
+    let n=q.cursor;
+    if n>=1usize {
+        let outcome=q.slots[0];
+        free(q);
+        finish Ready(q);
+        return outcome;
+    }
+    free(q);
+    finish Ready(q);
+    return 0;
+}
+fn fill(p:Own<Arena>,steps:usize)->Own<Arena>
+requires Ready(p);
+ensures Ready(result);
+{
+    let mut i=0usize;
+    while i<steps {
+        invariant i<=steps;
+        unfold Ready(p);
+        let n=p.cursor;
+        if n<8usize {
+            p.slots[n]=42;
+            p.cursor=n+1usize;
+            fold Ready(p);
+        } else {
+            fold Ready(p);
+        }
+        i=i+1usize;
+    }
+    return p;
+}

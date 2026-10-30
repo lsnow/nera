@@ -96,6 +96,14 @@ pub struct HirSpecBinder {
 /// One-way read from runtime HIR into pure Spec HIR.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum HirSpecSnapshot {
+    /// Immutable existential selected by a particular live opening. No runtime
+    /// slot or memory authority is created by this observation.
+    Opened {
+        function: HirFunctionId,
+        action: u32,
+        holder: u32,
+        binder: u32,
+    },
     /// Immutable length component of a slice input, not a pointee read.
     Length {
         function: HirFunctionId,
@@ -295,6 +303,8 @@ pub struct HirSpecLoopInvariant {
 /// Separate pure-term and assertion arenas owned by one HIR program.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HirSpecEnvironment {
+    pub predicate_interfaces: Vec<super::HirPredicateInterface>,
+    pub predicate_actions: Vec<super::HirPredicateAction>,
     pub assertions: Vec<HirSpecAssertion>,
     pub binders: Vec<HirSpecBinder>,
     pub terms: Vec<HirSpecTerm>,
@@ -308,6 +318,8 @@ impl HirSpecEnvironment {
     #[must_use]
     pub const fn empty() -> Self {
         Self {
+            predicate_actions: Vec::new(),
+            predicate_interfaces: Vec::new(),
             assertions: Vec::new(),
             binders: Vec::new(),
             terms: Vec::new(),

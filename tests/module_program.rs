@@ -136,6 +136,18 @@ fn visibility_imports_and_graph_errors_fail_before_hir() {
         ),
         (
             "module app; fn main(){return;}",
+            "module lib; struct Hidden { n: u64, } pub fn expose(x: Own<Hidden>){return;}",
+            "private type escapes",
+            FrontendStatus::Invalid,
+        ),
+        (
+            "module app; fn main(){return;}",
+            "module lib; struct Hidden { n: u64, } pub fn expose(x: ptr<Hidden>){return;}",
+            "private type escapes",
+            FrontendStatus::Invalid,
+        ),
+        (
+            "module app; fn main(){return;}",
             "module lib; struct Hidden { n: u64, } pub struct Exposed { x: [Hidden; 1], }",
             "private type escapes",
             FrontendStatus::Invalid,
@@ -523,4 +535,269 @@ fn nested_modules_layout_failures_and_restricted_import_forms_are_explicit() {
         result.issues().next().unwrap().location.unwrap().source,
         compiler.sources().id("lib").unwrap()
     );
+}
+
+#[test]
+fn opaque_structs_hide_representation_but_preserve_owner_predicate_interfaces() {
+    let lib = r#"module lib;
+        pub opaque struct Storage { value: u64, }
+        pub predicate Ready(p: ptr<Storage>) { owns(p); initialized(p, 0usize..1usize); }
+        pub fn make() -> Own<Storage>
+        ensures Ready(result);
+        { let p = alloc<Storage>(1); p.value = 42; fold Ready(p); return p; }
+        pub fn destroy(p: Own<Storage>) -> u64
+        requires Ready(p);
+        { unfold Ready(p); let value = p.value; free(p); finish Ready(p); return value; }
+    "#;
+    let app = r#"module app; use lib::Storage; use lib::Ready; use lib::make; use lib::destroy;
+        fn forward(p: Own<Storage>) -> Own<Storage>
+        requires Ready(p); ensures Ready(result); { return p; }
+        fn main() -> u64 { let p = forward(make()); return destroy(p); }
+    "#;
+    let compiler = session(&[("app", app), ("lib", lib)], "app::main");
+    let analysis = compiler.analyze("app").unwrap();
+    let output = analysis.frontend();
+    assert!(output.vir().is_some(), "{:?}", output.issues());
+    assert!(compiler.verify("app").unwrap().is_checked());
+    assert_eq!(
+        interpret(output.vir().unwrap().resolve().unwrap().runtime())
+            .unwrap()
+            .values(),
+        [VirRuntimeValue::U64(42)]
+    );
+    for operation in [
+        "let value = p.value;",
+        "p.value = 9;",
+        "let view = &p.value;",
+        "let fake = Storage { value: 1, };",
+    ] {
+        let app = app.replace(
+            "return destroy(p);",
+            &format!("{operation} return destroy(p);"),
+        );
+        let compiler = session(&[("app", &app), ("lib", lib)], "app::main");
+        let result = compiler.analyze("app").unwrap();
+        assert!(result.frontend().vir().is_none(), "{operation}");
+        assert!(format!("{:?}", result.frontend().issues()).contains("opaque representation"));
+    }
+    // Even direct HIR construction must pass the independent privacy check.
+    let hir = output.hir().unwrap();
+    let tables_of = |hir: &nera::HirProgram| nera::HirProgramTables {
+        data_layout: hir.data_layout(),
+        entry_module: hir.entry_module_id(),
+        entry_function: hir.entry_function_id(),
+        type_capabilities: hir.type_capability_table().to_vec(),
+        modules: hir.modules().to_vec(),
+        functions: hir.functions().to_vec(),
+        types: hir.types().to_vec(),
+        layouts: hir.layouts().to_vec(),
+        fields: hir.fields().to_vec(),
+        variants: hir.variants().to_vec(),
+        generic_parameters: hir.generic_parameters().to_vec(),
+        contracts: hir.contracts().to_vec(),
+        predicates: hir.predicates().to_vec(),
+        regions: hir.regions().to_vec(),
+        region_constraints: hir.region_constraints().to_vec(),
+        specs: hir.specs().clone(),
+    };
+    let mut tables = tables_of(hir);
+    let client = tables
+        .functions
+        .iter()
+        .find(|f| f.name == "main")
+        .unwrap()
+        .module;
+    tables
+        .types
+        .iter_mut()
+        .find(|t| t.opaque.is_some())
+        .unwrap()
+        .opaque = Some(client);
+    assert!(nera::HirProgram::from_tables(tables).is_err());
+
+    // Reclassify a valid public representation while retaining its real owner:
+    // independent body validation must reject the now-private client access.
+    let exposed_lib = lib.replace("opaque struct", "struct");
+    let exposed_app = app.replace(
+        "return destroy(p);",
+        "let value = p.value; return destroy(p);",
+    );
+    let compiler = session(&[("app", &exposed_app), ("lib", &exposed_lib)], "app::main");
+    let analysis = compiler.analyze("app").unwrap();
+    let mut tables = tables_of(analysis.frontend().hir().unwrap());
+    let owner = tables
+        .functions
+        .iter()
+        .find(|f| f.name == "make")
+        .unwrap()
+        .module;
+    tables
+        .types
+        .iter_mut()
+        .find(|t| t.name.as_deref() == Some("Storage"))
+        .unwrap()
+        .opaque = Some(owner);
+    let error = nera::HirProgram::from_tables(tables).unwrap_err();
+    assert!(
+        error.to_string().contains("opaque representation"),
+        "{error}"
+    );
+}
+
+#[test]
+fn opaque_public_struct_can_hide_private_nested_types() {
+    let lib = r#"module lib;
+        struct Hidden { value: u64, }
+        pub opaque struct Handle { inner: Hidden, }
+        pub fn make() -> Handle { return Handle { inner: Hidden { value: 7, }, }; }
+        pub fn read(h: Handle) -> u64 { return h.inner.value; }
+    "#;
+    let app = "module app; use lib::make; use lib::read; fn main() -> u64 { return read(make()); }";
+    let compiler = session(&[("app", app), ("lib", lib)], "app::main");
+    assert!(compiler.verify("app").unwrap().is_checked());
+    let result = compiler.analyze("app").unwrap();
+    assert_eq!(
+        interpret(
+            result
+                .frontend()
+                .vir()
+                .unwrap()
+                .resolve()
+                .unwrap()
+                .runtime()
+        )
+        .unwrap()
+        .values(),
+        [VirRuntimeValue::U64(7)]
+    );
+}
+
+#[test]
+fn opaque_arena_api_preserves_private_cursor_and_real_cleanup() {
+    let source = include_str!("../spec/cases/verify/predicate-opaque-arena.nera");
+    let main_start = source.find("fn main()").unwrap();
+    let make_start = source.find("fn make()").unwrap();
+    let library = format!(
+        "module lib;\n{}{}",
+        &source[..main_start],
+        &source[make_start..]
+    )
+    .replace("opaque struct", "pub opaque struct")
+    .replace("predicate Ready", "pub predicate Ready")
+    .replace("fn ", "pub fn ");
+    let app = "module app; use lib::Arena; use lib::Ready; use lib::make; use lib::fill; use lib::reset; use lib::destroy; fn main() -> u64 { return destroy(reset(fill(make()))); }";
+    let compiler = session(&[("app", app), ("lib", &library)], "app::main");
+    assert!(compiler.verify("app").unwrap().is_checked());
+    let output = compiler.analyze("app").unwrap();
+    assert_eq!(
+        interpret(
+            output
+                .frontend()
+                .vir()
+                .unwrap()
+                .resolve()
+                .unwrap()
+                .runtime()
+        )
+        .unwrap()
+        .values(),
+        [VirRuntimeValue::U64(42)]
+    );
+    for extra in [
+        "fn peek(p: &Arena) -> usize requires p.cursor <= 8usize; { return 0usize; }",
+        "predicate Spy(p: ptr<Arena>) { owns(p); p.cursor <= 8usize; }",
+    ] {
+        let client = format!("{app}\n{extra}");
+        let compiler = session(&[("app", &client), ("lib", &library)], "app::main");
+        let output = compiler.analyze("app").unwrap();
+        assert!(output.frontend().vir().is_none());
+        assert!(format!("{:?}", output.frontend().issues()).contains("opaque representation"));
+    }
+}
+
+#[test]
+fn opaque_arena_keeps_ownership_while_another_module_returns_its_view() {
+    let source = include_str!("../spec/cases/verify/predicate-borrow-calls.nera");
+    let main_start = source.find("fn main()").unwrap();
+    let make_start = source.find("fn make()").unwrap();
+    let view_start = source.find("fn prepare(").unwrap();
+    let lib = format!(
+        "module lib; use views::prepare;\n{}{}",
+        &source[..main_start],
+        &source[make_start..view_start]
+    )
+    .replace("opaque struct", "pub opaque struct")
+    .replace("predicate Ready", "pub predicate Ready")
+    .replace("fn ", "pub fn ");
+    let views = format!("module views; pub {}", &source[view_start..]);
+    let app = "module app; use lib::make; use lib::fill; use lib::reset; use lib::destroy; fn main() -> u64 { return destroy(reset(fill(make()))); }";
+    let compiler = session(
+        &[("app", app), ("lib", &lib), ("views", &views)],
+        "app::main",
+    );
+    assert!(compiler.verify("app").unwrap().is_checked());
+    let analysis = compiler.analyze("app").unwrap();
+    assert_eq!(
+        interpret(
+            analysis
+                .frontend()
+                .vir()
+                .unwrap()
+                .resolve()
+                .unwrap()
+                .runtime()
+        )
+        .unwrap()
+        .values(),
+        [VirRuntimeValue::U64(42)]
+    );
+    for bad in [
+        views.replace("view[0] = 12;", "view[2] = 12;"),
+        views.replace("return view;", "return &mut view[1usize..];"),
+    ] {
+        let compiler = session(&[("app", app), ("lib", &lib), ("views", &bad)], "app::main");
+        assert!(!compiler.verify("app").unwrap().is_checked());
+    }
+}
+
+#[test]
+fn reference_field_sources_survive_cross_module_stored_and_ssa_forwarding() {
+    let types = "module types; pub struct Views { left:&mut u64, right:&mut u64, }";
+    let storage = "module storage; use types::Views; pub fn keep(v:Views)->Views { return v; }";
+    let library = "module library; use types::Views; use storage::keep;
+        pub fn take(v:Views)->&mut u64 { let stored=keep(v); return stored.right; }";
+    let app = "module app; use types::Views; use library::take;
+        fn main()->u64 { let mut a=1; let mut b=42;
+            let outcome=take(Views { left:&mut a, right:&mut b }); return *outcome; }";
+    let compiler = session(
+        &[
+            ("app", app),
+            ("library", library),
+            ("storage", storage),
+            ("types", types),
+        ],
+        "app::main",
+    );
+    let analysis = compiler.analyze("app").unwrap();
+    let output = analysis.frontend();
+    assert_eq!(
+        output.status(),
+        FrontendStatus::AcceptedProposal,
+        "{:?}",
+        output.issues()
+    );
+    let report = compiler.verify("app").unwrap();
+    assert!(
+        report.is_checked(),
+        "{}",
+        render_text(&report, TextReportMode::Explain)
+    );
+    let program = output.vir().unwrap().resolve().unwrap();
+    assert_eq!(
+        interpret(program.runtime()).unwrap().values(),
+        &[VirRuntimeValue::U64(42)]
+    );
+    nera::backend::X86_64_UNKNOWN_LINUX_GNU
+        .codegen_program(program.runtime())
+        .unwrap();
 }

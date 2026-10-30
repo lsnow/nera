@@ -1,0 +1,73 @@
+// A scalar parameter retains its entry identity through nested predicate calls.
+struct State { unused:bool, cursor:usize, step:usize, }
+opaque struct Arena { state:State, slots:[u64;8], }
+predicate Ready(p:ptr<Arena>) {
+    owns(p);
+    initialized(p.state.cursor,0usize..1usize);
+    initialized(p.state.step,0usize..1usize);
+    initialized(p.slots,0usize..8usize);
+    p.state.cursor <= 8usize;
+    p.state.step <= 4usize;
+}
+fn main()->u64 {
+    let p=make();
+    let q=advance_owner(p,1usize);
+    return destroy(q);
+}
+fn make()->Own<Arena>
+ensures Ready(result);
+ensures result.state.cursor==0usize;
+ensures result.state.step==1usize;
+{
+    let p=alloc<Arena>(1);
+    p.state.cursor=0usize;
+    p.state.step=1usize;
+    p.slots=[42,0,0,0,0,0,0,0];
+    fold Ready(p);
+    return p;
+}
+fn advance_owner(p:Own<Arena>,count:usize)->Own<Arena>
+requires Ready(p);
+requires p.state.cursor<2usize;
+requires count<2usize;
+ensures Ready(result);
+ensures result.state.cursor==old(p.state.cursor)+count+count;
+{
+    let end=advance_index(&mut *p,count);
+    assert end<=8usize;
+    return p;
+}
+fn advance_index(p:&mut Arena,count:usize)->usize
+requires Ready(p);
+requires p.state.cursor<2usize;
+requires count<2usize;
+ensures Ready(p);
+ensures p.state.cursor==old(p.state.cursor)+count+count;
+ensures result==old(p.state.cursor)+count+count;
+{
+    let first=advance(&mut *p,count);
+    return advance(p,count);
+}
+fn advance(p:&mut Arena,count:usize)->usize
+requires Ready(p);
+requires p.state.cursor<4usize;
+requires count<2usize;
+ensures Ready(p);
+ensures p.state.cursor==old(p.state.cursor)+count;
+ensures result==old(p.state.cursor)+count;
+{
+    unfold Ready(p);
+    let end=p.state.cursor+count;
+    p.state.cursor=end;
+    fold Ready(p);
+    return end;
+}
+fn destroy(p:Own<Arena>)->u64
+requires Ready(p);
+{
+    unfold Ready(p);
+    let value=p.slots[0];
+    free(p);
+    finish Ready(p);
+    return value;
+}

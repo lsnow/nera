@@ -1,0 +1,24 @@
+// Current scalar relations support captured formulas without a runtime x+1 slot.
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>,inside:bool) {
+    owns(p);
+    initialized(p.value,0..1);
+}
+fn main()->u64 {
+    let p=alloc<Cell>(1);
+    p.value=42;
+    fold Ready(p,6usize+1usize<=7usize);
+    return consume(p,6usize,7usize);
+}
+fn consume(p:Own<Cell>,count:usize,limit:usize)->u64
+requires count<=10usize;
+requires limit<=20usize;
+requires count<limit;
+requires Ready(p,count+1usize<=limit);
+{
+    unfold Ready(p,true);
+    let outcome=p.value;
+    free(p);
+    finish Ready(p,true);
+    return outcome;
+}

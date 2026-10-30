@@ -1,0 +1,57 @@
+// A predicate group spans two allocations and lends their authority together.
+opaque struct Cell { value:u64, unused:bool, }
+struct Pair { left:Own<Cell>, right:Own<Cell>, }
+predicate Ready(left:ptr<Cell>,right:ptr<Cell>) {
+    owns(left);
+    owns(right);
+    initialized(left.value,0usize..1usize);
+    initialized(right.value,0usize..1usize);
+    left.value<=64;
+    right.value<=64;
+}
+fn main()->u64 {
+    let pair=make();
+    let changed=update(pair);
+    return destroy(changed);
+}
+fn make()->Pair
+ensures Ready(result.left,result.right);
+{
+    let left=alloc<Cell>(1);
+    let right=alloc<Cell>(1);
+    left.value=11;
+    right.value=29;
+    fold Ready(left,right);
+    return Pair{left:left,right:right};
+}
+fn update(pair:Pair)->Pair
+requires Ready(pair.left,pair.right);
+ensures Ready(result.left,result.right);
+{
+    let left=pair.left;
+    let right=pair.right;
+    bump(&mut *left,&mut *right);
+    return Pair{left:left,right:right};
+}
+fn bump(left:&mut Cell,right:&mut Cell)
+requires Ready(left,right);
+ensures Ready(left,right);
+{
+    unfold Ready(left,right);
+    if left.value<64 {left.value=left.value+1;}
+    if right.value<64 {right.value=right.value+1;}
+    fold Ready(left,right);
+    return;
+}
+fn destroy(pair:Pair)->u64
+requires Ready(pair.left,pair.right);
+{
+    let left=pair.left;
+    let right=pair.right;
+    unfold Ready(left,right);
+    let outcome=left.value+right.value;
+    free(left);
+    free(right);
+    finish Ready(left,right);
+    return outcome;
+}

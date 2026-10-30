@@ -25,7 +25,34 @@ pub(crate) fn project(
         .iter()
         .find(|b| b.id == function.entry)
         .unwrap();
-    let entry = cfg.function_entry_state();
+    let entry_view = if program
+        .as_unit()
+        .specs
+        .predicate_interfaces()
+        .iter()
+        .any(|i| i.function == function.id && !i.ensures)
+    {
+        let contracts = crate::verifier::contract::instantiate_contracts(program)
+            .map_err(|_| SummaryValidationError::Resource)?;
+        let contract = contracts
+            .get(function.contract)
+            .ok_or(SummaryValidationError::Resource)?;
+        std::borrow::Cow::Owned(
+            contract
+                .predicate_entry_abi_view(
+                    cfg.function_entry_state(),
+                    &entry_block
+                        .parameters
+                        .iter()
+                        .map(|p| p.id)
+                        .collect::<Vec<_>>(),
+                )
+                .map_err(|_| SummaryValidationError::Resource)?,
+        )
+    } else {
+        std::borrow::Cow::Borrowed(cfg.function_entry_state())
+    };
+    let entry = &*entry_view;
     let abi = &program
         .runtime()
         .abis
@@ -40,8 +67,11 @@ pub(crate) fn project(
             .map(|binding| binding.parameter_slots().first().map(|slot| *slot as usize))
             .collect(),
         aliases: aliases(function),
+        result_aliases: BTreeMap::new(),
+        result_offset_aliases: BTreeMap::new(),
         names: BTreeMap::new(),
         loans: BTreeMap::new(),
+        stored_loans: BTreeMap::new(),
         losses: BTreeSet::new(),
     };
     for (index, parameter) in entry_block.parameters.iter().enumerate() {
@@ -61,6 +91,7 @@ pub(crate) fn project(
             }
         }
     }
+    projector.discover_stored_loans(entry, program.runtime().memory);
     let inputs = entry_block
         .parameters
         .iter()
@@ -131,8 +162,54 @@ pub(crate) fn project(
                 _ => None,
             })
             .unwrap();
-        let values = returned
-            .values()
+        projector.result_aliases.clear();
+        projector.result_offset_aliases.clear();
+        if abi.borrow_result().is_some_and(|r| {
+            matches!(
+                r.projection,
+                crate::BorrowProjection::ArraySlice {
+                    start: crate::BorrowSliceBound::ReturnedOffset,
+                    ..
+                }
+            )
+        }) {
+            let slot = abi.results()[0].result_slots()[0] as usize;
+            projector.result_offset_aliases.insert(ids[slot], slot);
+        }
+        // Only the dynamic array-slice export check certifies this output coordinate.
+        // Ordinary scalar/recursive summaries retain their existing abstraction.
+        if abi.borrow_result().is_some_and(|r| {
+            matches!(
+                r.projection,
+                crate::BorrowProjection::ArraySlice {
+                    end: crate::BorrowSliceBound::ReturnedLength,
+                    ..
+                }
+            )
+        }) {
+            let index = abi.results()[0].result_slots()[1] as usize;
+            let id = ids[index];
+            if matches!(returned.values()[index], AbstractValue::U64(_)) {
+                if let Some(expr) = state.word_expression(id)
+                    && expr.addend() == 0
+                    && let [Some((root, 1)), None] = expr.terms()
+                {
+                    projector.result_aliases.insert(root, index);
+                }
+                projector.result_aliases.insert(id, index);
+            }
+        }
+        let normalized = crate::verifier::borrow_interface::normalize_returned_slice(
+            state,
+            ids,
+            returned.values(),
+            abi,
+        );
+        if normalized.is_none() {
+            projector.losses.insert(SummaryLoss::ResourceProjection);
+        }
+        let normalized = normalized.as_deref().unwrap_or(returned.values());
+        let values = normalized
             .iter()
             .zip(ids)
             .enumerate()
@@ -148,7 +225,7 @@ pub(crate) fn project(
         // indivisible interface world.  Checking only the union of possible
         // sources would accept a body (or corrupted artifact) that swaps the
         // true/false pointers or swaps only their permission tokens.
-        if !conditional_borrow_world_matches(abi, &guard, &values) {
+        if !conditional_borrow_world_matches(abi, &guard, &values, program.runtime().memory) {
             projector.losses.insert(SummaryLoss::ResourceProjection);
         }
         let resources = projector.resources(state);
@@ -172,6 +249,61 @@ pub(crate) fn project(
                 });
             }
         }
+        // These checks are tied to the exact return evidence, not inferred
+        // merely from a live payload found somewhere in the post-state.
+        if returned
+            .field_exports()
+            .iter()
+            .any(|(id, status)| !status.is_proven() || !projector.stored_loans.contains_key(id))
+        {
+            projector.losses.insert(SummaryLoss::ResourceProjection);
+        }
+        let mut stored_borrow_restoration = Vec::new();
+        for (id, input) in &projector.stored_loans {
+            let Some(loan) = state.loan(*id) else {
+                projector.losses.insert(SummaryLoss::ResourceProjection);
+                continue;
+            };
+            if !matches!(loan.activity(), LoanActivity::Active | LoanActivity::Ended)
+                || (loan.activity() == LoanActivity::Ended && !loan.authorities().is_empty())
+            {
+                projector.losses.insert(SummaryLoss::ResourceProjection);
+                continue;
+            }
+            let exit = if loan.activity() == LoanActivity::Ended {
+                crate::BoundaryExit::Ended
+            } else {
+                let authority = SummaryAuthority::InputPayloadLoan(input.clone());
+                let mut carriers = resources.iter().flat_map(|r| r.payloads.iter().filter(|&p| matches!(&p.state, SummaryMovePath::Available { permission, .. } if permission.authority == authority)).map(|p| StoredBorrowLocation { resource: r.name.clone(), offset: p.offset, access: p.access })).collect::<Vec<_>>();
+                let ssa = values.iter().enumerate().filter_map(|(slot, value)|
+                    matches!(&value.value, SummaryValue::Permission(p) if p.authority == authority).then_some(slot)
+                ).collect::<Vec<_>>();
+                carriers.sort();
+                match (carriers.as_slice(), ssa.as_slice()) {
+                    ([location], []) if super::borrow::is_input_location(input, location) => {
+                        crate::BoundaryExit::InPlace
+                    }
+                    ([location], []) => crate::BoundaryExit::Stored(location.clone()),
+                    ([], [slot]) => crate::BoundaryExit::Value(*slot),
+                    _ if loan.kind() == crate::VirLoanKind::Shared
+                        && carriers.len() + ssa.len() > 1 =>
+                    {
+                        crate::BoundaryExit::Shared {
+                            stored: carriers,
+                            values: ssa,
+                        }
+                    }
+                    _ => {
+                        projector.losses.insert(SummaryLoss::ResourceProjection);
+                        continue;
+                    }
+                }
+            };
+            stored_borrow_restoration.push(StoredBorrowRestoration {
+                input: input.clone(),
+                exit,
+            });
+        }
         let world = ReturnWorld {
             effects: if effects_fit {
                 projector.effects(&cfg.summary_events).0
@@ -184,6 +316,14 @@ pub(crate) fn project(
             },
             return_evidence,
             values,
+            bool_value_origins: ids
+                .iter()
+                .map(|id| projector.bool_origin(state.bool_origin(*id)?))
+                .collect(),
+            value_origins: ids
+                .iter()
+                .map(|id| projector.scalar_origin(state.word_origin(*id)?))
+                .collect(),
             post_inputs: entry_block
                 .parameters
                 .iter()
@@ -202,6 +342,7 @@ pub(crate) fn project(
                 .unwrap_or(Knowledge::Unknown),
             resources,
             borrow_restoration,
+            stored_borrow_restoration,
         };
         if let Some(alternative) = alternatives.iter_mut().find(|a| a.guard == guard) {
             alternative.worlds.push(world);
@@ -344,6 +485,7 @@ fn conditional_borrow_world_matches(
     abi: &VirAbiSignature,
     guard: &[SummaryGuard],
     values: &[ValueMapping],
+    memory: &crate::VirMemorySchema,
 ) -> bool {
     if abi.borrow_result_alternatives().is_empty() {
         return true;
@@ -379,6 +521,38 @@ fn conditional_borrow_world_matches(
     let Some(result) = abi.results().get(relation.result as usize) else {
         return false;
     };
+    if relation.parameter_field.is_some() {
+        let Some(parameters) = abi
+            .parameters()
+            .iter()
+            .map(|b| b.value().access())
+            .collect::<Option<Vec<_>>>()
+        else {
+            return false;
+        };
+        let Some(results) = abi
+            .results()
+            .iter()
+            .map(|b| b.value().access())
+            .collect::<Option<Vec<_>>>()
+        else {
+            return false;
+        };
+        let Some(entry) =
+            crate::vir::plan_parameter_field_result(memory, &parameters, &results, relation)
+        else {
+            return false;
+        };
+        let path = ResourceName::Input {
+            parameter: entry.pointer_slot as usize,
+            payload_offsets: vec![entry.offset_bytes],
+        };
+        let [pointer, permission] = result.result_slots() else {
+            return false;
+        };
+        return matches!(values.get(*pointer as usize).map(|m| &m.value), Some(SummaryValue::Pointer(p)) if p.resource == Knowledge::Known(path.clone()))
+            && matches!(values.get(*permission as usize).map(|m| &m.value), Some(SummaryValue::Permission(p)) if p.authority == SummaryAuthority::InputPayloadLoan(path));
+    }
     result
         .result_slots()
         .iter()
@@ -415,11 +589,169 @@ struct Projector<'a> {
     /// coordinates use physical VIR signature slots.
     path_parameters: Vec<Option<usize>>,
     aliases: BTreeMap<VirValueId, ScalarTerm>,
+    result_aliases: BTreeMap<VirValueId, usize>,
+    result_offset_aliases: BTreeMap<VirValueId, usize>,
     names: BTreeMap<AbstractAllocationId, ResourceName>,
     loans: BTreeMap<crate::VirLoanId, usize>,
+    stored_loans: BTreeMap<crate::VirLoanId, ResourceName>,
     losses: BTreeSet<SummaryLoss>,
 }
 impl Projector<'_> {
+    fn discover_stored_loans(&mut self, entry: &ResourceState, memory: &crate::VirMemorySchema) {
+        for (storage, name) in &self.names {
+            let ResourceName::Input {
+                parameter,
+                payload_offsets,
+            } = name
+            else {
+                continue;
+            };
+            let Some(allocation) = entry.allocation(*storage) else {
+                continue;
+            };
+            for (key, value) in allocation.object_state().resource_payloads() {
+                let MovePathState::Available(payload) = value else {
+                    continue;
+                };
+                let PermissionAuthority::Loan(id) = payload.permission().authority() else {
+                    continue;
+                };
+                let mut offsets = payload_offsets.clone();
+                offsets.push(key.offset_bytes());
+                let path = ResourceName::Input {
+                    parameter: *parameter,
+                    payload_offsets: offsets,
+                };
+                if payload_offsets.len() >= 16
+                    || super::borrow::input_payload_field(
+                        memory,
+                        &self.function.signature.parameters,
+                        &path,
+                    ) != Some(key.access())
+                    || !super::borrow::stored_reference_shape(
+                        memory,
+                        key.access(),
+                        payload.pointer().memory_access(),
+                        payload.permission().access(),
+                        payload.permission().free_capability(),
+                    )
+                    || self.loans.contains_key(&id)
+                    || self.stored_loans.contains_key(&id)
+                    || payload.permission().free_capability() != FreeCapability::No
+                    || payload.permission().availability() != PermissionAvailability::Available
+                    || entry.loan(id).is_none_or(|loan| {
+                        loan.activity() != crate::verifier::LoanActivity::Active
+                            || !loan.authorities().contains(
+                                &crate::verifier::resource::AbstractLoanAuthority::stored(
+                                    *storage, *key,
+                                ),
+                            )
+                            || loan.provenance() != payload.permission().provenance()
+                            || loan.actual_range() != payload.permission().range()
+                    })
+                {
+                    self.losses.insert(SummaryLoss::ResourceProjection);
+                    continue;
+                }
+                self.stored_loans.insert(id, path);
+            }
+        }
+    }
+    fn bool_origin(
+        &self,
+        origin: crate::verifier::resource::BoolOrigin,
+    ) -> Option<SummaryScalarRoot> {
+        use crate::verifier::resource::BoolOrigin;
+        match origin {
+            // An induction observation is not the function's entry cell.
+            BoolOrigin::Snapshot(_) | BoolOrigin::Transported(_) => None,
+            BoolOrigin::Parameter { function, value } => {
+                if function != self.function.id {
+                    return None;
+                }
+                let entry = self
+                    .function
+                    .blocks
+                    .iter()
+                    .find(|b| b.id == self.function.entry)?;
+                Some(SummaryScalarRoot::Parameter(
+                    entry
+                        .parameters
+                        .iter()
+                        .position(|p| p.id == value && p.ty == VirType::Bool)?,
+                ))
+            }
+            BoolOrigin::Cell {
+                allocation,
+                bytes,
+                access,
+            } => {
+                let resource = self.names.get(&allocation)?.clone();
+                if !matches!(resource, ResourceName::Input { .. }) {
+                    return None;
+                }
+                Some(SummaryScalarRoot::Cell {
+                    resource,
+                    bytes,
+                    access,
+                })
+            }
+        }
+    }
+    fn scalar_origin(
+        &self,
+        origin: crate::verifier::resource::ScalarOrigin,
+    ) -> Option<SummaryScalarOrigin> {
+        let source = |cell: crate::verifier::resource::ScalarOriginCell, scale| {
+            use crate::verifier::resource::ScalarOriginRoot;
+            let root = match cell.root {
+                ScalarOriginRoot::Snapshot(_) | ScalarOriginRoot::Transported(_) => return None,
+                ScalarOriginRoot::Cell {
+                    allocation,
+                    bytes,
+                    access,
+                } => {
+                    let resource = self.names.get(&allocation)?.clone();
+                    if !matches!(resource, ResourceName::Input { .. }) {
+                        return None;
+                    }
+                    SummaryScalarRoot::Cell {
+                        resource,
+                        bytes,
+                        access,
+                    }
+                }
+                ScalarOriginRoot::Parameter { function, value } => {
+                    if function != self.function.id {
+                        return None;
+                    }
+                    let entry = self
+                        .function
+                        .blocks
+                        .iter()
+                        .find(|b| b.id == self.function.entry)?;
+                    let slot = entry
+                        .parameters
+                        .iter()
+                        .position(|p| p.id == value && p.ty == VirType::U64)?;
+                    SummaryScalarRoot::Parameter(slot)
+                }
+            };
+            Some(SummaryScalarSource { root, scale })
+        };
+        let first = source(origin.first, origin.scale)?;
+        let second = match origin.second {
+            Some((cell, scale)) => Some(source(cell, scale)?),
+            None => None,
+        };
+        Some(SummaryScalarOrigin {
+            root: first.root,
+            scale: first.scale,
+            addend: origin.addend,
+            second,
+        })
+    }
+
     fn effects(&mut self, journal: &EffectJournal) -> (SummaryEffects, usize) {
         use super::effects::EffectKind;
         let (mut reads, mut writes, mut frees) = (Vec::new(), Vec::new(), Vec::new());
@@ -556,9 +888,22 @@ impl Projector<'_> {
     }
     fn bound(&mut self, bound: SymbolicRangeBound) -> Option<SummaryBound> {
         let mut terms = BTreeMap::<usize, u64>::new();
+        let mut result_terms = BTreeMap::<usize, u64>::new();
+        let mut result_offset_terms = BTreeMap::<usize, u64>::new();
         let mut addend = bound.expression().addend();
         for (id, scale) in bound.expression().terms().into_iter().flatten() {
-            match self.aliases.get(&id)? {
+            if let Some(index) = self.result_offset_aliases.get(&id) {
+                let total = result_offset_terms.entry(*index).or_default();
+                *total = total.checked_add(scale)?;
+                continue;
+            }
+            let Some(alias) = self.aliases.get(&id) else {
+                let index = *self.result_aliases.get(&id)?;
+                let total = result_terms.entry(index).or_default();
+                *total = total.checked_add(scale)?;
+                continue;
+            };
+            match alias {
                 ScalarTerm::Constant(value) => {
                     addend = addend.checked_add(value.checked_mul(scale)?)?;
                 }
@@ -570,6 +915,8 @@ impl Projector<'_> {
         }
         Some(SummaryBound {
             terms: terms.into_iter().collect(),
+            result_terms: result_terms.into_iter().collect(),
+            result_offset_terms: result_offset_terms.into_iter().collect(),
             addend,
             interval: bound.interval(),
         })
@@ -653,6 +1000,12 @@ impl Projector<'_> {
                     .get(&id)
                     .copied()
                     .map(SummaryAuthority::InputLoan)
+                    .or_else(|| {
+                        self.stored_loans
+                            .get(&id)
+                            .cloned()
+                            .map(SummaryAuthority::InputPayloadLoan)
+                    })
                     .unwrap_or_else(|| {
                         self.losses.insert(SummaryLoss::ResourceProjection);
                         SummaryAuthority::Unknown
@@ -746,6 +1099,26 @@ impl Projector<'_> {
                 ownership: allocation.ownership(),
                 initialization: allocation.initialization().clone(),
                 validity: allocation.valid_value_bytes().clone(),
+                scalar_contents: allocation.scalar_contents(),
+                bool_origins: allocation
+                    .scalar_contents()
+                    .into_iter()
+                    .filter_map(|(bytes, access, _)| {
+                        Some((
+                            bytes,
+                            access,
+                            self.bool_origin(allocation.bool_origin(bytes, access)?)?,
+                        ))
+                    })
+                    .collect(),
+                scalar_origins: allocation
+                    .scalar_contents()
+                    .into_iter()
+                    .filter_map(|(bytes, access, _)| {
+                        let origin = allocation.scalar_origin(bytes, access)?;
+                        Some((bytes, access, self.scalar_origin(origin)?))
+                    })
+                    .collect(),
                 variants,
                 payloads,
                 object_precise: allocation.object_state().is_precise(),
@@ -973,6 +1346,96 @@ mod tests {
     use super::*;
 
     #[test]
+    fn local_observation_origins_never_project_as_entry_cells() {
+        use crate::verifier::resource::{
+            BoolOrigin, ScalarCellSnapshot, ScalarOrigin, ScalarOriginCell, ScalarOriginRoot,
+        };
+        let output = crate::analyze(&crate::SourceFile::from_text(
+            "origin.nera",
+            "fn main()->u64 { return 0; }",
+        ));
+        let resolved = output.vir().unwrap().resolve().unwrap();
+        let function = &resolved.runtime().functions[0];
+        let observation = ScalarCellSnapshot {
+            epoch: 1,
+            allocation: AbstractAllocationId::new(0),
+            bytes: ByteRange::new(0, 8).unwrap(),
+            access: crate::VirMemoryAccess::core_u64(),
+        };
+        let projector = Projector {
+            function,
+            path_parameters: Vec::new(),
+            aliases: aliases(function),
+            result_aliases: BTreeMap::new(),
+            result_offset_aliases: BTreeMap::new(),
+            names: BTreeMap::from([(
+                observation.allocation,
+                ResourceName::Input {
+                    parameter: 0,
+                    payload_offsets: vec![],
+                },
+            )]),
+            loans: BTreeMap::new(),
+            stored_loans: BTreeMap::new(),
+            losses: BTreeSet::new(),
+        };
+        let mut origin = ScalarOrigin {
+            first: ScalarOriginCell {
+                root: ScalarOriginRoot::Snapshot(observation),
+                initial_lower: 0,
+                initial_upper: 42,
+            },
+            scale: 1,
+            second: None,
+            addend: 0,
+        };
+        assert!(projector.scalar_origin(origin).is_none());
+        assert!(
+            projector
+                .bool_origin(BoolOrigin::Snapshot(observation))
+                .is_none()
+        );
+        let snapshot = origin;
+        origin.first.root = ScalarOriginRoot::Cell {
+            allocation: observation.allocation,
+            bytes: observation.bytes,
+            access: observation.access,
+        };
+        assert!(projector.scalar_origin(origin).is_some());
+        assert!(
+            projector
+                .scalar_origin(origin.sum(snapshot).unwrap())
+                .is_none()
+        );
+        let mut allocation = crate::AbstractAllocation::new_local(8, 8).unwrap();
+        allocation.mark_initialized(observation.bytes).unwrap();
+        allocation.mark_valid(observation.bytes).unwrap();
+        allocation.record_scalar_content(
+            observation.bytes,
+            observation.access,
+            AbstractValue::U64(crate::U64Interval::new(0, 42).unwrap()),
+        );
+        allocation.set_scalar_origin(observation.bytes, observation.access, origin);
+        let mut transport = crate::verifier::resource::ScalarOriginTransport::default();
+        transport
+            .allocation(
+                &mut allocation,
+                &mut 1,
+                &mut crate::predicate_logic::LogicBudget::default(),
+            )
+            .unwrap();
+        assert!(
+            projector
+                .scalar_origin(
+                    allocation
+                        .scalar_origin(observation.bytes, observation.access)
+                        .unwrap()
+                )
+                .is_none()
+        );
+    }
+
+    #[test]
     fn conditional_borrow_world_rejects_swapped_guard_pointer_or_authority() {
         let output = crate::analyze(&crate::SourceFile::from_text(
             "conditional-world.nera",
@@ -1008,7 +1471,8 @@ mod tests {
         assert!(conditional_borrow_world_matches(
             abi,
             &alternative.guard,
-            values
+            values,
+            resolved.runtime().memory
         ));
 
         let swapped_guard = [SummaryGuard::Boolean {
@@ -1018,7 +1482,8 @@ mod tests {
         assert!(!conditional_borrow_world_matches(
             abi,
             &swapped_guard,
-            values
+            values,
+            resolved.runtime().memory
         ));
 
         let true_relation = abi
@@ -1063,7 +1528,8 @@ mod tests {
         assert!(!conditional_borrow_world_matches(
             abi,
             &alternative.guard,
-            &pointer_swapped
+            &pointer_swapped,
+            resolved.runtime().memory
         ));
 
         let mut authority_swapped = values.clone();
@@ -1082,7 +1548,8 @@ mod tests {
         assert!(!conditional_borrow_world_matches(
             abi,
             &alternative.guard,
-            &authority_swapped
+            &authority_swapped,
+            resolved.runtime().memory
         ));
     }
 
@@ -1125,8 +1592,11 @@ mod tests {
                                 function,
                                 path_parameters: Vec::new(),
                                 aliases: aliases(function),
+                                result_aliases: BTreeMap::new(),
+                                result_offset_aliases: BTreeMap::new(),
                                 names: BTreeMap::new(),
                                 loans: BTreeMap::new(),
+                                stored_loans: BTreeMap::new(),
                                 losses: BTreeSet::new(),
                             };
                             projector.discover(

@@ -1,0 +1,16 @@
+// One imported shared carrier produces two aggregate result fields while
+// preserving its source container and unrelated aliases in the caller.
+struct Holder { value:&u64, }
+struct Pair { first:&u64, second:&u64, }
+fn main()->u64 {
+    let value=21;
+    let h=Holder {value:&value};
+    let saved=h;
+    let pair=duplicate(&h);
+    let a=pair.first;
+    let b=pair.second;
+    return *a+*b;
+}
+fn duplicate(p:&Holder)->Pair {
+    return Pair {first:p.value, second:p.value};
+}

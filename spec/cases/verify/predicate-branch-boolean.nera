@@ -1,0 +1,31 @@
+// Public captures follow the actual scalar selected at the CFG merge.
+// Private witnesses may be forgotten; the public argument remains usable.
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>,flag:bool) {
+    exists used:usize = 0usize;
+    owns(p);
+    initialized(p.value,0..1);
+    p.value<=42;
+    used<=7usize;
+}
+fn main()->u64 {
+    return choose(true);
+}
+fn choose(which:bool)->u64 {
+    let p=alloc<Cell>(1);
+    p.value=42;
+    let mut flag=true;
+    if which {
+        fold Ready(p,flag) with (used=1usize);
+    } else {
+        flag=false;
+        fold Ready(p,flag) with (used=2usize);
+    }
+    unfold Ready(p,flag) as (saved);
+    fold Ready(p,flag) with (used=saved);
+    unfold Ready(p,flag);
+    let outcome=p.value;
+    free(p);
+    finish Ready(p,flag);
+    return outcome;
+}

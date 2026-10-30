@@ -119,7 +119,16 @@ fn every_return_must_restore_borrowed_value_even_when_caller_ignores_it() {
         }
         assert!(changed);
         unit.rebuild_source_map_from_runtime("borrow-exit-mutation.vir", 10000);
-        let verification = rejected(unit, take_bad_arm);
+        // Returning the plain mutable storage handle performs no value read.
+        // The ordinary static ABI still rejects either body path's missing value.
+        let runtime = unit.clone().into_validated().unwrap();
+        assert_eq!(
+            interpret(runtime.resolve().unwrap().runtime())
+                .unwrap()
+                .values(),
+            [nera::VirRuntimeValue::U64(42)]
+        );
+        let verification = rejected(unit, false);
         let obligations = verification.functions()[&nera::VirFunctionId::new(1)]
             .cfg()
             .obligations();
@@ -200,7 +209,8 @@ fn live_borrow_prevents_owner_reconstruction_and_ignoring_a_call_argument_is_not
     let source = "fn main() -> u64 { let mut p = 42; let r = &mut p; ignore(r); return 42; } fn ignore(p: &mut u64) { return; }";
     let mut unit = accepted(source).vir().unwrap().as_unit().clone();
     // Retire through the valid mutable authority after formation, before an
-    // otherwise empty callee. Only a call-boundary value check catches this.
+    // otherwise empty callee. The static call-boundary value check must reject
+    // this even though forming/passing a mutable storage view performs no read.
     let mut changed = false;
     for block in &mut unit.runtime.functions[0].blocks {
         let mut rewritten = Vec::new();
@@ -229,11 +239,12 @@ fn live_borrow_prevents_owner_reconstruction_and_ignoring_a_call_argument_is_not
     assert!(changed);
     unit.rebuild_source_map_from_runtime("call-entry-retirement.vir", 10000);
     let validated = unit.clone().into_validated().unwrap();
-    let fault = interpret(validated.resolve().unwrap().runtime()).unwrap_err();
-    assert!(matches!(
-        fault.kind(),
-        nera::VirExecutionErrorKind::UninitializedObjectLeaf { .. }
-    ));
+    assert_eq!(
+        interpret(validated.resolve().unwrap().runtime())
+            .unwrap()
+            .values(),
+        [nera::VirRuntimeValue::U64(42)]
+    );
     rejected(unit, false);
 }
 
@@ -318,6 +329,23 @@ fn missing_or_weakened_indirect_skeleton_cannot_supply_a_complete_value() {
 
 #[test]
 fn incomplete_returns_escape_and_unimplemented_interfaces_fail_closed() {
+    // Resource-bearing pointer parameters reach semantic checking in P3/P4.
+    // Without a representation contract, ownership still cannot disappear.
+    let output = accepted(
+        "struct Package { owner: Own<u64>, } fn missing_contract(p: &mut Package) { return; }",
+    );
+    let report = rejected(output.vir().unwrap().as_unit().clone(), false);
+    assert!(
+        report
+            .functions()
+            .values()
+            .flat_map(|f| f.cfg().obligations())
+            .any(|o| !o.obligation().is_proven()
+                && matches!(
+                    o.obligation().kind(),
+                    nera::ResourceObligationKind::OwnershipConserved { .. }
+                ))
+    );
     for source in [
         "struct Pair { left: u64, right: u64, } fn make(b: bool) -> Pair { let mut p: Pair; p.left = 42; if b { p.right = 0; } return p; } fn main() -> u64 { let p = make(true); return 42; }",
         "struct Package { owner: Own<u64>, word: u64, } fn bad(p: Package) -> Package { let moved = p.owner; return p; } fn main() -> u64 { return 42; }",
@@ -327,7 +355,6 @@ fn incomplete_returns_escape_and_unimplemented_interfaces_fail_closed() {
     for source in [
         "fn escape(p: &u64) -> &u64 { let mut value: u64; value = 42; return &value; }",
         "struct Pair { left: u64, right: u64, } fn escape(p: &Pair) -> &Pair { return &Pair { left: 20, right: 22 }; }",
-        "struct Package { owner: Own<u64>, } fn unsupported(p: &mut Package) { return; }",
         "enum Package { Empty, Full(Own<u64>), } fn unsupported(p: Package) -> Package { return p; }",
     ] {
         let output = analyze(&SourceFile::from_text("interface-gated.nera", source));

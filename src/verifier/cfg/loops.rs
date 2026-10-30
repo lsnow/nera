@@ -11,6 +11,7 @@ use crate::verifier::vc::{
 use crate::vir::{ScalarLoopAtom as Atom, ScalarOperand as Operand, scalar_atoms};
 pub(super) mod candidates;
 pub(super) mod partitions;
+mod predicates;
 mod resources;
 mod scalars;
 pub use candidates::LoopCandidateAttempt;
@@ -94,6 +95,9 @@ struct LoopInduction<'a, 'u> {
     function: &'a VirFunction,
     clauses: Vec<(&'a crate::VirSpecLoopInvariant, Option<VcTermId>)>,
     resource_entry: Option<ResourceState>,
+    predicate_parameters: super::super::resource::LoopPredicateParameters,
+    repacked_predicates: BTreeSet<crate::verifier::PredicateHolder>,
+    repacked_declarations: BTreeSet<crate::VirPredicateId>,
     normalizer: VcNormalizer,
     budget: VcQueryBudget,
     config: CfgAnalysisConfig,
@@ -160,13 +164,18 @@ impl<'a, 'u> LoopInduction<'a, 'u> {
         }
         let mut budget = VcQueryBudget::new(VcLimits::default());
         budget.relation_limits = config.relation_limits;
+        let boundary = clauses[0].0.boundary.as_ref().unwrap();
+        let repacked_declarations = predicates::repacked_declarations(unit, function, boundary)?;
         Ok(Self {
+            repacked_declarations,
+            repacked_predicates: BTreeSet::new(),
             conditional_guards,
             registry,
             unit,
             function,
             clauses,
             resource_entry: None,
+            predicate_parameters: Default::default(),
             normalizer,
             budget,
             config,
@@ -335,7 +344,12 @@ impl<'a, 'u> LoopInduction<'a, 'u> {
                     merge_case_obligation(&mut evaluated.obligations, record);
                     if back_edge && invariant.id == first_id && self.conditional_guards.is_empty() {
                         let preserved = self.resource_entry.as_ref().is_some_and(|entry| {
-                            state.loop_resources_match(entry, &resource_values)
+                            state.loop_resources_match_with_parameters(
+                                entry,
+                                &resource_values,
+                                &self.repacked_predicates,
+                                &self.predicate_parameters,
+                            )
                         });
                         let mut resource_record = record;
                         resource_record.obligation = ResourceObligation::new(
@@ -375,12 +389,40 @@ impl<'a, 'u> LoopInduction<'a, 'u> {
                             // Switching mappings could import another case's
                             // untouched frame at a later back edge.
                             if let Some(entry) = &self.resource_entry {
-                                if !state.loop_resources_match(entry, &resource_values) {
+                                if !state.loop_resources_match_with_parameters(
+                                    entry,
+                                    &resource_values,
+                                    &self.repacked_predicates,
+                                    &self.predicate_parameters,
+                                ) {
                                     return Err(
                                         CfgAnalysisError::LoopInvariantResourceStateUnsupported,
                                     );
                                 }
                             } else {
+                                // Bind fold/call declaration candidates to the actual
+                                // first-entry packages, never to fresh return
+                                // holders or a different conditional world.
+                                self.repacked_predicates = predicates::repacked_holders(
+                                    state,
+                                    &self.repacked_declarations,
+                                );
+                                if self.repacked_predicates.len()
+                                    > crate::verifier::MAX_PREDICATE_INSTANCES
+                                {
+                                    return Err(
+                                        CfgAnalysisError::LoopInvariantResourceStateUnsupported,
+                                    );
+                                }
+                                self.predicate_parameters = state
+                                    .loop_predicate_parameters(
+                                        &self.changing_scalar_parameters(),
+                                        &self.retained_scalar_parameters(),
+                                        &self.repacked_predicates,
+                                    )
+                                    .map_err(|_| {
+                                        CfgAnalysisError::LoopInvariantResourceStateUnsupported
+                                    })?;
                                 self.resource_entry = Some(state.clone());
                             }
                             self.arbitrary_head(state)
@@ -404,6 +446,29 @@ impl<'a, 'u> LoopInduction<'a, 'u> {
         }
         evaluated.successors = successors;
         Ok(())
+    }
+
+    fn retained_scalar_parameters(&self) -> BTreeSet<VirValueId> {
+        let boundary = self.clauses[0].0.boundary.as_ref().unwrap();
+        scalars::unchanged(self.function, boundary)
+            .into_iter()
+            .chain(self.anchors())
+            .collect()
+    }
+
+    fn changing_scalar_parameters(&self) -> BTreeSet<VirValueId> {
+        let boundary = self.clauses[0].0.boundary.as_ref().unwrap();
+        let retained = self.retained_scalar_parameters();
+        self.function
+            .blocks
+            .iter()
+            .find(|b| b.id == boundary.header)
+            .unwrap()
+            .parameters
+            .iter()
+            .filter(|p| matches!(p.ty, VirType::U64 | VirType::Bool) && !retained.contains(&p.id))
+            .map(|p| p.id)
+            .collect()
     }
 
     fn arbitrary_head(&self, entry: &ResourceState) -> Result<ResourceState, CfgAnalysisError> {
@@ -433,6 +498,20 @@ impl<'a, 'u> LoopInduction<'a, 'u> {
         {
             return Err(CfgAnalysisError::LoopInvariantResourceStateUnsupported);
         }
+        let repacked = predicates::repacked_holders(entry, &self.repacked_declarations);
+        // Every entry world must select the same inductive scalar slots. A
+        // different mapping cannot silently change the backedge obligation.
+        if entry
+            .loop_predicate_parameters(
+                &self.changing_scalar_parameters(),
+                &self.retained_scalar_parameters(),
+                &repacked,
+            )
+            .map_err(|_| CfgAnalysisError::LoopInvariantResourceStateUnsupported)?
+            != self.predicate_parameters
+        {
+            return Err(CfgAnalysisError::LoopInvariantResourceStateUnsupported);
+        }
         let modified = resources::modified_allocations(
             self.unit,
             self.function,
@@ -440,7 +519,7 @@ impl<'a, 'u> LoopInduction<'a, 'u> {
             entry,
             self.registry,
         )?;
-        if !state.inherit_loop_resources(entry, &modified) {
+        if !state.inherit_loop_resources_with_predicates(entry, &modified, &repacked) {
             return Err(CfgAnalysisError::LoopInvariantResourceStateUnsupported);
         }
         let anchors = self.anchors();
@@ -517,7 +596,17 @@ impl<'a, 'u> LoopInduction<'a, 'u> {
                         .parameters[*slot]
                         .id;
                     if parameter.ty == VirType::Bool {
-                        *state.value_mut(parameter.id).unwrap() = *entry.value(anchor).unwrap();
+                        if let Some(AbstractValue::Bool(value)) = entry.value(anchor) {
+                            match value {
+                                AbstractBool::True => {
+                                    state.narrow_bool_value(parameter.id, true);
+                                }
+                                AbstractBool::False => {
+                                    state.narrow_bool_value(parameter.id, false);
+                                }
+                                AbstractBool::Unknown => {}
+                            }
+                        }
                     } else {
                         premises.push(DifferencePremise::EqualOffset {
                             left: R::Value {
@@ -533,18 +622,42 @@ impl<'a, 'u> LoopInduction<'a, 'u> {
                     }
                 }
                 Some(ScalarTerm::Constant(n)) => {
-                    *state.value_mut(parameter.id).unwrap() =
-                        AbstractValue::U64(U64Interval::exact(*n));
+                    state.narrow_word_interval(parameter.id, U64Interval::exact(*n));
                 }
                 None => {}
             }
         }
-        let operand = |o| match o {
-            Operand::Value(value) => R::Value {
+        let operand = |o, state: &ResourceState| match o {
+            Operand::Value(value) => Some(R::Value {
                 value,
                 ty: VirType::U64,
-            },
-            Operand::Constant(n) => R::Constant(n),
+            }),
+            Operand::Constant(n) => Some(R::Constant(n)),
+            Operand::Opened(crate::VirSpecSnapshot::Opened {
+                action,
+                holder,
+                binder,
+                ..
+            }) => {
+                let (AbstractValue::U64(value), expression) =
+                    state.opened_predicate_snapshot(action, holder, binder)?
+                else {
+                    return None;
+                };
+                value.exact_value().map(R::Constant).or_else(|| {
+                    let expression = expression?;
+                    state
+                        .values()
+                        .keys()
+                        .copied()
+                        .find(|id| expression == crate::AffineExpression::identity(*id))
+                        .map(|value| R::Value {
+                            value,
+                            ty: VirType::U64,
+                        })
+                })
+            }
+            Operand::Opened(_) => None,
         };
         for (invariant, _) in &self.clauses {
             let crate::VirSpecClauseKind::Logic { root } = self
@@ -563,30 +676,37 @@ impl<'a, 'u> LoopInduction<'a, 'u> {
                 match atom {
                     // False/contradictory assumptions do not erase a path here.
                     // Their failed establishment check must remain observable.
-                    Atom::Constant => {}
+                    Atom::Constant | Atom::OpenedCheck => {}
                     Atom::Boolean(id, expected) => {
-                        *state.value_mut(id).unwrap() = AbstractValue::Bool(if expected {
-                            AbstractBool::True
-                        } else {
-                            AbstractBool::False
-                        });
+                        state.narrow_bool_value(id, expected);
                     }
                     Atom::Compare {
                         left,
                         right,
                         strict,
                         equal,
-                    } => premises.push(DifferencePremise::Compare {
-                        comparison: if equal {
-                            C::Equal
-                        } else if strict {
-                            C::LessThan
-                        } else {
-                            C::LessOrEqual
-                        },
-                        left: operand(left),
-                        right: operand(right),
-                    }),
+                    } => {
+                        // Abstract existentials are not runtime SSA roots. Only
+                        // exact constants or surviving origin aliases enter the
+                        // existing difference kernel; otherwise keep the check
+                        // without inventing a havoc premise.
+                        let (Some(left), Some(right)) =
+                            (operand(left, &state), operand(right, &state))
+                        else {
+                            continue;
+                        };
+                        premises.push(DifferencePremise::Compare {
+                            comparison: if equal {
+                                C::Equal
+                            } else if strict {
+                                C::LessThan
+                            } else {
+                                C::LessOrEqual
+                            },
+                            left,
+                            right,
+                        });
+                    }
                 }
             }
         }
@@ -595,6 +715,19 @@ impl<'a, 'u> LoopInduction<'a, 'u> {
         // obligations in this same analysis; none enter the trust table.
         state.learn_relations(&premises, self.config.relation_limits);
         state.reduce_relation_intervals();
+        // Expression parameters use arbitrary-head bounds, never the captured
+        // entry intervals. Establish the scalar induction premises first so
+        // checked affine domains (e.g. count + 1) can be rebuilt. Only sealed
+        // repacked packages are abstracted; opened invariant operands retain
+        // their exact epoch throughout the scalar-premise construction above.
+        state
+            .abstract_loop_predicates_after_havoc_with_parameters(
+                entry,
+                &modified,
+                &repacked,
+                &self.predicate_parameters,
+            )
+            .map_err(|_| CfgAnalysisError::LoopInvariantResourceStateUnsupported)?;
         for (invariant, _) in &self.clauses {
             if let crate::VirSpecClauseKind::Assertion { root } = self
                 .unit
@@ -611,6 +744,16 @@ impl<'a, 'u> LoopInduction<'a, 'u> {
                     self.config,
                 );
             }
+        }
+        // Havoc may have removed the scalar origin of a logical prefix or
+        // captured field guarantee. Recheck sealed packages against the head;
+        // copied ghost metadata alone cannot restore such a fact.
+        if state
+            .closed_predicate_checks()
+            .iter()
+            .any(|(_, valid)| !valid)
+        {
+            return Err(CfgAnalysisError::LoopInvariantResourceStateUnsupported);
         }
         Ok(state)
     }

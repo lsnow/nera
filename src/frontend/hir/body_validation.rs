@@ -64,13 +64,12 @@ impl Validator<'_> {
             .zip(&self.function.signature.parameters)
         {
             require(
-                self.body
-                    .locals
-                    .get(local_id.index())
-                    .is_some_and(|local| local.id == *local_id && local.ty == *parameter_type),
+                self.body.locals.get(local_id.index()).is_some_and(|local| {
+                    local.id == *local_id && local.ty == *parameter_type && !local.mutable
+                }),
                 "function",
                 self.function.id.index(),
-                "parameter local type does not match function signature",
+                "parameter local must match its signature and have an immutable binding",
             )?;
         }
         require(
@@ -272,6 +271,60 @@ impl Validator<'_> {
         state: &mut State,
     ) -> Result<(), HirProgramValidationError> {
         match &statement.kind {
+            HirStatementKind::Predicate { action, locals } => {
+                let expected = self
+                    .program
+                    .specs()
+                    .predicate_actions
+                    .get(*action as usize)
+                    .map(|a| {
+                        let mut used = match &a.kind {
+                            super::HirPredicateActionKind::Fold { locals, .. }
+                            | super::HirPredicateActionKind::Unfold { locals, .. } => {
+                                locals.clone()
+                            }
+                            _ => Vec::new(),
+                        };
+                        for (_, input) in &a.witnesses.inputs {
+                            if let Some(id) = input.runtime_value()
+                                && !used.contains(id)
+                            {
+                                used.push(*id);
+                            }
+                        }
+                        used
+                    });
+                let ghost_scopes_valid = self
+                    .program
+                    .specs()
+                    .predicate_actions
+                    .get(*action as usize)
+                    .is_some_and(|a| {
+                        a.scope == scope
+                            && a.witnesses.inputs.iter().all(|(_, input)| {
+                                let crate::predicate_logic::WitnessInput::Opened { action, .. } =
+                                    input
+                                else {
+                                    return true;
+                                };
+                                self.program
+                                    .specs()
+                                    .predicate_actions
+                                    .get(*action as usize)
+                                    .is_some_and(|open| {
+                                        open.scope == scope || active_scopes.contains(&open.scope)
+                                    })
+                            })
+                    });
+                require(
+                    ghost_scopes_valid
+                        && expected.as_deref() == Some(locals.as_slice())
+                        && locals.iter().all(|l| visible.contains(l)),
+                    "statement",
+                    statement_index,
+                    "predicate bindings are missing or out of scope",
+                )
+            }
             HirStatementKind::Prove { prove } => {
                 let valid = self
                     .program
@@ -293,6 +346,17 @@ impl Validator<'_> {
                                 .iter()
                                 .filter(|t| t.clause == p.clause)
                                 .all(|t| match t.kind {
+                                    super::HirSpecTermKind::Snapshot(
+                                        super::HirSpecSnapshot::Opened { action, .. },
+                                    ) => self
+                                        .program
+                                        .specs()
+                                        .predicate_actions
+                                        .get(action as usize)
+                                        .is_some_and(|open| {
+                                            open.scope == scope
+                                                || active_scopes.contains(&open.scope)
+                                        }),
                                     super::HirSpecTermKind::Snapshot(
                                         super::HirSpecSnapshot::Local { function, local },
                                     ) => {
@@ -1033,6 +1097,15 @@ impl Validator<'_> {
                 statement_index,
                 "integer expression has a non-integer type",
             ),
+            HirExpressionKind::NullPointer => require(
+                matches!(
+                    self.program.type_kind(expression.ty),
+                    Some(HirTypeKind::RawPointer { .. })
+                ),
+                "expression",
+                statement_index,
+                "null requires a raw pointer type",
+            ),
             HirExpressionKind::Bool(_) => require(
                 matches!(
                     self.program.type_kind(expression.ty),
@@ -1135,6 +1208,7 @@ impl Validator<'_> {
                 )
             }
             HirExpressionKind::StructConstructor { fields } => {
+                self.require_representation_access(expression.ty, statement_index)?;
                 let Some(HirTypeKind::Struct {
                     fields: expected_fields,
                 }) = self.program.type_kind(expression.ty)
@@ -1384,10 +1458,14 @@ impl Validator<'_> {
                     depth + 1,
                 )?;
                 require(
-                    place_type == expression.ty,
+                    self.program.reference_read_compatible(
+                        self.function.id,
+                        expression,
+                        place_type,
+                    ),
                     "expression",
                     statement_index,
-                    "read result type does not match place type",
+                    "read result type does not match its place or actual field binder",
                 )?;
                 require(
                     canonical_use_mode(self.program, expression.ty) == Some(*mode),
@@ -1515,7 +1593,7 @@ impl Validator<'_> {
                     .zip(&call.instantiated_signature.parameters)
                 {
                     require(
-                        self.program.reference_compatible(argument.ty, *expected)
+                        self.program.types_compatible(argument.ty, *expected)
                             && span_contains(expression.span, argument.span),
                         "expression",
                         statement_index,
@@ -1684,7 +1762,8 @@ impl Validator<'_> {
                 | HirTypeKind::Bool
                 | HirTypeKind::Integer(_)
                 | HirTypeKind::Own { .. }
-                | HirTypeKind::Reference { .. },
+                | HirTypeKind::Reference { .. }
+                | HirTypeKind::RawPointer { .. },
             ) => true,
             Some(HirTypeKind::Array { element, .. }) => {
                 self.is_supported_value(*element, visiting, depth + 1)
@@ -1707,8 +1786,7 @@ impl Validator<'_> {
                 })
             }),
             Some(
-                HirTypeKind::RawPointer { .. }
-                | HirTypeKind::Slice { .. }
+                HirTypeKind::Slice { .. }
                 | HirTypeKind::Function(_)
                 | HirTypeKind::GenericParameter(_)
                 | HirTypeKind::Never,
@@ -1720,19 +1798,38 @@ impl Validator<'_> {
     }
 
     fn region_is_visible(&self, region: HirRegionId, active_scopes: &[HirScopeId]) -> bool {
-        self.program
-            .region(region)
-            .is_some_and(|region| match (region.owner, region.origin) {
-                (HirRegionOwner::Type(_), HirRegionOrigin::AggregateErased) => true,
-                (
-                    HirRegionOwner::Function(owner),
-                    HirRegionOrigin::Parameter { .. } | HirRegionOrigin::Result,
-                ) => owner == self.function.id,
-                (
-                    HirRegionOwner::Function(owner),
-                    HirRegionOrigin::LexicalScope { scope } | HirRegionOrigin::Inferred { scope },
-                ) => owner == self.function.id && active_scopes.contains(&scope),
-                _ => false,
+        let visible =
+            self.program
+                .region(region)
+                .is_some_and(|region| match (region.owner, region.origin) {
+                    (HirRegionOwner::Type(_), HirRegionOrigin::AggregateErased) => true,
+                    (
+                        HirRegionOwner::Function(owner),
+                        HirRegionOrigin::Parameter { .. }
+                        | HirRegionOrigin::ParameterField { .. }
+                        | HirRegionOrigin::Result,
+                    ) => owner == self.function.id,
+                    (
+                        HirRegionOwner::Function(owner),
+                        HirRegionOrigin::LexicalScope { scope }
+                        | HirRegionOrigin::Inferred { scope },
+                    ) => owner == self.function.id && active_scopes.contains(&scope),
+                    _ => false,
+                });
+        visible
+            && self.function.body().is_some_and(|body| {
+                super::regions::source_storage_scopes(
+                    body,
+                    self.program.regions(),
+                    self.program.region_constraints(),
+                    self.function.id,
+                    region,
+                )
+                .is_some_and(|sources| sources.iter().all(|scope| active_scopes.contains(scope)))
+                    || self
+                        .program
+                        .region(region)
+                        .is_some_and(|r| matches!(r.origin, HirRegionOrigin::AggregateErased))
             })
     }
 
@@ -1761,6 +1858,21 @@ impl Validator<'_> {
         )
     }
 
+    fn require_representation_access(
+        &self,
+        ty: HirTypeId,
+        index: usize,
+    ) -> Result<(), HirProgramValidationError> {
+        require(
+            self.program.types()[ty.index()]
+                .opaque
+                .is_none_or(|module| module == self.function.module),
+            "expression",
+            index,
+            "opaque representation is private to its defining module",
+        )
+    }
+
     fn resolve_place(
         &self,
         visible: &BTreeSet<HirLocalId>,
@@ -1786,6 +1898,10 @@ impl Validator<'_> {
         let resolved = resolve_place_from_locals(self.program, &self.body.locals, place, access)
             .map_err(|error| validation_error("place", statement_index, error.problem()))?;
         for projection in &place.projections {
+            if let HirProjectionKind::Field { field } = projection.kind {
+                let owner = self.program.fields()[field.index()].owner;
+                self.require_representation_access(owner, statement_index)?;
+            }
             match &projection.kind {
                 HirProjectionKind::DynamicIndex { index } => {
                     self.validate_expression(

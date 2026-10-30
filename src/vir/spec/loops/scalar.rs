@@ -3,16 +3,20 @@ use super::*;
 use crate::{
     VirSpecEnvironment, VirSpecSnapshot as S, VirSpecTermId, VirSpecTermKind as T, VirSpecType,
 };
+use std::collections::BTreeMap;
 
 #[derive(Clone, Copy)]
 pub(crate) enum ScalarOperand {
     Value(VirValueId),
     Constant(u64),
+    Opened(S),
 }
 
 #[derive(Clone, Copy)]
 pub(crate) enum ScalarLoopAtom {
     Constant,
+    /// Checked at entry/backedges; never manufactures a runtime premise.
+    OpenedCheck,
     Boolean(VirValueId, bool),
     Compare {
         left: ScalarOperand,
@@ -29,6 +33,9 @@ pub(crate) fn scalar_atoms(
     let term = |id: VirSpecTermId| specs.terms().get(id.get() as usize);
     let operand = |id| match term(id)?.kind {
         T::U64(n) => Some(ScalarOperand::Constant(n)),
+        T::Snapshot(s @ S::Opened { .. }) if term(id)?.ty == VirSpecType::U64 => {
+            Some(ScalarOperand::Opened(s))
+        }
         T::Snapshot(S::Value { value, .. }) if term(id)?.ty == VirSpecType::U64 => {
             Some(ScalarOperand::Value(value))
         }
@@ -51,20 +58,80 @@ pub(crate) fn scalar_atoms(
                 pending.extend(children);
                 continue;
             }
+            T::Snapshot(S::Opened { .. }) if term(id)?.ty == VirSpecType::Bool => {
+                ScalarLoopAtom::OpenedCheck
+            }
             T::Snapshot(_) => ScalarLoopAtom::Boolean(boolean(id)?, true),
-            T::Not(child) => ScalarLoopAtom::Boolean(boolean(*child)?, false),
+            T::Not(child) if boolean(*child).is_some() => {
+                ScalarLoopAtom::Boolean(boolean(*child)?, false)
+            }
             kind @ (T::Equal { left, right }
             | T::LessThan { left, right }
-            | T::LessOrEqual { left, right }) => ScalarLoopAtom::Compare {
-                left: operand(*left)?,
-                right: operand(*right)?,
-                strict: matches!(kind, T::LessThan { .. }),
-                equal: matches!(kind, T::Equal { .. }),
-            },
+            | T::LessOrEqual { left, right }) => {
+                if let (Some(left), Some(right)) = (operand(*left), operand(*right)) {
+                    ScalarLoopAtom::Compare {
+                        left,
+                        right,
+                        strict: matches!(kind, T::LessThan { .. }),
+                        equal: matches!(kind, T::Equal { .. }),
+                    }
+                } else if opened_formula(specs, id)? {
+                    ScalarLoopAtom::OpenedCheck
+                } else {
+                    return None;
+                }
+            }
+            _ if opened_formula(specs, id)? => ScalarLoopAtom::OpenedCheck,
             _ => return None,
         });
     }
     Some(result)
+}
+
+/// Admission only: no arithmetic fact is assumed here. The VC adapter checks
+/// the complete DAG against surviving package guarantees at each boundary.
+fn opened_formula(specs: &VirSpecEnvironment, root: VirSpecTermId) -> Option<bool> {
+    if specs.terms().get(root.get() as usize)?.ty != VirSpecType::Bool {
+        return None;
+    }
+    let mut pending = vec![(root, 1usize)];
+    let mut seen = BTreeMap::new();
+    let mut opened = false;
+    while let Some((id, depth)) = pending.pop() {
+        if depth > crate::predicate_logic::MAX_EXPRESSION_DEPTH {
+            return None;
+        }
+        if seen.get(&id).is_some_and(|previous| *previous >= depth) {
+            continue;
+        }
+        seen.insert(id, depth);
+        if seen.len() > crate::predicate_logic::MAX_EXPRESSION_NODES {
+            return None;
+        }
+        let term = specs.terms().get(id.get() as usize)?;
+        if !matches!(term.ty, VirSpecType::U64 | VirSpecType::Bool) {
+            return None;
+        }
+        match &term.kind {
+            T::Snapshot(S::Opened { .. }) => opened = true,
+            T::Snapshot(S::Value { .. }) | T::U64(_) | T::Bool(_) => {}
+            T::CheckedAdd { left, right }
+            | T::CheckedSub { left, right }
+            | T::Equal { left, right }
+            | T::LessThan { left, right }
+            | T::LessOrEqual { left, right } => {
+                pending.extend([(*left, depth + 1), (*right, depth + 1)])
+            }
+            T::CheckedScale { operand, .. } | T::Not(operand) => {
+                pending.push((*operand, depth + 1))
+            }
+            T::And(children) | T::Or(children) => {
+                pending.extend(children.iter().map(|child| (*child, depth + 1)))
+            }
+            _ => return None,
+        }
+    }
+    Some(opened)
 }
 
 impl VirLoopBoundary {

@@ -21,6 +21,34 @@ fn scalar_contract_chain() {
 }
 
 #[test]
+fn relational_entry_premises_require_a_real_caller_and_respect_the_numeric_budget() {
+    let source = "fn main()->u64 { return ordered(1,3); }
+        fn ordered(a:u64,b:u64)->u64 requires a < b; ensures old(a) < old(b); { return 42; }";
+    assert!(verify(source).is_memory_checked_core0());
+    assert!(verify(&source.replace(" < ", " <= ")).is_memory_checked_core0());
+    assert!(
+        verify(
+            &source
+                .replace("ordered(1,3)", "ordered(3,3)")
+                .replace(" < ", " == ")
+        )
+        .is_memory_checked_core0()
+    );
+    for invalid in [
+        source.replace("ordered(1,3)", "ordered(3,1)"),
+        source.replace("requires a < b;", ""),
+        "fn main(a:u64,b:u64)->u64 requires a < b; ensures old(a) < old(b); { return 42; }".into(),
+    ] {
+        assert!(!verify(&invalid).is_memory_checked_core0(), "{invalid}");
+    }
+    let output = analyze(&SourceFile::from_text("relational-budget.nera", source));
+    let mut config = nera::CfgAnalysisConfig::default();
+    config.relation_limits.max_variables = 0;
+    let report = verify_program(&output.vir().unwrap().resolve().unwrap(), config);
+    assert!(!report.is_ok_and(|report| report.is_memory_checked_core0()));
+}
+
+#[test]
 fn bad_call_and_bad_body_do_not_verify() {
     let source = "fn main()->u64 {return f(1);} fn f(x:u64)->u64 requires x == 1; ensures result == 1; {return x;}";
     assert!(verify(source).is_memory_checked_core0());
@@ -58,6 +86,20 @@ fn bool_usize_and_entry_snapshot_survive_local_updates() {
         "{:?}",
         report.diagnostics()
     );
+}
+
+#[test]
+fn boolean_return_contracts_distinguish_immutable_parameter_histories() {
+    let source = "fn main()->u64 {let saved=relay(true,false); assert saved; return 42;}
+        fn keep(a:bool,b:bool)->bool ensures result==old(a); {return a;}
+        fn relay(a:bool,b:bool)->bool ensures result==old(a); {return keep(a,b);}";
+    assert!(verify(source).is_memory_checked_core0());
+    for invalid in [
+        source.replace("return a;", "return b;"),
+        source.replace("return keep(a,b);", "return keep(b,a);"),
+    ] {
+        assert!(!verify(&invalid).is_memory_checked_core0());
+    }
 }
 
 #[test]

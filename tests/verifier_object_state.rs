@@ -759,6 +759,7 @@ fn cfg_join_retains_finite_variant_alternatives_without_inventing_payload_init()
         .block(VirBlockId::new(3))
         .expect("join block")
         .entry_state()
+        .unwrap()
         .allocation(AbstractAllocationId::vir_local_storage_site(
             VirValueId::new(1),
         ))
@@ -779,4 +780,140 @@ fn cfg_join_retains_finite_variant_alternatives_without_inventing_payload_init()
         InitializationClass::Uninitialized,
         "neither discriminant effect initializes payload bytes"
     );
+}
+
+#[test]
+fn nested_drop_rolls_back_all_children_when_a_later_sibling_is_invalid() {
+    use nera::{AbstractBool, MovePathState, ResourcePayloadKey, TypedResourcePayload};
+    let output = nera::analyze(&nera::SourceFile::from_text(
+        "drop-tree.nera",
+        "struct Holder { child:Own<u64>, } struct Root { left:Own<Holder>, right:Own<u64>, } fn main()->u64 { let child=alloc<u64>(1); let left=alloc<Holder>(1); left.child=child; let right=alloc<u64>(1); let root=Root{left:left,right:right}; return 42; }",
+    ));
+    let unit = output.vir().expect("typed finite owner tree");
+    let memory = &unit.runtime().memory;
+    let root = memory
+        .types
+        .iter()
+        .filter_map(|ty| memory.access(ty.id))
+        .find(|access| {
+            memory
+                .object_shape(*access)
+                .is_ok_and(|s| s.resource_leaves().len() == 2)
+        })
+        .unwrap();
+    let shape = memory.object_shape(root).unwrap();
+    let left = &shape.resource_leaves()[0];
+    let right = &shape.resource_leaves()[1];
+    let holder = left.pointee_access();
+    let child_leaf = memory.object_shape(holder).unwrap().resource_leaves()[0].clone();
+    let payload = |id, access, valid| {
+        let allocation = AbstractAllocationId::new(id);
+        let AbstractValue::Pointer(pointer) = pointer(allocation, 0, access) else {
+            unreachable!()
+        };
+        TypedResourcePayload::new(
+            pointer,
+            AbstractPermission::new(
+                AbstractProvenance::Known(allocation),
+                AbstractByteRange::Exact(range(0, 8)),
+                AccessPermission::Write,
+                if valid {
+                    FreeCapability::Yes
+                } else {
+                    FreeCapability::Maybe
+                },
+            ),
+        )
+    };
+    for valid in [true, false] {
+        let mut state = ResourceState::new();
+        let mut storage = AbstractAllocation::new_local(16, 8).unwrap();
+        storage.mark_initialized(range(0, 16)).unwrap();
+        storage.mark_valid(range(0, 16)).unwrap();
+        storage
+            .set_resource_payload(
+                ResourcePayloadKey::new(0, left.access()),
+                MovePathState::available(payload(1, holder, true)),
+            )
+            .unwrap();
+        storage
+            .set_resource_payload(
+                ResourcePayloadKey::new(8, right.access()),
+                MovePathState::available(payload(3, right.pointee_access(), valid)),
+            )
+            .unwrap();
+        state
+            .define_allocation(AbstractAllocationId::new(0), storage)
+            .unwrap();
+        let mut parent = AbstractAllocation::new(nera::VirRegionId::new(0), 8, 8).unwrap();
+        parent.mark_initialized(range(0, 8)).unwrap();
+        parent.mark_valid(range(0, 8)).unwrap();
+        parent
+            .set_resource_payload(
+                ResourcePayloadKey::new(0, child_leaf.access()),
+                MovePathState::available(payload(2, child_leaf.pointee_access(), true)),
+            )
+            .unwrap();
+        state
+            .define_allocation(AbstractAllocationId::new(1), parent)
+            .unwrap();
+        for id in [2, 3] {
+            state
+                .define_allocation(
+                    AbstractAllocationId::new(id),
+                    AbstractAllocation::new(nera::VirRegionId::new(0), 8, 8).unwrap(),
+                )
+                .unwrap();
+        }
+        state
+            .define_value(
+                VirValueId::new(0),
+                pointer(AbstractAllocationId::new(0), 0, root),
+            )
+            .unwrap();
+        state
+            .define_value(
+                VirValueId::new(1),
+                permission(AbstractAllocationId::new(0), 16),
+            )
+            .unwrap();
+        state
+            .define_value(VirValueId::new(2), AbstractValue::Bool(AbstractBool::True))
+            .unwrap();
+        let result = transfer_instruction_with_memory(
+            &state,
+            &instruction(VirInstruction::ObjectDrop {
+                pointer: VirValueId::new(0),
+                permission: VirValueId::new(1),
+                access: root,
+                condition: VirValueId::new(2),
+            }),
+            memory,
+        )
+        .unwrap();
+        if valid {
+            assert!(
+                result.obligations().iter().all(|o| o.is_proven()),
+                "{:?}",
+                result.obligations()
+            );
+            for id in [1, 2, 3] {
+                assert_eq!(
+                    result
+                        .state()
+                        .allocation(AbstractAllocationId::new(id))
+                        .unwrap()
+                        .liveness(),
+                    nera::LivenessState::Dead
+                );
+            }
+        } else {
+            assert!(result.obligations().iter().any(|o| !o.is_proven()));
+            assert_eq!(
+                result.state(),
+                &state,
+                "failed whole-object cleanup cannot publish partial retirement"
+            );
+        }
+    }
 }

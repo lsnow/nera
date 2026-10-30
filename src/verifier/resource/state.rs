@@ -164,6 +164,15 @@ impl PathCondition {
         }
     }
 
+    fn forget_value(&mut self, id: VirValueId) {
+        if let Self::Reachable(facts) = self {
+            facts.retain(|fact| match fact {
+                PathFact::Boolean { value, .. } => *value != id,
+                PathFact::Comparison { left, right, .. } => *left != id && *right != id,
+            });
+        }
+    }
+
     /// Facts guaranteed on either incoming path. Unreachable is the join
     /// identity because it contributes no concrete executions.
     #[must_use]
@@ -225,11 +234,15 @@ impl Default for PathCondition {
 /// Complete abstract resource facts at one VIR program point.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ResourceState {
+    pub(super) next_predicate_scope: u64,
+    pub(super) predicates: BTreeMap<PredicateHolder, PredicateInstance>,
     pub(super) relations: RelationState,
     pub(super) path_condition: PathCondition,
     pub(super) allocations: BTreeMap<AbstractAllocationId, AbstractAllocation>,
     pub(super) values: BTreeMap<VirValueId, AbstractValue>,
     pub(super) word_expressions: BTreeMap<VirValueId, AffineExpression>,
+    pub(super) bool_origins: BTreeMap<VirValueId, BoolOrigin>,
+    pub(super) word_origins: BTreeMap<VirValueId, ScalarOrigin>,
     pub(super) loans: BTreeMap<VirLoanId, AbstractLoan>,
     pub(super) loan_precision_losses: BTreeSet<LoanPrecisionLoss>,
 }
@@ -238,11 +251,15 @@ impl ResourceState {
     #[must_use]
     pub const fn new() -> Self {
         Self {
+            next_predicate_scope: 0,
+            predicates: BTreeMap::new(),
             relations: RelationState::new(),
             path_condition: PathCondition::empty(),
             allocations: BTreeMap::new(),
             values: BTreeMap::new(),
             word_expressions: BTreeMap::new(),
+            bool_origins: BTreeMap::new(),
+            word_origins: BTreeMap::new(),
             loans: BTreeMap::new(),
             loan_precision_losses: BTreeSet::new(),
         }
@@ -251,11 +268,15 @@ impl ResourceState {
     #[must_use]
     pub const fn unreachable() -> Self {
         Self {
+            next_predicate_scope: 0,
+            predicates: BTreeMap::new(),
             relations: RelationState::new(),
             path_condition: PathCondition::unreachable(),
             allocations: BTreeMap::new(),
             values: BTreeMap::new(),
             word_expressions: BTreeMap::new(),
+            bool_origins: BTreeMap::new(),
+            word_origins: BTreeMap::new(),
             loans: BTreeMap::new(),
             loan_precision_losses: BTreeSet::new(),
         }
@@ -277,7 +298,8 @@ impl ResourceState {
     }
 
     pub(in crate::verifier) fn same_resource_facts(&self, other: &Self) -> bool {
-        self.allocations == other.allocations
+        self.join_predicates(other).is_ok()
+            && self.allocations == other.allocations
             && resource_values(&self.values) == resource_values(&other.values)
             && self.loans == other.loans
             && self.loan_precision_losses == other.loan_precision_losses
@@ -338,7 +360,65 @@ impl ResourceState {
         // Arbitrary abstract-value replacement cannot retain old numeric
         // relations. Branch narrowing uses the monotone helper below instead.
         self.relations.forget_value(id);
+        self.path_condition.forget_value(id);
+        self.bool_origins.remove(&id);
+        self.word_origins.remove(&id);
+        // Other live words retain their values, but an expression naming the
+        // replaced SSA root would now equate them to a different value.
+        self.word_expressions.retain(|value, expression| {
+            *value != id
+                && expression
+                    .terms()
+                    .into_iter()
+                    .flatten()
+                    .all(|(root, _)| root != id)
+        });
+        self.forget_predicate_local_alias(id);
+        for allocation in self.allocations.values_mut() {
+            allocation.initialization_prefixes.forget_value(id);
+        }
         self.values.get_mut(&id)
+    }
+
+    /// Monotone Boolean restriction preserves immutable origins and aliases.
+    /// Arbitrary replacements must continue to use value_mut instead.
+    pub(in crate::verifier) fn narrow_bool_value(
+        &mut self,
+        id: VirValueId,
+        expected: bool,
+    ) -> bool {
+        let Some(AbstractValue::Bool(value)) = self.values.get_mut(&id) else {
+            return false;
+        };
+        if matches!(
+            (*value, expected),
+            (AbstractBool::True, false) | (AbstractBool::False, true)
+        ) {
+            return false;
+        }
+        *value = if expected {
+            AbstractBool::True
+        } else {
+            AbstractBool::False
+        };
+        true
+    }
+
+    /// Refine an existing address from checked coordinate facts. This does
+    /// not replace its identity, domain, footprint, or resource authority.
+    pub(in crate::verifier) fn narrow_pointer_offset(
+        &mut self,
+        id: VirValueId,
+        interval: U64Interval,
+    ) -> bool {
+        let Some(AbstractValue::Pointer(pointer)) = self.values.get_mut(&id) else {
+            return false;
+        };
+        let Some(interval) = pointer.offset_bytes.intersection(interval) else {
+            return false;
+        };
+        pointer.offset_bytes = interval;
+        true
     }
 
     pub fn relations(&self) -> &RelationState {
@@ -391,6 +471,7 @@ impl ResourceState {
             && let Some(narrowed) = current.intersection(interval)
         {
             *current = narrowed;
+            self.narrow_word_history(id, narrowed);
         }
     }
 
@@ -461,6 +542,11 @@ impl ResourceState {
         id: VirLoanId,
         loan: AbstractLoan,
     ) -> Result<(), ResourceStateDefinitionError> {
+        // A surviving predicate still names the previous dynamic instance.
+        // Reusing its static site would silently retarget that obligation.
+        if self.predicate_references_loan(id) {
+            return Err(ResourceStateDefinitionError::DuplicateLoan(id));
+        }
         match self.loans.entry(id) {
             Entry::Vacant(entry) => {
                 entry.insert(loan);
@@ -504,8 +590,10 @@ impl ResourceState {
             }
         }
         Self {
+            next_predicate_scope: self.next_predicate_scope,
+            predicates: self.project_predicates(&remapper, renames),
             path_condition: self.path_condition.project(renames),
-            relations: self.relations.project(
+            relations: self.relations.project_affine(
                 &renames
                     .iter()
                     .copied()
@@ -513,6 +601,9 @@ impl ResourceState {
                         matches!(self.value(*source), Some(AbstractValue::U64(_)))
                     })
                     .collect::<Vec<_>>(),
+                self.word_expressions
+                    .iter()
+                    .map(|(id, expression)| (*id, *expression)),
             ),
             allocations: self
                 .allocations
@@ -520,6 +611,45 @@ impl ResourceState {
                 .map(|(id, allocation)| (*id, allocation.project_cfg_edge(&remapper, &self.values)))
                 .collect(),
             values: BTreeMap::new(),
+            bool_origins: {
+                // Ambiguous target mappings must not choose one source's identity.
+                let mut origins = BTreeMap::new();
+                for &(source, target) in renames {
+                    let origin = self.bool_origin(source);
+                    origins
+                        .entry(target)
+                        .and_modify(|old| {
+                            if *old != origin {
+                                *old = None;
+                            }
+                        })
+                        .or_insert(origin);
+                }
+                origins
+                    .into_iter()
+                    .filter_map(|(id, o)| o.map(|o| (id, o)))
+                    .take(256)
+                    .collect()
+            },
+            word_origins: {
+                let mut origins = BTreeMap::new();
+                for &(source, target) in renames {
+                    let origin = self.word_origin(source);
+                    origins
+                        .entry(target)
+                        .and_modify(|old| {
+                            if *old != origin {
+                                *old = None;
+                            }
+                        })
+                        .or_insert(origin);
+                }
+                origins
+                    .into_iter()
+                    .filter_map(|(id, o)| o.map(|o| (id, o)))
+                    .take(256)
+                    .collect()
+            },
             word_expressions,
             loans: self
                 .loans
@@ -559,6 +689,7 @@ impl ResourceState {
             return Ok(self.clone());
         }
 
+        let predicates = self.join_predicates(other)?;
         let allocations = instance::join_allocations(&self.allocations, &other.allocations)?;
 
         let mut values = BTreeMap::new();
@@ -582,7 +713,21 @@ impl ResourceState {
             loan_precision_losses.insert(LoanPrecisionLoss::LoanJoin);
         }
 
-        Ok(Self {
+        let result = Self {
+            next_predicate_scope: self.next_predicate_scope.max(other.next_predicate_scope),
+            predicates: predicates.instances,
+            bool_origins: self
+                .bool_origins
+                .iter()
+                .filter(|(id, o)| other.bool_origins.get(id) == Some(o))
+                .map(|(id, o)| (*id, *o))
+                .collect(),
+            word_origins: self
+                .word_origins
+                .iter()
+                .filter(|(id, o)| other.word_origins.get(id) == Some(o))
+                .map(|(id, o)| (*id, *o))
+                .collect(),
             path_condition: self.path_condition.join(&other.path_condition),
             relations: self.relations.join(&other.relations),
             allocations,
@@ -590,7 +735,9 @@ impl ResourceState {
             word_expressions,
             loans,
             loan_precision_losses,
-        })
+        };
+        result.check_joined_predicates(&predicates.recheck)?;
+        Ok(result)
     }
 
     /// Widening for cyclic CFG entries.
@@ -607,7 +754,13 @@ impl ResourceState {
             return Ok(self.clone());
         }
 
-        let allocations = instance::join_allocations(&self.allocations, &next.allocations)?;
+        let predicates = self.widen_predicates(next)?;
+        let mut allocations = instance::join_allocations(&self.allocations, &next.allocations)?;
+        for (id, allocation) in &mut allocations {
+            if let (Some(left), Some(right)) = (self.allocation(*id), next.allocation(*id)) {
+                allocation.widen_scalar_contents(left, right);
+            }
+        }
 
         let mut values = BTreeMap::new();
         for (id, current) in &self.values {
@@ -630,7 +783,21 @@ impl ResourceState {
             loan_precision_losses.insert(LoanPrecisionLoss::LoanLoopWidening);
         }
 
-        Ok(Self {
+        let result = Self {
+            next_predicate_scope: self.next_predicate_scope.max(next.next_predicate_scope),
+            predicates: predicates.instances,
+            bool_origins: self
+                .bool_origins
+                .iter()
+                .filter(|(id, o)| next.bool_origins.get(id) == Some(o))
+                .map(|(id, o)| (*id, *o))
+                .collect(),
+            word_origins: self
+                .word_origins
+                .iter()
+                .filter(|(id, o)| next.word_origins.get(id) == Some(o))
+                .map(|(id, o)| (*id, *o))
+                .collect(),
             path_condition: self.path_condition.join(&next.path_condition),
             relations: self.relations.widen(&next.relations),
             allocations,
@@ -638,7 +805,9 @@ impl ResourceState {
             word_expressions,
             loans,
             loan_precision_losses,
-        })
+        };
+        result.check_joined_predicates(&predicates.recheck)?;
+        Ok(result)
     }
 }
 
@@ -904,6 +1073,7 @@ impl Error for ResourceStateDefinitionError {}
 /// These fail analysis rather than returning a partial resource state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResourceJoinError {
+    PredicateStateMismatch,
     AllocationInstanceBudget,
     AllocationRegionMismatch { allocation: AbstractAllocationId },
     AllocationSizeMismatch { allocation: AbstractAllocationId },
@@ -915,6 +1085,8 @@ pub enum ResourceJoinError {
 impl fmt::Display for ResourceJoinError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::PredicateStateMismatch => formatter
+                .write_str("predicate holders or representations differ across reachable paths"),
             Self::AllocationInstanceBudget => formatter
                 .write_str("allocation instance slot budget exhausted at resource-state join"),
             Self::AllocationRegionMismatch { allocation } => write!(

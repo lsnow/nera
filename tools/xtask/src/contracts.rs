@@ -33,6 +33,9 @@ pub(super) fn test_commands() -> Vec<Vec<&'static str>> {
         "summary_architecture",
         "summary_baseline",
         "module_program",
+        "predicate_source",
+        "resource_export",
+        "opaque_arena",
         "borrow_interface_mapping",
         "borrow_source_scc",
         "implicit_borrow_acceptance",
@@ -52,6 +55,7 @@ pub(super) fn test_commands() -> Vec<Vec<&'static str>> {
         "recursive_contracts_use_the_ordinary_native_call_path",
         "frame_contracts_are_erased_before_native_execution",
         "resource_contracts_preserve_interpreter_and_native_execution",
+        "opaque_arena_modules_preserve_native_results_and_real_cleanup",
     ]);
     commands
 }
@@ -96,14 +100,19 @@ mod tests {
                 .len()
         );
         assert!(targets.contains(&"contract_arena"));
+        assert!(targets.contains(&"opaque_arena"));
+        assert!(targets.contains(&"predicate_source"));
+        assert!(targets.contains(&"resource_export"));
         assert!(targets.contains(&"spec_diagnostics"));
+        assert!(
+            commands[2].contains(&"opaque_arena_modules_preserve_native_results_and_real_cleanup")
+        );
         for command in commands {
+            assert_eq!(command.first(), Some(&"test"));
             assert!(!command.contains(&"--workspace"));
-            assert!(
-                !command
-                    .iter()
-                    .any(|arg| arg.contains("fuzz") || arg.contains("lean"))
-            );
+            assert!(!command.iter().any(|arg| arg.contains("fuzz")
+                || *arg == "lean"
+                || arg.starts_with("check-lean")));
         }
     }
 }

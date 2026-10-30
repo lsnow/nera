@@ -1,0 +1,29 @@
+predicate Slots(storage: ptr<[u64; 2]>) {
+    owns(storage);
+    initialized(storage, 0usize..2usize);
+    storage[0] <= 8;
+}
+
+fn main() -> u64 {
+    let storage = make();
+    let total = consume(storage);
+    return total;
+}
+
+fn make() -> Own<[u64; 2]> {
+    let storage = alloc<[u64; 2]>(1);
+    storage[0] = 5;
+    storage[1] = 1;
+    return storage;
+}
+
+fn consume(storage: Own<[u64; 2]>) -> u64 {
+    storage[0] = 5;
+    fold Slots(storage);
+    let relocated = storage;
+    unfold Slots(relocated);
+    let total = relocated[0] + relocated[1];
+    free(relocated);
+    finish Slots(relocated);
+    return total;
+}

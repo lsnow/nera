@@ -18,7 +18,7 @@ pub fn source(ordinal: u64, entropy: u64) -> String {
                 "fn main() -> u64 {{ return check({flag}); }}
                 fn check(flag: bool) -> u64 {{ let a=[20,22]; let b=[0,0]; let mut p=&raw a[0];
                 if choose(flag) {{ p=p+8; }} else {{ p={other}; }}
-                if p==&raw a[1] {{ return 42; }} return 0; }}
+                if p<=&raw a[1] {{ return 42; }} return 0; }}
                 fn choose(flag: bool) -> bool {{ if flag {{ return true; }} return false; }}"
             )
         }
@@ -43,7 +43,7 @@ pub fn source(ordinal: u64, entropy: u64) -> String {
                 "struct Pair {{ left: [u64;2], right: [u64;2], }}
                 fn main() -> u64 {{ let p=Pair {{ left:[20,22],right:[0,0] }};
                 let begin=&raw p.left[0]; let end=begin+16; let other={other};
-                if end==other {{ return 42; }} return 0; }}"
+                if end<=other {{ return 42; }} return 0; }}"
             )
         }
         3 => {
@@ -60,7 +60,7 @@ pub fn source(ordinal: u64, entropy: u64) -> String {
         }
         4 => {
             let tail = if negative {
-                "consume(b); if old==old { return 42; } return 0;"
+                "consume(b); if old<=old { return 42; } return 0;"
             } else {
                 "let moved=b.p; let same=old==&raw *moved; free(moved); if same { return 42; } return 0;"
             };
@@ -78,7 +78,7 @@ pub fn source(ordinal: u64, entropy: u64) -> String {
                 fn identity(r: &u64, n: u64) -> &u64 {{
                     if n=={count} {{ return r; }} return identity(r,n+1); }}
                 fn compare(a: &u64,b: &u64) -> u64 {{ let x=&raw *a; let y=&raw *{other};
-                    if x==y {{ return 42; }} return 0; }}"
+                    if x<=y {{ return 42; }} return 0; }}"
             )
         }
     }

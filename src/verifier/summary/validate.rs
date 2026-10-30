@@ -152,6 +152,28 @@ pub(super) fn validate(
                 false,
                 &names,
             )?;
+            if world.bool_value_origins.len() != world.values.len() {
+                return Err(E::Return);
+            }
+            for (value, origin) in world.values.iter().zip(&world.bool_value_origins) {
+                if let Some(origin) = origin {
+                    let SummaryValue::Bool(value) = value.value else {
+                        return Err(E::Value);
+                    };
+                    cx.bool_origin(origin, value)?;
+                }
+            }
+            if world.value_origins.len() != world.values.len() {
+                return Err(E::Return);
+            }
+            for (value, origin) in world.values.iter().zip(&world.value_origins) {
+                if let Some(origin) = origin {
+                    let SummaryValue::Word { interval, .. } = &value.value else {
+                        return Err(E::Value);
+                    };
+                    cx.scalar_origin(origin, *interval)?;
+                }
+            }
             if let Knowledge::Known(values) = &world.post_inputs {
                 cx.values(values, &summary.parameters, ValueEpoch::Post, true, &names)?;
             }
@@ -164,6 +186,98 @@ pub(super) fn validate(
                     return Err(E::Resource);
                 }
                 cx.permission(&restore.permission, &names)?;
+            }
+            let expected = summary
+                .input_resources
+                .iter()
+                .flat_map(|r| &r.payloads)
+                .filter_map(|p| match &p.state {
+                    SummaryMovePath::Available { permission, .. } => match &permission.authority {
+                        SummaryAuthority::InputPayloadLoan(path) => Some(path.clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect::<BTreeSet<_>>();
+            let mut restored = BTreeSet::new();
+            for restore in &world.stored_borrow_restoration {
+                if !expected.contains(&restore.input) || !restored.insert(restore.input.clone()) {
+                    return Err(E::Resource);
+                }
+                let authority = SummaryAuthority::InputPayloadLoan(restore.input.clone());
+                let carriers = world.resources.iter().flat_map(|r| r.payloads.iter().filter(|&p| matches!(&p.state, SummaryMovePath::Available { permission, .. } if permission.authority == authority)).map(|p| StoredBorrowLocation { resource: r.name.clone(), offset: p.offset, access: p.access })).collect::<Vec<_>>();
+                let ssa = world
+                    .values
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(slot, v)| {
+                        matches!(&v.value, SummaryValue::Permission(p) if p.authority == authority)
+                            .then_some(slot)
+                    })
+                    .collect::<Vec<_>>();
+                let valid = match &restore.exit {
+                    crate::BoundaryExit::Value(slot) => {
+                        carriers.is_empty()
+                            && ssa == [*slot]
+                            && program
+                                .runtime()
+                                .abis
+                                .function(function.id)
+                                .and_then(|a| {
+                                    super::borrow::field_return_slots(
+                                        program.runtime().memory,
+                                        &a.signature,
+                                        &restore.input,
+                                    )
+                                })
+                                .is_some_and(|(_, permission)| permission == *slot)
+                    }
+                    crate::BoundaryExit::Shared { stored, values } => {
+                        let reference = super::borrow::input_payload_field(
+                            program.runtime().memory,
+                            &summary.parameters,
+                            &restore.input,
+                        );
+                        let mut observed = carriers.clone();
+                        observed.sort();
+                        matches!(
+                            reference.and_then(|a| program.runtime().memory.kind(a.ty)),
+                            Some(crate::VirMemoryTypeKind::Pointer {
+                                kind: crate::VirPointerKind::Reference,
+                                mutability: crate::VirMutability::Const,
+                                ..
+                            })
+                        ) && stored.len() + values.len() > 1
+                            && stored.windows(2).all(|w| w[0] < w[1])
+                            && values.windows(2).all(|w| w[0] < w[1])
+                            && *stored == observed
+                            && *values == ssa
+                            && values.iter().all(|slot| {
+                                program
+                                    .runtime()
+                                    .abis
+                                    .function(function.id)
+                                    .and_then(|a| {
+                                        super::borrow::field_return_slots(
+                                            program.runtime().memory,
+                                            &a.signature,
+                                            &restore.input,
+                                        )
+                                    })
+                                    .is_some_and(|(_, permission)| permission == *slot)
+                            })
+                    }
+                    _ => {
+                        ssa.is_empty()
+                            && valid_stored_exit(&restore.input, &restore.exit, &carriers)
+                    }
+                };
+                if !valid {
+                    return Err(E::Resource);
+                }
+            }
+            if restored != expected {
+                return Err(E::Resource);
             }
         }
     }
@@ -185,6 +299,127 @@ struct Validator<'a> {
     memory: &'a VirMemorySchema,
 }
 impl Validator<'_> {
+    fn bool_origin(&self, origin: &SummaryScalarRoot, output: AbstractBool) -> Result {
+        use SummaryValidationError as E;
+        let input = match origin {
+            SummaryScalarRoot::Parameter(slot) => {
+                if self.summary.parameters.get(*slot) != Some(&VirType::Bool) {
+                    return Err(E::Resource);
+                }
+                self.summary
+                    .inputs
+                    .iter()
+                    .find_map(|v| match (&v.coordinate, &v.value) {
+                        (
+                            ValueReference {
+                                epoch: ValueEpoch::Pre,
+                                coordinate: ValueCoordinate::Parameter(p),
+                            },
+                            SummaryValue::Bool(b),
+                        ) if p == slot => Some(*b),
+                        _ => None,
+                    })
+                    .ok_or(E::Resource)?
+            }
+            SummaryScalarRoot::Cell {
+                resource,
+                bytes,
+                access,
+            } => {
+                if !matches!(resource, ResourceName::Input { .. }) {
+                    return Err(E::Resource);
+                }
+                self.summary
+                    .input_resources
+                    .iter()
+                    .find(|r| &r.name == resource)
+                    .and_then(|r| {
+                        r.scalar_contents.iter().find_map(|(b, a, v)| match v {
+                            super::super::AbstractValue::Bool(value)
+                                if b == bytes && a == access =>
+                            {
+                                Some(*value)
+                            }
+                            _ => None,
+                        })
+                    })
+                    .ok_or(E::Resource)?
+            }
+        };
+        if matches!(
+            (input, output),
+            (AbstractBool::True, AbstractBool::False) | (AbstractBool::False, AbstractBool::True)
+        ) {
+            return Err(E::Resource);
+        }
+        Ok(())
+    }
+    fn scalar_origin(&self, origin: &SummaryScalarOrigin, output: U64Interval) -> Result {
+        use SummaryValidationError as E;
+        let mut lower = origin.addend;
+        let mut upper = origin.addend;
+        let mut cells = BTreeSet::new();
+        for source in origin.sources() {
+            if source.scale == 0 || !cells.insert(source.root.clone()) {
+                return Err(E::Resource);
+            }
+            let input = match source.root {
+                SummaryScalarRoot::Parameter(slot) => {
+                    if self.summary.parameters.get(slot) != Some(&VirType::U64) {
+                        return Err(E::Resource);
+                    }
+                    self.summary
+                        .inputs
+                        .iter()
+                        .find_map(|input| match (&input.coordinate, &input.value) {
+                            (
+                                ValueReference {
+                                    epoch: ValueEpoch::Pre,
+                                    coordinate: ValueCoordinate::Parameter(p),
+                                },
+                                SummaryValue::Word { interval, .. },
+                            ) if *p == slot => Some(*interval),
+                            _ => None,
+                        })
+                        .ok_or(E::Resource)?
+                }
+                SummaryScalarRoot::Cell {
+                    resource,
+                    bytes,
+                    access,
+                } => {
+                    if !matches!(resource, ResourceName::Input { .. }) {
+                        return Err(E::Resource);
+                    }
+                    self.summary
+                        .input_resources
+                        .iter()
+                        .find(|r| r.name == resource)
+                        .and_then(|r| {
+                            r.scalar_contents.iter().find_map(|(b, a, v)| match v {
+                                super::super::AbstractValue::U64(value)
+                                    if *b == bytes && *a == access =>
+                                {
+                                    Some(*value)
+                                }
+                                _ => None,
+                            })
+                        })
+                        .ok_or(E::Resource)?
+                }
+            };
+            lower = lower
+                .checked_add(input.lower().checked_mul(source.scale).ok_or(E::Resource)?)
+                .ok_or(E::Resource)?;
+            upper = upper.saturating_add(input.upper().saturating_mul(source.scale));
+        }
+        if lower > output.upper() || upper < output.lower() {
+            return Err(E::Resource);
+        }
+
+        Ok(())
+    }
+
     fn resources(
         &self,
         resources: &[ResourcePostState],
@@ -242,6 +477,83 @@ impl Validator<'_> {
             {
                 return Err(E::Resource);
             }
+            if resource.scalar_contents.len() > 64 {
+                return Err(E::Resource);
+            }
+            let mut cells = Vec::new();
+            for (range, access, value) in &resource.scalar_contents {
+                self.location(range.start(), *access, resource.size)?;
+                if resource.liveness != LivenessState::Live
+                    || self
+                        .memory
+                        .layout(access.layout)
+                        .is_none_or(|l| l.size_bytes != (range.end() - range.start()))
+                    || !resource.initialization.initialized().contains(*range)
+                    || !resource.validity.contains(*range)
+                    || cells.iter().any(|cell: &ByteRange| cell.overlaps(*range))
+                    || !matches!(
+                        (value, self.memory.kind(access.ty)),
+                        (
+                            super::super::AbstractValue::Bool(_),
+                            Some(VirMemoryTypeKind::Bool)
+                        ) | (
+                            super::super::AbstractValue::U64(_),
+                            Some(VirMemoryTypeKind::Integer(
+                                crate::VirIntegerType::U64 | crate::VirIntegerType::Usize
+                            ))
+                        )
+                    )
+                {
+                    return Err(E::Resource);
+                }
+                cells.push(*range);
+            }
+            if resource.bool_origins.len() > 64 {
+                return Err(E::Resource);
+            }
+            let mut bool_cells = BTreeSet::new();
+            for (bytes, access, origin) in &resource.bool_origins {
+                if !bool_cells.insert((*bytes, *access)) {
+                    return Err(E::Resource);
+                }
+                let value = resource
+                    .scalar_contents
+                    .iter()
+                    .find_map(|(b, a, v)| match v {
+                        super::super::AbstractValue::Bool(value) if b == bytes && a == access => {
+                            Some(*value)
+                        }
+                        _ => None,
+                    })
+                    .ok_or(E::Resource)?;
+                self.bool_origin(origin, value)?;
+            }
+            if resource.scalar_origins.len() > 64 {
+                return Err(E::Resource);
+            }
+            let mut origin_cells = BTreeSet::new();
+            for (bytes, access, origin) in &resource.scalar_origins {
+                if !origin_cells.insert((*bytes, *access))
+                    || !resource.scalar_contents.iter().any(|(b, a, v)| {
+                        b == bytes
+                            && a == access
+                            && matches!(v, super::super::AbstractValue::U64(_))
+                    })
+                {
+                    return Err(E::Resource);
+                }
+                let output = resource
+                    .scalar_contents
+                    .iter()
+                    .find_map(|(b, a, v)| match v {
+                        super::super::AbstractValue::U64(value) if b == bytes && a == access => {
+                            Some(*value)
+                        }
+                        _ => None,
+                    })
+                    .ok_or(E::Resource)?;
+                self.scalar_origin(origin, output)?;
+            }
             let mut paths = BTreeSet::new();
             for variant in &resource.variants {
                 self.location(variant.offset, variant.access, resource.size)?;
@@ -280,6 +592,17 @@ impl Validator<'_> {
                 {
                     self.pointer(pointer, &names)?;
                     self.permission(permission, &names)?;
+                    if matches!(permission.authority, SummaryAuthority::InputPayloadLoan(_))
+                        && !super::borrow::stored_reference_shape(
+                            self.memory,
+                            payload.access,
+                            pointer.access,
+                            permission.access,
+                            permission.free,
+                        )
+                    {
+                        return Err(E::Resource);
+                    }
                     if let (Knowledge::Known(a), Knowledge::Known(b)) =
                         (&pointer.resource, &permission.resource)
                         && a != b
@@ -322,6 +645,27 @@ impl Validator<'_> {
             if *scale == 0
                 || !seen.insert(*parameter)
                 || self.summary.parameters.get(*parameter) != Some(&VirType::U64)
+            {
+                return Err(SummaryValidationError::Value);
+            }
+        }
+        let mut seen = BTreeSet::new();
+        for (result, scale) in &bound.result_offset_terms {
+            if *scale == 0
+                || !seen.insert(*result)
+                || !matches!(
+                    self.summary.results.get(*result),
+                    Some(VirType::Pointer { .. })
+                )
+            {
+                return Err(SummaryValidationError::Value);
+            }
+        }
+        let mut seen = BTreeSet::new();
+        for (result, scale) in &bound.result_terms {
+            if *scale == 0
+                || !seen.insert(*result)
+                || self.summary.results.get(*result) != Some(&VirType::U64)
             {
                 return Err(SummaryValidationError::Value);
             }
@@ -383,6 +727,66 @@ impl Validator<'_> {
             && self.summary.parameters.get(index) != Some(&VirType::Permission)
         {
             return Err(SummaryValidationError::Resource);
+        }
+        if let SummaryAuthority::InputPayloadLoan(path) = &permission.authority {
+            let field =
+                super::borrow::input_payload_field(self.memory, &self.summary.parameters, path)
+                    .ok_or(SummaryValidationError::Resource)?;
+            let ResourceName::Input {
+                parameter,
+                payload_offsets,
+            } = path
+            else {
+                return Err(SummaryValidationError::Resource);
+            };
+            if payload_offsets.is_empty()
+                || payload_offsets.len() > 16
+                || !matches!(
+                    self.summary.parameters.get(*parameter),
+                    Some(VirType::Pointer { .. })
+                )
+                || permission.free != FreeCapability::No
+            {
+                return Err(SummaryValidationError::Resource);
+            }
+            let mut parent = payload_offsets.clone();
+            let offset = parent.pop().unwrap();
+            let parent = ResourceName::Input {
+                parameter: *parameter,
+                payload_offsets: parent,
+            };
+            let resource = self
+                .summary
+                .input_resources
+                .iter()
+                .find(|r| r.name == parent)
+                .ok_or(SummaryValidationError::Resource)?;
+            let mut payloads = resource.payloads.iter().filter(|p| p.offset == offset);
+            let payload = payloads.next().ok_or(SummaryValidationError::Resource)?;
+            let SummaryMovePath::Available {
+                pointer,
+                permission: input,
+            } = &payload.state
+            else {
+                return Err(SummaryValidationError::Resource);
+            };
+            if payloads.next().is_some()
+                || payload.access != field
+                || !matches!(
+                    self.memory.kind(payload.access.ty),
+                    Some(VirMemoryTypeKind::Pointer {
+                        kind: crate::VirPointerKind::Reference,
+                        ..
+                    })
+                )
+                || input.authority != permission.authority
+                || input.free != FreeCapability::No
+                || pointer.resource != permission.resource
+                || input.resource != permission.resource
+                || (input.access != permission.access && input.access != AccessPermission::Write)
+            {
+                return Err(SummaryValidationError::Resource);
+            }
         }
         Ok(())
     }
@@ -447,5 +851,179 @@ impl Validator<'_> {
             _ => {}
         }
         Ok(())
+    }
+}
+
+/// This validates the declared disposition against observed world carriers;
+/// it does not infer a destination and is independent of the projector.
+fn valid_stored_exit(
+    input: &ResourceName,
+    exit: &crate::BoundaryExit<StoredBorrowLocation, usize>,
+    carriers: &[StoredBorrowLocation],
+) -> bool {
+    match exit {
+        crate::BoundaryExit::Ended => carriers.is_empty(),
+        crate::BoundaryExit::InPlace => {
+            matches!(carriers, [location] if super::borrow::is_input_location(input, location))
+        }
+        crate::BoundaryExit::Stored(destination) => {
+            matches!(carriers, [location] if location == destination)
+                && !super::borrow::is_input_location(input, destination)
+        }
+        crate::BoundaryExit::Value(_) | crate::BoundaryExit::Shared { .. } => false,
+    }
+}
+
+#[cfg(test)]
+mod boundary_tests {
+    #[test]
+    fn shared_exit_claims_match_all_real_carriers_without_relying_on_the_seal() {
+        for (source, name) in [
+            (
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/spec/cases/verify/predicate-shared-field-exit.nera"
+                )),
+                "get",
+            ),
+            (
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/spec/cases/verify/predicate-shared-field-copies.nera"
+                )),
+                "duplicate",
+            ),
+        ] {
+            let output =
+                crate::analyze(&crate::SourceFile::from_text("shared-summary.nera", source));
+            let unit = output.vir().unwrap().resolve().unwrap();
+            let report = crate::verify_program(&unit, Default::default()).unwrap();
+            assert!(report.is_memory_checked_core0());
+            let id = unit
+                .runtime()
+                .functions
+                .iter()
+                .find(|f| f.name == name)
+                .unwrap()
+                .id;
+            let original = report.functions()[&id].summary();
+            original
+                .validate_structure(&unit, id, Default::default())
+                .unwrap();
+            for mutation in 0..7 {
+                let mut changed = original.clone();
+                let Knowledge::Known(returns) = &mut changed.normal_returns else {
+                    panic!("closed summary");
+                };
+                let restores = &mut returns[0].worlds[0].stored_borrow_restoration;
+                let exit = &mut restores[0].exit;
+                let crate::BoundaryExit::Shared { stored, values } = exit else {
+                    panic!("multiple carriers");
+                };
+                match mutation {
+                    0 => {
+                        stored.pop();
+                    }
+                    1 => {
+                        stored.push(stored[0].clone());
+                    }
+                    2 => {
+                        values.push(usize::MAX);
+                    }
+                    3 => {
+                        stored[0].offset += 8;
+                    }
+                    4 => {
+                        stored[0].resource = ResourceName::Fresh(usize::MAX);
+                    }
+                    5 => {
+                        *exit = crate::BoundaryExit::Ended;
+                    }
+                    6 => {
+                        restores.push(restores[0].clone());
+                    }
+                    _ => unreachable!(),
+                }
+                // Keep the private evidence mirror consistent, so rejection
+                // must come from authority/schema checks, not mirror mismatch.
+                changed.world_shapes = returns
+                    .iter()
+                    .flat_map(|a| a.worlds.iter().cloned())
+                    .collect();
+                assert_eq!(
+                    changed.validate_structure(&unit, id, Default::default()),
+                    Err(SummaryValidationError::Resource),
+                    "{name} mutation {mutation}"
+                );
+            }
+        }
+    }
+
+    use super::*;
+    #[test]
+    fn disposition_must_name_the_actual_unique_carrier() {
+        let output = crate::analyze(&crate::SourceFile::from_text(
+            "boundary.nera",
+            "fn main()->u64{return 0;}",
+        ));
+        let memory = &output.vir().unwrap().as_unit().memory;
+        let access = memory.access(memory.types[0].id).unwrap();
+        // Only disposition coordinates are tested here. Typed resource leaves
+        // and actual loan authority are checked separately by the validator.
+        let input = ResourceName::Input {
+            parameter: 2,
+            payload_offsets: vec![8, 16],
+        };
+        let source = StoredBorrowLocation {
+            resource: ResourceName::Input {
+                parameter: 2,
+                payload_offsets: vec![8],
+            },
+            offset: 16,
+            access,
+        };
+        let target = StoredBorrowLocation {
+            resource: ResourceName::Fresh(1),
+            offset: 24,
+            access,
+        };
+        assert!(valid_stored_exit(
+            &input,
+            &crate::BoundaryExit::InPlace,
+            std::slice::from_ref(&source)
+        ));
+        assert!(valid_stored_exit(
+            &input,
+            &crate::BoundaryExit::Stored(target.clone()),
+            std::slice::from_ref(&target)
+        ));
+        assert!(valid_stored_exit(&input, &crate::BoundaryExit::Ended, &[]));
+        for exit in [
+            crate::BoundaryExit::InPlace,
+            crate::BoundaryExit::Stored(source.clone()),
+            crate::BoundaryExit::Value(0),
+            crate::BoundaryExit::Ended,
+        ] {
+            assert!(!valid_stored_exit(
+                &input,
+                &exit,
+                std::slice::from_ref(&target)
+            ));
+            assert!(!valid_stored_exit(
+                &input,
+                &exit,
+                &[target.clone(), target.clone()]
+            ));
+        }
+        assert!(!valid_stored_exit(
+            &input,
+            &crate::BoundaryExit::Stored(source.clone()),
+            &[source]
+        ));
+        assert!(!valid_stored_exit(
+            &input,
+            &crate::BoundaryExit::Stored(target),
+            &[]
+        ));
     }
 }

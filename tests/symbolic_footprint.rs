@@ -32,11 +32,13 @@ fn evaluated_selection_survives_source_assignment_nested_projection_and_storage(
     let analysis = analyze_function_cfg(&resolved, VirFunctionId::new(1)).unwrap();
     let mut symbolic = 0;
     for block in &unit.runtime().functions[1].blocks {
-        for (instruction, state) in block
-            .instructions
-            .iter()
-            .zip(analysis.block(block.id).unwrap().instruction_states())
-        {
+        for (instruction, state) in block.instructions.iter().zip(
+            analysis
+                .block(block.id)
+                .unwrap()
+                .instruction_states()
+                .unwrap(),
+        ) {
             if let VirInstruction::LoanBegin {
                 effect,
                 permission_result,
@@ -297,7 +299,7 @@ fn losing_the_index_across_cfg_does_not_erase_the_loan_or_prevent_end() {
     let analysis = analyze_function_cfg(&resolved, VirFunctionId::new(1)).unwrap();
     let mut lost = false;
     for block in &unit.runtime().functions[1].blocks {
-        let entry = analysis.block(block.id).unwrap().entry_state();
+        let entry = analysis.block(block.id).unwrap().entry_state().unwrap();
         if entry.loans().values().any(|loan| {
             loan.activity() == LoanActivity::Active
                 && loan.actual_range() == AbstractByteRange::Unknown

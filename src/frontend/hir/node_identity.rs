@@ -107,7 +107,8 @@ fn visit_statement_mut<E>(
             }
             Ok(())
         }
-        HirStatementKind::Prove { .. }
+        HirStatementKind::Predicate { .. }
+        | HirStatementKind::Prove { .. }
         | HirStatementKind::Declare { .. }
         | HirStatementKind::Free { .. }
         | HirStatementKind::Break { .. }
@@ -178,6 +179,7 @@ fn visit_expression_mut<E>(
         }
         HirExpressionKind::Unit
         | HirExpressionKind::Integer(_)
+        | HirExpressionKind::NullPointer
         | HirExpressionKind::Bool(_)
         | HirExpressionKind::Allocate { .. } => Ok(()),
     }
@@ -281,7 +283,8 @@ fn visit_statement<E>(
             }
             Ok(())
         }
-        HirStatementKind::Prove { .. }
+        HirStatementKind::Predicate { .. }
+        | HirStatementKind::Prove { .. }
         | HirStatementKind::Declare { .. }
         | HirStatementKind::Free { .. }
         | HirStatementKind::Break { .. }
@@ -338,6 +341,7 @@ fn visit_expression<E>(
         }
         HirExpressionKind::Unit
         | HirExpressionKind::Integer(_)
+        | HirExpressionKind::NullPointer
         | HirExpressionKind::Bool(_)
         | HirExpressionKind::Allocate { .. } => Ok(()),
     }

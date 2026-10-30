@@ -201,6 +201,72 @@ fn dynamic_origin_and_cursor_advance_only_after_proved_adjacent_canonical_write(
 }
 
 #[test]
+fn compound_cursor_advances_after_adjacent_write_but_does_not_fill_a_gap() {
+    let sum = AffineExpression::identity(BEGIN)
+        .checked_add(AffineExpression::identity(CURSOR))
+        .unwrap();
+    let origin = AffineExpression::constant(0);
+    for gap in [0, 1] {
+        let input = state(origin, sum);
+        let index = sum.checked_add_constant(gap).unwrap();
+        let next = index.checked_add_constant(1).unwrap();
+        let out = write(input, index, |_| {});
+        assert!(out.all_obligations_proven(), "{:?}", out.obligations());
+        assert_eq!(covers(out.state(), origin, next), gap == 0);
+        assert!(covers(out.state(), index, next));
+        assert_eq!(
+            out.state().allocations[&ID].initialization_prefixes.facts[&key(origin)]
+                .contains(&next),
+            gap == 0
+        );
+    }
+}
+
+#[test]
+fn loop_range_import_converts_both_roots_without_rounding() {
+    let sum = AffineExpression::identity(BEGIN)
+        .checked_add(AffineExpression::identity(CURSOR))
+        .unwrap();
+    let pointer = AbstractPointer::new(
+        AbstractProvenance::Known(ID),
+        U64Interval::exact(8),
+        GuaranteedAlignment::new(8).unwrap(),
+    );
+    for invalid in [false, true] {
+        let mut input = state(AffineExpression::constant(0), AffineExpression::constant(0));
+        let end = if invalid {
+            AffineExpression::identity(BEGIN)
+                .checked_scale(8)
+                .unwrap()
+                .checked_add(AffineExpression::identity(CURSOR))
+                .unwrap()
+        } else {
+            sum.checked_scale(8).unwrap()
+        };
+        let before = input.clone();
+        assert_eq!(
+            input.assume_loop_initialized(
+                pointer,
+                VirMemoryAccess::core_u64(),
+                (AffineExpression::constant(0), end),
+                8,
+                8
+            ),
+            !invalid
+        );
+        if invalid {
+            assert_eq!(input, before);
+        } else {
+            assert!(
+                input.allocations[&ID].initialization_prefixes.facts
+                    [&key(AffineExpression::constant(0))]
+                    .contains(&sum)
+            );
+        }
+    }
+}
+
+#[test]
 fn concrete_write_sequences_preserve_updates_without_filling_skipped_elements() {
     for sequence in [[2, 3, 4, 3], [2, 4, 5, 2], [6, 5, 4, 3]] {
         let mut input = state(AffineExpression::constant(0), AffineExpression::constant(0));
@@ -479,4 +545,60 @@ fn invalidation_and_budget_forget_dynamic_facts_instead_of_fabricating_zero_orig
         .collect();
     limit_counts_from(&mut counts, begin);
     assert_eq!(counts, BTreeSet::from([begin]));
+}
+
+#[test]
+fn element_count_view_requires_exact_geometry_prefix_and_defined_cursor() {
+    let input = state(
+        AffineExpression::constant(0),
+        AffineExpression::identity(CURSOR),
+    );
+    let access = VirMemoryAccess::core_u64();
+    assert_eq!(
+        input.array_initialization_counts(ID, 8, access, 8, 8),
+        vec![
+            AffineExpression::constant(0),
+            AffineExpression::identity(CURSOR)
+        ]
+    );
+    for (base, length, stride) in [(0, 8, 8), (8, 7, 8), (8, 8, 4)] {
+        assert!(
+            input
+                .array_initialization_counts(ID, base, access, length, stride)
+                .is_empty()
+        );
+    }
+    let wrong = VirMemoryAccess::new(crate::VirTypeId::new(90), crate::VirLayoutId::new(90));
+    assert!(
+        input
+            .array_initialization_counts(ID, 8, wrong, 8, 8)
+            .is_empty()
+    );
+    assert!(
+        dynamic()
+            .array_initialization_counts(ID, 8, access, 8, 8)
+            .is_empty()
+    );
+    let mut missing = input.clone();
+    missing.values.remove(&CURSOR);
+    assert_eq!(
+        missing.array_initialization_counts(ID, 8, access, 8, 8),
+        vec![AffineExpression::constant(0)]
+    );
+    let mut overflowing = input.clone();
+    overflowing
+        .values
+        .insert(CURSOR, AbstractValue::U64(U64Interval::unknown()));
+    assert_eq!(
+        overflowing.array_initialization_counts(ID, 8, access, 8, 8),
+        vec![AffineExpression::constant(0)]
+    );
+    let mut dead = input;
+    dead.allocation_mut(ID)
+        .unwrap()
+        .set_liveness(LivenessState::Dead);
+    assert!(
+        dead.array_initialization_counts(ID, 8, access, 8, 8)
+            .is_empty()
+    );
 }

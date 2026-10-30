@@ -422,6 +422,8 @@ fn typed_prove_validates_dumps_and_cannot_change_runtime_view() {
     let runtime_before = unit.runtime().stable_dump();
     add_entry_prove(&mut unit);
     unit.specs = nera::VirSpecEnvironment::from_tables(VirSpecTables {
+        predicate_actions: vec![],
+        predicate_interfaces: vec![],
         assertions: unit.specs.assertions().to_vec(),
         contracts: unit.specs.contracts().to_vec(),
         predicates: unit.specs.predicates().to_vec(),
@@ -881,6 +883,7 @@ fn predicate_binder_ownership_and_gated_bodies_are_explicit() {
     let mut unit = raw_identity_unit();
     let origin = origin(&unit);
     unit.specs.predicates_mut().push(VirPredicate {
+        representation: None,
         id: VirPredicateId::new(0),
         name: "word".to_owned(),
         binders: vec![VirSpecBinderId::new(0)],

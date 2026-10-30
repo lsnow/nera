@@ -74,6 +74,9 @@ fn statement_live_in(
 ) -> Result<BTreeSet<HirLocalId>, FrontendFailure> {
     match &statement.kind {
         HirStatementKind::Prove { .. } => {}
+        HirStatementKind::Predicate { locals, .. } => {
+            live.extend(locals);
+        }
         HirStatementKind::Declare { local } => {
             live.remove(local);
         }
@@ -261,6 +264,7 @@ fn collect_expression(expression: &HirExpression, live: &mut BTreeSet<HirLocalId
     match &expression.kind {
         HirExpressionKind::Unit
         | HirExpressionKind::Integer(_)
+        | HirExpressionKind::NullPointer
         | HirExpressionKind::Bool(_)
         | HirExpressionKind::Allocate { .. } => {}
         HirExpressionKind::TupleConstructor { elements }

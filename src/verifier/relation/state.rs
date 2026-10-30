@@ -12,6 +12,41 @@ use crate::{AbstractValue, PathFact, ResourceState, VirIntegerPredicate, VirValu
 const MAX_FACTS: usize = 64;
 type Pair = (Option<VirValueId>, Option<VirValueId>);
 
+/// Immutable numeric endpoint. Literals must survive CFG projection without
+/// inventing an SSA carrier; addresses and derived instruction slots are absent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RelationOperand {
+    Value(VirValueId),
+    Constant(u64),
+}
+
+impl RelationOperand {
+    pub fn value(self) -> Option<VirValueId> {
+        match self {
+            Self::Value(value) => Some(value),
+            Self::Constant(_) => None,
+        }
+    }
+
+    fn from_term(term: RelationTerm) -> Option<Self> {
+        match term {
+            RelationTerm::Value {
+                value,
+                ty: crate::VirType::U64,
+            } => Some(Self::Value(value)),
+            RelationTerm::Constant(value) => Some(Self::Constant(value)),
+            _ => None,
+        }
+    }
+
+    fn term(self) -> RelationTerm {
+        match self {
+            Self::Value(value) => word(value),
+            Self::Constant(value) => RelationTerm::Constant(value),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum RelationPrecisionLoss {
     Budget,
@@ -23,11 +58,44 @@ pub enum RelationPrecisionLoss {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RelationState {
     bounds: BTreeMap<Pair, i128>,
-    disequalities: BTreeSet<(VirValueId, VirValueId)>,
+    disequalities: BTreeSet<(RelationOperand, RelationOperand)>,
     losses: BTreeSet<RelationPrecisionLoss>,
 }
 
 impl RelationState {
+    /// Preserve direct consequences of checked affine values before an edge
+    /// drops an operand. For example, `end = start + count` still entails
+    /// `start <= end` when only start/end cross the edge. No new closure or
+    /// resource observation is performed here.
+    pub(in crate::verifier) fn project_affine(
+        &self,
+        renames: &[(VirValueId, VirValueId)],
+        expressions: impl Iterator<Item = (VirValueId, crate::AffineExpression)>,
+    ) -> Self {
+        let retained: BTreeSet<_> = renames.iter().map(|(source, _)| *source).collect();
+        let mut source = self.clone();
+        for (value, expression) in expressions {
+            if !retained.contains(&value) {
+                continue;
+            }
+            for bound in affine_lower_bounds(value, expression) {
+                if bound.left.is_some_and(|root| retained.contains(&root)) {
+                    source
+                        .bounds
+                        .entry((bound.left, bound.right))
+                        .and_modify(|old| *old = (*old).min(bound.bound))
+                        .or_insert(bound.bound);
+                    if source.bounds.len() + source.disequalities.len() > MAX_FACTS {
+                        let mut result = self.project(renames);
+                        result.losses.insert(RelationPrecisionLoss::Budget);
+                        return result;
+                    }
+                }
+            }
+        }
+        source.project(renames)
+    }
+
     pub const fn new() -> Self {
         Self {
             bounds: BTreeMap::new(),
@@ -40,7 +108,7 @@ impl RelationState {
             .iter()
             .map(|(&(left, right), &bound)| DifferenceBound { left, right, bound })
     }
-    pub fn disequalities(&self) -> &BTreeSet<(VirValueId, VirValueId)> {
+    pub fn disequalities(&self) -> &BTreeSet<(RelationOperand, RelationOperand)> {
         &self.disequalities
     }
     pub fn precision_losses(&self) -> &BTreeSet<RelationPrecisionLoss> {
@@ -54,8 +122,8 @@ impl RelationState {
                     .iter()
                     .map(|&(a, b)| DifferencePremise::Compare {
                         comparison: RelationComparison::NotEqual,
-                        left: word(a),
-                        right: word(b),
+                        left: a.term(),
+                        right: b.term(),
                     }),
             )
             .collect()
@@ -69,7 +137,7 @@ impl RelationState {
         self.bounds
             .retain(|&(a, b), _| a != Some(value) && b != Some(value));
         self.disequalities
-            .retain(|&(a, b)| a != value && b != value);
+            .retain(|&(a, b)| a.value() != Some(value) && b.value() != Some(value));
     }
     pub(in crate::verifier) fn limit(&mut self, limits: DifferenceLimits) {
         let variables: BTreeSet<_> = self
@@ -77,7 +145,12 @@ impl RelationState {
             .keys()
             .flat_map(|(a, b)| a.iter().chain(b))
             .copied()
-            .chain(self.disequalities.iter().flat_map(|&(a, b)| [a, b]))
+            .chain(
+                self.disequalities
+                    .iter()
+                    .flat_map(|&(a, b)| [a.value(), b.value()])
+                    .flatten(),
+            )
             .collect();
         if self.bounds.len() + self.disequalities.len() > limits.max_constraints.min(MAX_FACTS)
             || variables.len() > limits.max_variables
@@ -98,8 +171,69 @@ impl RelationState {
         limits: DifferenceLimits,
     ) {
         self.limit(limits);
-        let mut premises = self.premises();
-        premises.extend_from_slice(added);
+        // Exact immutable words already live in the scalar component. Keeping
+        // them as graph vertices creates quadratic, redundant pair bounds and
+        // can exhaust the relation budget in otherwise constant code. Resolve
+        // these endpoints before closure, but still submit every constraint to
+        // the solver: substitution must not hide contradictions or overflow.
+        let term = |term| match term {
+            RelationTerm::Value {
+                value,
+                ty: crate::VirType::U64,
+            } => match values.get(&value) {
+                Some(AbstractValue::U64(interval)) => {
+                    interval.exact_value().map_or(term, RelationTerm::Constant)
+                }
+                _ => term,
+            },
+            _ => term,
+        };
+        let mut premises = Vec::new();
+        for premise in self.premises().iter().chain(added) {
+            let normalized = match *premise {
+                DifferencePremise::Bound { left, right, bound } => DifferencePremise::Bound {
+                    left: term(left),
+                    right: term(right),
+                    bound,
+                },
+                DifferencePremise::EqualOffset {
+                    left,
+                    right,
+                    offset,
+                } => DifferencePremise::EqualOffset {
+                    left: term(left),
+                    right: term(right),
+                    offset,
+                },
+                DifferencePremise::Compare {
+                    comparison,
+                    left,
+                    right,
+                } => DifferencePremise::Compare {
+                    comparison,
+                    left: term(left),
+                    right: term(right),
+                },
+                DifferencePremise::Interval { value, interval } => {
+                    let endpoint = term(word(value));
+                    if matches!(endpoint, RelationTerm::Constant(_)) {
+                        premises.push(DifferencePremise::Bound {
+                            left: RelationTerm::Constant(interval.lower()),
+                            right: endpoint,
+                            bound: 0,
+                        });
+                        DifferencePremise::Bound {
+                            left: endpoint,
+                            right: RelationTerm::Constant(interval.upper()),
+                            bound: 0,
+                        }
+                    } else {
+                        premise.clone()
+                    }
+                }
+            };
+            premises.push(normalized);
+        }
         let mut variables = BTreeSet::new();
         for premise in &premises {
             let terms = match *premise {
@@ -172,12 +306,18 @@ impl RelationState {
                 }
             });
         }
-        for p in added {
+        self.disequalities.clear();
+        for p in &premises {
             if let DifferencePremise::Compare {
                 comparison: RelationComparison::NotEqual,
-                left: RelationTerm::Value { value: a, .. },
-                right: RelationTerm::Value { value: b, .. },
+                left,
+                right,
             } = *p
+                && let (Some(a), Some(b)) = (
+                    RelationOperand::from_term(left),
+                    RelationOperand::from_term(right),
+                )
+                && (a.value().is_some() || b.value().is_some())
             {
                 self.disequalities.insert((a.min(b), a.max(b)));
             }
@@ -202,7 +342,12 @@ impl RelationState {
             .keys()
             .flat_map(|(a, b)| a.iter().chain(b))
             .copied()
-            .chain(self.disequalities.iter().flat_map(|&(a, b)| [a, b]))
+            .chain(
+                self.disequalities
+                    .iter()
+                    .flat_map(|&(a, b)| [a.value(), b.value()])
+                    .flatten(),
+            )
             .collect();
         nodes.extend(
             sources
@@ -226,11 +371,27 @@ impl RelationState {
                 if let Some(bound) = bound {
                     result.bounds.insert((target_a, target_b), bound);
                 }
-                if let (Some(a), Some(b), Some(ta), Some(tb)) =
-                    (source_a, source_b, target_a, target_b)
-                    && self.disequalities.contains(&(a.min(b), a.max(b)))
-                {
-                    result.disequalities.insert((ta.min(tb), ta.max(tb)));
+            }
+        }
+        let project_operand = |operand| match operand {
+            RelationOperand::Constant(_) => vec![operand],
+            RelationOperand::Value(source) => sources
+                .iter()
+                .filter_map(|(&target, &old)| {
+                    (old == source).then_some(RelationOperand::Value(target))
+                })
+                .collect(),
+        };
+        for &(a, b) in &self.disequalities {
+            for target_a in project_operand(a) {
+                for target_b in project_operand(b) {
+                    result
+                        .disequalities
+                        .insert((target_a.min(target_b), target_a.max(target_b)));
+                    if result.bounds.len() + result.disequalities.len() > MAX_FACTS {
+                        result.forget_all(RelationPrecisionLoss::Budget);
+                        return result;
+                    }
                 }
             }
         }
@@ -274,6 +435,25 @@ impl RelationState {
         }
         result
     }
+}
+
+/// A non-wrapping sum of unsigned terms is at least each positive term plus
+/// its constant. Both live queries and CFG projection use this same rule.
+pub(super) fn affine_lower_bounds(
+    value: VirValueId,
+    expression: crate::AffineExpression,
+) -> impl Iterator<Item = DifferenceBound> {
+    expression
+        .terms()
+        .into_iter()
+        .flatten()
+        .filter_map(move |(root, scale)| {
+            (scale > 0 && root != value).then_some(DifferenceBound {
+                left: Some(root),
+                right: Some(value),
+                bound: -i128::from(expression.addend()),
+            })
+        })
 }
 
 pub(in crate::verifier) fn comparison_premise(
@@ -321,6 +501,255 @@ mod tests {
     fn id(n: u32) -> VirValueId {
         VirValueId::new(n)
     }
+
+    #[test]
+    fn affine_edge_projection_keeps_bounds_when_an_operand_dies() {
+        let expression = crate::AffineExpression::identity(id(0))
+            .checked_add(crate::AffineExpression::identity(id(1)))
+            .unwrap()
+            .checked_add_constant(3)
+            .unwrap();
+        let projected = RelationState::new().project_affine(
+            &[(id(0), id(10)), (id(2), id(12))],
+            [(id(2), expression)].into_iter(),
+        );
+        assert_eq!(
+            projected.bounds().collect::<Vec<_>>(),
+            vec![DifferenceBound {
+                left: Some(id(10)),
+                right: Some(id(12)),
+                bound: -3,
+            }]
+        );
+        for a in 0..5 {
+            for b in 0..5 {
+                assert!(i128::from(a) - i128::from(a + b + 3) <= -3);
+            }
+        }
+        // No expression evidence, wrong endpoint, and a dropped result do not
+        // establish a relationship between the remaining coordinates.
+        for (renames, expressions) in [
+            (vec![(id(0), id(10)), (id(2), id(12))], vec![]),
+            (
+                vec![(id(3), id(10)), (id(2), id(12))],
+                vec![(id(2), expression)],
+            ),
+            (vec![(id(0), id(10))], vec![(id(2), expression)]),
+        ] {
+            assert_eq!(
+                RelationState::new()
+                    .project_affine(&renames, expressions.into_iter())
+                    .bounds()
+                    .count(),
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn exact_words_do_not_accumulate_redundant_graph_vertices() {
+        let mut state = ResourceState::new();
+        state
+            .define_value(id(0), AbstractValue::U64(U64Interval::exact(0)))
+            .unwrap();
+        for n in 1..100 {
+            state
+                .define_value(id(n), AbstractValue::U64(U64Interval::exact(u64::from(n))))
+                .unwrap();
+            state.learn_relations(
+                &[DifferencePremise::EqualOffset {
+                    left: word(id(n)),
+                    right: word(id(n - 1)),
+                    offset: 1,
+                }],
+                DifferenceLimits::default(),
+            );
+            assert!(state.relations().precision_losses().is_empty());
+            assert_eq!(state.relations().bounds().count(), 0);
+        }
+        state
+            .define_value(
+                id(100),
+                AbstractValue::U64(U64Interval::new(0, 100).unwrap()),
+            )
+            .unwrap();
+        state.learn_relations(
+            &[DifferencePremise::Bound {
+                left: word(id(100)),
+                right: word(id(99)),
+                bound: -49,
+            }],
+            DifferenceLimits::default(),
+        );
+        assert_eq!(
+            state.value(id(100)),
+            Some(&AbstractValue::U64(U64Interval::new(0, 50).unwrap()))
+        );
+        assert!(state.relations().precision_losses().is_empty());
+        assert!(
+            state
+                .relations()
+                .bounds()
+                .any(|bound| bound.left == Some(id(100)))
+        );
+    }
+
+    #[test]
+    fn exact_endpoint_substitution_preserves_failures_and_budget() {
+        let values = BTreeMap::from([(id(0), AbstractValue::U64(U64Interval::exact(7)))]);
+        for premise in [
+            DifferencePremise::Bound {
+                left: word(id(0)),
+                right: RelationTerm::Constant(6),
+                bound: 0,
+            },
+            DifferencePremise::Interval {
+                value: id(0),
+                interval: U64Interval::new(0, 6).unwrap(),
+            },
+            DifferencePremise::Compare {
+                comparison: RelationComparison::NotEqual,
+                left: word(id(0)),
+                right: RelationTerm::Constant(7),
+            },
+        ] {
+            let mut relations = RelationState::new();
+            relations.learn(&[premise], &values, DifferenceLimits::default());
+            assert!(
+                relations
+                    .precision_losses()
+                    .contains(&RelationPrecisionLoss::Inconsistent)
+            );
+            assert_eq!(relations.bounds().count(), 0);
+        }
+        for (offset, limits) in [
+            (i128::MIN, DifferenceLimits::default()),
+            (
+                0,
+                DifferenceLimits {
+                    max_steps: 0,
+                    ..DifferenceLimits::default()
+                },
+            ),
+        ] {
+            let mut relations = RelationState::new();
+            relations.learn(
+                &[DifferencePremise::EqualOffset {
+                    left: word(id(0)),
+                    right: RelationTerm::Constant(7),
+                    offset,
+                }],
+                &values,
+                limits,
+            );
+            assert!(!relations.precision_losses().is_empty());
+            assert_eq!(relations.bounds().count(), 0);
+        }
+    }
+
+    #[test]
+    fn literal_disequality_survives_projection_without_a_constant_slot() {
+        let mut state = ResourceState::new();
+        state
+            .define_value(id(0), AbstractValue::U64(U64Interval::new(0, 8).unwrap()))
+            .unwrap();
+        state
+            .define_value(id(1), AbstractValue::U64(U64Interval::exact(4)))
+            .unwrap();
+        let premise = comparison_premise(
+            &state,
+            PathFact::Comparison {
+                predicate: VirIntegerPredicate::NotEqual,
+                left: id(0),
+                right: id(1),
+            },
+        )
+        .unwrap();
+        state.learn_relations(&[premise], DifferenceLimits::default());
+        assert_eq!(
+            state.value(id(0)),
+            Some(&AbstractValue::U64(U64Interval::new(0, 8).unwrap()))
+        );
+        let projected = state
+            .project_cfg_case(&[(id(0), id(10)), (id(0), id(11))])
+            .unwrap();
+        assert!(projected.value(id(1)).is_none());
+        for target in [id(10), id(11)] {
+            assert!(
+                projected
+                    .relations()
+                    .disequalities()
+                    .contains(&(RelationOperand::Value(target), RelationOperand::Constant(4)))
+            );
+        }
+        let query = solve_difference(
+            &projected.relations().premises(),
+            DifferenceGoal {
+                comparison: RelationComparison::NotEqual,
+                left: word(id(11)),
+                right: RelationTerm::Constant(4),
+            },
+            DifferenceLimits::default(),
+        );
+        assert_eq!(query.stop, DifferenceStop::Complete);
+        assert_eq!(query.status, crate::ObligationStatus::Proven);
+    }
+
+    #[test]
+    fn literal_disequality_obeys_mutation_join_widen_and_budget_loss() {
+        let mut state = ResourceState::new();
+        state
+            .define_value(id(0), AbstractValue::U64(U64Interval::new(0, 8).unwrap()))
+            .unwrap();
+        let original = state.clone();
+        state.learn_relations(
+            &[DifferencePremise::Compare {
+                comparison: RelationComparison::NotEqual,
+                left: word(id(0)),
+                right: RelationTerm::Constant(4),
+            }],
+            DifferenceLimits::default(),
+        );
+        assert!(!state.relations().disequalities().is_empty());
+        assert!(
+            state
+                .join(&original)
+                .unwrap()
+                .relations()
+                .disequalities()
+                .is_empty()
+        );
+        assert!(
+            state
+                .widen(&original)
+                .unwrap()
+                .relations()
+                .disequalities()
+                .is_empty()
+        );
+        assert!(
+            state
+                .project_cfg_case(&[])
+                .unwrap()
+                .relations()
+                .disequalities()
+                .is_empty()
+        );
+        let mut changed = state.clone();
+        *changed.value_mut(id(0)).unwrap() = AbstractValue::U64(U64Interval::exact(4));
+        assert!(changed.relations().disequalities().is_empty());
+        state.limit_relations(DifferenceLimits {
+            max_variables: 0,
+            ..DifferenceLimits::default()
+        });
+        assert!(state.relations().disequalities().is_empty());
+        assert!(
+            state
+                .relations()
+                .precision_losses()
+                .contains(&RelationPrecisionLoss::Budget)
+        );
+    }
     fn bounded_state(offset: i128) -> ResourceState {
         let mut state = ResourceState::new();
         for n in 0..3 {
@@ -351,7 +780,13 @@ mod tests {
                 let value = |v: Option<VirValueId>| v.map_or(0,|id| i128::from(concrete[id.get() as usize]));
                 value(b.left) - value(b.right) <= b.bound
             })
-            && state.relations().disequalities().iter().all(|&(a,b)|concrete[a.get() as usize] != concrete[b.get() as usize])
+            && state.relations().disequalities().iter().all(|&(a,b)| {
+                let value = |term| match term {
+                    RelationOperand::Value(id) => concrete[id.get() as usize],
+                    RelationOperand::Constant(value) => value,
+                };
+                value(a) != value(b)
+            })
     }
 
     #[test]

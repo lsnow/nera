@@ -1,0 +1,36 @@
+// The initialized count is composed from runtime inputs, without a count SSA.
+struct Buffer { slots:[u64;3], }
+predicate Ready(p:ptr<Buffer>,n:usize,m:usize) {
+    owns(p);
+    initialized(p.slots,0usize..n+m+1usize);
+    n<=1usize;
+    m<=1usize;
+}
+fn main()->u64 {
+    let p=alloc<Buffer>(1);
+    p.slots[0]=42;
+    p.slots[1]=7;
+    p.slots[2]=9;
+    fold Ready(p,1usize,1usize);
+    return consume(p,1usize,1usize);
+}
+fn relay(p:Own<Buffer>,n:usize,m:usize)->Own<Buffer>
+requires n<=1usize;
+requires m<=1usize;
+requires Ready(p,n,m);
+ensures Ready(result,n,m);
+{
+    return p;
+}
+fn consume(p:Own<Buffer>,n:usize,m:usize)->u64
+requires n<=1usize;
+requires m<=1usize;
+requires Ready(p,n,m);
+{
+    let q=relay(p,n,m);
+    unfold Ready(q,n,m);
+    let value=q.slots[0];
+    free(q);
+    finish Ready(q,n,m);
+    return value;
+}

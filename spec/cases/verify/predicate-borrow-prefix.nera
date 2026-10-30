@@ -1,0 +1,64 @@
+// Ordinary &mut formation still starts from a complete value. Each Ready
+// call sees only the initialized prefix promised by its predicate contract.
+opaque struct Arena { cursor:usize, slots:[u64;8], }
+predicate Ready(p:ptr<Arena>) {
+    owns(p);
+    initialized(p.cursor,0usize..1usize);
+    initialized(p.slots,0usize..p.cursor);
+    p.cursor <= 8usize;
+}
+fn main()->u64 {
+    let a=make();
+    let view=begin(&mut *a);
+    let b=append(view,20);
+    let c=append(b,22);
+    let total=finish_view(c);
+    free(a);
+    return total;
+}
+
+fn make()->Own<Arena> {
+    let p=alloc<Arena>(1);
+    p.cursor=0usize;
+    p.slots=[0;8];
+    return p;
+}
+fn begin(p:&mut Arena)->&mut Arena
+ensures Ready(result);
+{
+    p.cursor=0usize;
+    fold Ready(p);
+    return p;
+}
+fn append(p:&mut Arena,value:u64)->&mut Arena
+requires Ready(p);
+ensures Ready(result);
+{
+    unfold Ready(p);
+    let n=p.cursor;
+    if n<8usize {
+        p.slots[n]=value;
+        p.cursor=n+1usize;
+        fold Ready(p);
+        return p;
+    }
+    fold Ready(p);
+    return p;
+}
+
+// Releasing the predicate back to the ordinary reference ABI restores T.
+fn finish_view(p:&mut Arena)->u64
+requires Ready(p);
+{
+    unfold Ready(p);
+    let n=p.cursor;
+    if n>=2usize {
+        let total=p.slots[0]+p.slots[1];
+        p.slots=[0;8];
+        finish Ready(p);
+        return total;
+    }
+    p.slots=[0;8];
+    finish Ready(p);
+    return 0;
+}

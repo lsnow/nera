@@ -19,7 +19,7 @@ The following commands have distinct meanings:
 
 - `nera frontend` checks syntax, names, types, and supported source features.
 - `nera verify` attempts to prove every generated memory-safety condition and
-  supported local assertion.
+  supported contracts and loop invariants.
 - `nera run` executes the program with the interpreter and reports it as
   unverified.
 - `nera build` emits assembly, an object file, or an executable and reports the
@@ -161,8 +161,10 @@ ptr<u64>
 ```
 
 `Own<u64>` carries ownership of an allocation and is move-only. `ptr<u64>` is a
-non-owning raw pointer. Pointer element types are limited to `u64` in this
-preview.
+non-owning raw pointer. Supported bounded aggregate pointees are also available,
+including `Own<Node>` and `ptr<Node>`. Raw links may form recursive type graphs
+without recursively embedding the pointee layout. Recursive by-value layouts
+remain unsupported.
 
 ### 6.5 Named and generic types
 
@@ -366,9 +368,18 @@ verification still tracks the address origin, allocation identity, bounds, and
 access permissions. Converting an address into permission to access unrelated
 or expired storage is rejected.
 
+Typed null values use `null<T>()`, for example `null<Node>()`. They construct
+raw pointers only, never references or owners. Raw pointers can be stored in
+supported aggregate fields and passed to or returned from functions; copying an
+address does not copy resource authority. Equality compares addresses but grants
+no permission. A node's fields are initialized and modified through its owner or
+an authorized reference. Dropping a node does not free its raw-linked neighbors.
+See [`raw-node.nera`](../spec/cases/verify/raw-node.nera).
+
 ## 14. Allocation and release
 
-Version 0.0.1 provides built-in allocation for `u64` elements:
+The preview provides built-in allocation for scalar and supported bounded
+aggregate layouts:
 
 ```nera
 let pointer = alloc<u64>(1);
@@ -378,7 +389,8 @@ free(pointer);
 ```
 
 `alloc<u64>(N)` creates a fresh owning pointer. The count is currently an
-integer literal. Newly allocated elements are uninitialized. `free(pointer)`
+integer literal. For example, `alloc<Node>(1)` allocates an uninitialized node.
+Newly allocated elements are uninitialized. `free(pointer)`
 consumes an owning pointer; freeing it twice or using it afterward is rejected.
 
 Owning values that remain live at the end of their scope are dropped. Moving an
@@ -536,8 +548,9 @@ components are initialized.
 
 ## 17. Verification behavior
 
-Verification covers memory safety and supported local assertions, not general
-functional correctness. The current memory checks include:
+Verification covers memory safety, supported contracts, loop invariants, and
+finite resource predicates. It is not an unrestricted functional-correctness
+prover. The current memory checks include:
 
 - allocation liveness and single ownership;
 - use-after-free and double-free prevention;
@@ -557,8 +570,8 @@ refuted, or unknown. Only proven conditions contribute to a successful
 closed.
 
 The language does not require explicit contracts for ordinary safe code in this
-release. Local assertions and bounded function contracts are supported as
-described below. Proof blocks remain reserved and unsupported.
+release. Runtime assertions, bounded function contracts, and finite predicates
+are described below. Proof blocks remain reserved and unsupported.
 
 ### 17.1 Runtime assertions
 
@@ -654,19 +667,73 @@ are published. This is not a termination proof and does not support arbitrary
 input/output relations. Modules still form one closed source set; contracts
 are not standalone proof artifacts that can be imported without implementations.
 
-The current arena example separates scalar capacity checks from exclusive
-slice transfers. General heap-cursor postconditions, some newly returned
-subslice combinations, and early restoration of a parent after a returned
-borrow's last use remain unsupported or conservatively rejected. Such failures
-must not be interpreted as a successful memory-safety proof.
+The finite predicate interface below supports an opaque arena with checked
+cursor updates and returned slices. It does not support arbitrary heap-cursor
+contracts. In particular, the historical `contract-arena-target.nera` explicit
+contract remains unsupported; successful automatic memory verification of other
+arena examples is not a proof of that contract.
 
 Contracts are erased by `run` and `build`; runtime assertions are retained. Native artifacts
 remain unverified. A `Checked` result does not formally prove the compiler.
 
+### 17.3 Finite resource predicates and opaque modules
+
+A `predicate` declaration packages existing resources with bounded logical facts.
+Predicates are finite and nonrecursive. Resource parameters may be interleaved
+with `u64`, `usize`, and `bool` logical parameters. Existential witnesses have
+instance-local identities and may have defaults evaluated at the fold point:
+
+```nera
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>,limit:usize) {
+    exists used:usize = limit;
+    owns(p);
+    initialized(p.value,0usize..1usize);
+    used <= limit;
+}
+```
+
+`fold Ready(p,limit);` checks and packages the required resources and facts.
+`fold Ready(p,limit) with (used = expression);` supplies an explicit witness.
+`unfold Ready(p,limit) as (saved);` opens the representation and names its scoped
+witness; the `as` clause is optional. Refolding or leaving the scope invalidates
+opened names. `finish Ready(p,limit);` discharges an opened predicate's cleanup
+responsibility after its resources have been disposed of. These operations do
+not create storage or permission from a logical assertion.
+
+Predicates can appear in `requires` and `ensures`. Calls check the actual callee
+body, resource identity, logical argument substitution, and returned ownership or
+borrow responsibility. A predicate cannot be duplicated to obtain a second
+exclusive permission. Aggregate reference fields support bounded struct, tuple,
+and fixed-array paths, including transfers between stored fields and ordinary
+reference results. All members of a borrowed resource group must be accounted
+for before the parent's responsibility is restored.
+
+`pub opaque struct` hides representation fields from other modules. A public
+predicate exposes the interface while its representation remains private;
+clients call the public functions rather than unfolding private state. See the
+[`arena implementation`](../spec/cases/modules/arena/arena.nera),
+[`forwarding module`](../spec/cases/modules/arena/forward.nera), and
+[`client`](../spec/cases/modules/arena/app.nera).
+
+The arena initializes its slots during construction and tracks the allocated
+prefix with a cursor. Live conflicting borrows prevent reset or destruction.
+Normal scope cleanup, moves, overwrites, and control-flow exits preserve resource
+responsibility; abort does not promise unwinding or cleanup.
+
+The supported logical profile includes bounded typed Boolean and linear integer
+reasoning, checked arithmetic, entry/current values, and scoped existential
+witnesses. Analysis and expansion budgets remain enforced; exhaustion cannot
+create permissions or a successful proof. Recursive predicates, arbitrary
+quantifiers, nonlinear theorem proving, user-defined destructors, and automatic
+destruction of raw pointer graphs are not provided. Runtime `assert` retains its
+ordinary Boolean semantics, and there is no source `prove` statement.
+
 ## 18. Compact grammar
 
-This grammar is descriptive. Lexical precedence and diagnostic recovery are
-implementation-defined in the preview.
+This grammar describes the core runtime subset; predicate and opaque-module
+extensions are described in section 17.3. Lexical precedence and diagnostic
+recovery are implementation-defined in the preview.
 
 ```text
 file          = [ module-decl ] { use-decl } { item } ;
@@ -699,8 +766,8 @@ generic       = identifier | "const" identifier ":" "usize" ;
 
 type          = "u64" | "usize" | "bool" | "()"
               | "&" [ "mut" ] type
-              | "Own" "<" "u64" ">"
-              | "ptr" "<" "u64" ">"
+              | "Own" "<" type ">"
+              | "ptr" "<" type ">"
               | identifier [ "<" arguments ">" ]
               | "(" type "," [ type { "," type } [ "," ] ] ")"
               | "[" type ( "]" | ";" const-expr "]" ) ;
@@ -725,7 +792,7 @@ expression    = primary [ comparison primary ] ;
 primary       = atom { "+" atom } ;
 comparison    = "==" | "!=" | "<" | "<=" | ">" | ">=" ;
 logical-expression = pure-logical-expression | resource-observation ;
-(* The bounded logical operators and observations are specified in 17.1. *)
+(* Bounded logical expressions are described in sections 15.3 and 17.2-17.3. *)
 ```
 
 ## 19. Preview limits
@@ -739,7 +806,7 @@ The following are outside the version 0.0.1 accepted source language:
 - package discovery, independent compilation, and dynamic linking;
 - concurrency, atomics, exceptions, and unwinding;
 - FFI, inline assembly, MMIO, and device-memory semantics;
-- general user-defined allocators and arbitrary pointer element types;
+- arbitrary allocator specifications and unbounded pointer/aggregate layouts;
 - a stable ABI or standard library;
 - verified native executable artifacts;
 - a formal proof of compiler correctness.

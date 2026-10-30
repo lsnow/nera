@@ -1,0 +1,32 @@
+// A known Boolean keeps its scalar identity when captured before the loop.
+// Every iteration must re-establish the package with the updated argument.
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>,flag:bool) {
+    exists used:usize = 0usize;
+    owns(p);
+    initialized(p.value,0..1);
+    p.value<=42;
+    used<=7usize;
+}
+fn main()->u64 {
+    return run();
+}
+fn run()->u64 {
+    let p=alloc<Cell>(1);
+    p.value=42;
+    let mut count=0usize;
+    let mut flag=true;
+    fold Ready(p,flag) with (used=count);
+    while count<7usize {
+        invariant count<=7usize;
+        unfold Ready(p,flag);
+        count=count+1usize;
+        if flag { flag=false; } else { flag=true; }
+        fold Ready(p,flag) with (used=count);
+    }
+    unfold Ready(p,flag);
+    let outcome=p.value;
+    free(p);
+    finish Ready(p,flag);
+    return outcome;
+}

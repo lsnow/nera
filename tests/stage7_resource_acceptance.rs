@@ -192,20 +192,33 @@ fn precision_budgets_are_deterministic_and_never_grant_authority() {
         .expect("resource budget source has VIR")
         .resolve()
         .expect("resource budget VIR resolves");
-    for config in [
-        CfgAnalysisConfig {
-            max_guarded_cases_per_block: 1,
-            ..CfgAnalysisConfig::default()
-        },
-        CfgAnalysisConfig {
-            max_guard_atoms_per_case: 0,
-            ..CfgAnalysisConfig::default()
-        },
+    let unsafe_output = accepted(
+        "resource-budget-uaf.nera",
+        include_str!("../spec/cases/verify/conditional-uaf.nera"),
+    );
+    let unsafe_resolved = unsafe_output.vir().unwrap().resolve().unwrap();
+    for (config, expected_checked) in [
+        (
+            CfgAnalysisConfig {
+                max_guarded_cases_per_block: 1,
+                ..CfgAnalysisConfig::default()
+            },
+            false,
+        ),
+        (
+            CfgAnalysisConfig {
+                max_guard_atoms_per_case: 0,
+                ..CfgAnalysisConfig::default()
+            },
+            true,
+        ),
     ] {
         let first = verify_program(&resolved, config).expect("budgeted verification converges");
         let second = verify_program(&resolved, config).expect("budgeted verification replays");
         assert_eq!(first, second);
-        assert!(!first.is_memory_checked_core0());
+        // Guard metadata loss need not destroy proofs established by the
+        // remaining numeric facts. Case collapse still loses needed authority.
+        assert_eq!(first.is_memory_checked_core0(), expected_checked);
         assert!(first.functions().values().any(|function| {
             function
                 .cfg()
@@ -216,12 +229,21 @@ fn precision_budgets_are_deterministic_and_never_grant_authority() {
                         || losses.contains(&GuardedStatePrecisionLoss::GuardAtomBudget)
                 })
         }));
-        assert!(first.functions().values().any(|function| {
-            function
-                .cfg()
-                .obligations()
-                .iter()
-                .any(|record| record.obligation().status() != ObligationStatus::Proven)
+        let unsafe_report = verify_program(&unsafe_resolved, config).unwrap();
+        assert_eq!(
+            unsafe_report,
+            verify_program(&unsafe_resolved, config).unwrap()
+        );
+        assert!(!unsafe_report.is_memory_checked_core0());
+        assert!(unsafe_report.functions().values().any(|function| {
+            function.cfg().obligations().iter().any(|record| {
+                !record.obligation().is_proven()
+                    && matches!(
+                        record.obligation().kind(),
+                        ResourceObligationKind::AllocationLive { .. }
+                            | ResourceObligationKind::PermissionAvailable { .. }
+                    )
+            })
         }));
     }
 }

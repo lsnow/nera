@@ -55,7 +55,17 @@ pub(in crate::verifier) fn query_symbolic_spec_memory(
         access: query.access,
     };
     let shape = memory.object_shape(source).ok()?;
-    let extent = ByteRange::from_start_and_length(offset, shape.size_bytes()).ok()?;
+    // Slice pointers carry the element type, not an array type. Their extent
+    // comes from the actual view; using one element rejects valid prefixes,
+    // while using the allocation would expose neighboring storage.
+    let extent = if let Some(view) = pointer.slice_footprint() {
+        if view.provenance != pointer.provenance() {
+            return None;
+        }
+        view.range
+    } else {
+        AbstractByteRange::Exact(ByteRange::from_start_and_length(offset, shape.size_bytes()).ok()?)
+    };
     let alignment = memory.object_shape(element).ok()?.alignment();
     let mut builder = TransferBuilder::new(state.clone(), ByteSpan::new(0, 0)?, memory, None, None);
     builder.relation_limits = budget.relation_limits;
@@ -64,12 +74,10 @@ pub(in crate::verifier) fn query_symbolic_spec_memory(
     let aligned = start.expression().guaranteed_alignment().bytes() >= alignment
         && end.expression().guaranteed_alignment().bytes() >= alignment
         && allocation.alignment().bytes() >= alignment;
-    let bounds = builder.relations.queries.contained(
-        state,
-        AbstractByteRange::Exact(extent),
-        range,
-        budget.relation_limits,
-    );
+    let bounds = builder
+        .relations
+        .queries
+        .contained(state, extent, range, budget.relation_limits);
     let ordered = builder
         .relations
         .queries
@@ -79,7 +87,13 @@ pub(in crate::verifier) fn query_symbolic_spec_memory(
         bounds,
         ordered,
         liveness_status(allocation.liveness()),
-        if extent.end() <= allocation.size_bytes() && aligned {
+        builder.relations.queries.contained(
+            state,
+            AbstractByteRange::Exact(ByteRange::new(0, allocation.size_bytes()).ok()?),
+            extent,
+            budget.relation_limits,
+        ),
+        if aligned {
             ObligationStatus::Proven
         } else {
             ObligationStatus::Unknown
@@ -91,6 +105,7 @@ pub(in crate::verifier) fn query_symbolic_spec_memory(
                 authority,
                 permission,
                 PermissionAccessContext {
+                    purpose: AccessPurpose::Runtime,
                     allocation: Some(id),
                     envelope,
                     pointer,

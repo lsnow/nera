@@ -132,19 +132,17 @@ fn ordinary_sources_and_mutations_follow_one_manifest() {
                 .find(|f| f.name == callee)
                 .unwrap()
                 .id;
-            assert!(matches!(
-                functions[&callee_id].summary().state,
-                SummaryState::Unknown(_)
-            ));
+            assert_eq!(functions[&callee_id].summary().state, SummaryState::Closed);
             assert!(
                 functions[&id]
                     .summary()
                     .call_uses
                     .iter()
-                    .any(|c| c.symbol == callee && c.outcome == CallSummaryOutcome::NotClosed)
+                    .any(|c| c.symbol == callee
+                        && c.outcome == CallSummaryOutcome::UnsupportedMapping)
             );
             assert!(
-                !functions[&callee_id]
+                functions[&callee_id]
                     .summary()
                     .recursion
                     .as_ref()

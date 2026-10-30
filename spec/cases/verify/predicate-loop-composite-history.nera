@@ -1,0 +1,34 @@
+// count initially has two historical roots plus an offset. Induction uses the
+// complete current count, never invented SSA values for its historical leaves.
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>,limit:usize,base:usize) {
+    exists used:usize = 0usize;
+    owns(p);
+    initialized(p.value,0..1);
+    p.value<=42;
+    limit<=10usize;
+    base<=3usize;
+    used<=7usize;
+}
+fn main()->u64 { return run(1usize,1usize,2usize); }
+fn run(start:usize,offset:usize,base:usize)->u64
+requires start<=2usize;
+requires offset<=2usize;
+requires base<=3usize;
+{
+    let p=alloc<Cell>(1);
+    p.value=42;
+    let mut count=start+offset+1usize;
+    fold Ready(p,base+count,base) with (used=count);
+    while count<7usize {
+        invariant count<=7usize;
+        unfold Ready(p,base+count,base);
+        count=count+1usize;
+        fold Ready(p,base+count,base) with (used=count);
+    }
+    unfold Ready(p,base+count,base);
+    let outcome=p.value;
+    free(p);
+    finish Ready(p,base+count,base);
+    return outcome;
+}

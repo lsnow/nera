@@ -1,0 +1,40 @@
+// Fixed backing, caller-owned cursor and single-view return. The input view
+// is initialized: &mut [u64] is not an uninitialized output parameter.
+fn main() -> u64 {
+    let backing = alloc<[u64; 8]>(1);
+    let mut cursor = 0usize;
+    while cursor < 5usize {
+        invariant cursor <= 5usize;
+        invariant initialized(backing, 0usize..cursor);
+        backing[cursor] = 0;
+        cursor = cursor + 1usize;
+    }
+    backing[0] = 7;
+
+    let left = prepare(&mut *backing[1usize..3usize]);
+    let right = prepare(&mut *backing[3usize..5usize]);
+    left[0] = 10;
+    left[1] = 11;
+    // Bytes outside both returned views remain under the caller's authority.
+    backing[7] = 9;
+    let total = left[0] + left[1] + right[0] + right[1] + backing[0] + backing[7];
+    // Last use has ended both loans, including their call-return aliases.
+    backing[1] = 7;
+    backing[3] = 9;
+    free(backing);
+    return total;
+}
+
+fn prepare(storage: &mut [u64]) -> &mut [u64]
+requires len(storage) == 2usize;
+reads ();
+writes storage[0usize..2usize];
+ensures initialized(result, 0usize..2usize);
+ensures writable(result, 0usize..2usize);
+ensures storage[0usize] == 20;
+ensures storage[1usize] == 1;
+{
+    storage[0] = 20;
+    storage[1] = 1;
+    return storage;
+}

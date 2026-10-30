@@ -328,6 +328,7 @@ pub(super) fn plan_initialization_effects(
     blocks: &mut [DraftBlock],
     source_span: ByteSpan,
     abi: Option<&crate::VirAbiSignature>,
+    predicate_parameters: &[u32],
 ) -> Result<(), FrontendFailure> {
     for block in blocks.iter() {
         if block.terminator.is_none() {
@@ -336,10 +337,11 @@ pub(super) fn plan_initialization_effects(
     }
     let mut entry = FlowState::default();
     if let Some(abi) = abi {
-        for binding in abi
+        for (index, binding) in abi
             .parameters()
             .iter()
-            .filter(|binding| binding.interface().transfer.is_borrow())
+            .enumerate()
+            .filter(|(_, binding)| binding.interface().transfer.is_borrow())
         {
             if let crate::VirAbiValue::Pointer { pointee, .. } = binding.value() {
                 let pointer = blocks[0].parameters[binding.parameter_slots()[0] as usize].id;
@@ -348,7 +350,16 @@ pub(super) fn plan_initialization_effects(
                     .layout(pointee.layout)
                     .and_then(|layout| StorageState::fresh(layout.size_bytes))
                 {
-                    bytes.bytes.fill(ByteState::Initialized);
+                    // Predicate contracts replace the implicit complete-value
+                    // premise. Scalar assignments use state-neutral Write;
+                    // only the verifier may establish declared byte guarantees.
+                    bytes
+                        .bytes
+                        .fill(if predicate_parameters.contains(&(index as u32)) {
+                            ByteState::Unknown
+                        } else {
+                            ByteState::Initialized
+                        });
                     entry.storages.insert(storage, bytes);
                     entry.values.insert(
                         pointer,
@@ -878,16 +889,23 @@ fn apply_ready(memory: &VirMemorySchema, state: &mut FlowState, instruction: &Vi
                                 );
                             }
                         }
-                        crate::BorrowProjection::Slice {
-                            start,
-                            end,
-                            stride_bytes,
-                            ..
-                        } => {
+                        crate::BorrowProjection::Slice { start, end, .. }
+                        | crate::BorrowProjection::ArraySlice { start, end, .. } => {
+                            let stride_bytes = relation
+                                .projection
+                                .slice_stride()
+                                .expect("slice projection");
                             let bound = |bound: crate::BorrowSliceBound,
                                          state: &FlowState|
                              -> Option<u64> {
+                                if bound == crate::BorrowSliceBound::SourceLength
+                                    && let Some(length) = relation.projection.array_length()
+                                {
+                                    return Some(length);
+                                }
                                 match bound {
+                                    crate::BorrowSliceBound::ReturnedLength
+                                    | crate::BorrowSliceBound::ReturnedOffset => None,
                                     crate::BorrowSliceBound::Constant(value) => Some(value),
                                     crate::BorrowSliceBound::Parameter(parameter) => {
                                         let binding = abi.parameters().get(parameter as usize)?;
@@ -914,7 +932,9 @@ fn apply_ready(memory: &VirMemorySchema, state: &mut FlowState, instruction: &Vi
                             if let (Some((start, end)), Some(element), Some(pointer), Some(length)) =
                                 (projected, element, slots.first(), slots.get(1))
                                 && start <= end
-                                && let Some(offset) = start.checked_mul(stride_bytes)
+                                && let Some(offset) = start
+                                    .checked_mul(stride_bytes)
+                                    .and_then(|n| n.checked_add(relation.projection.array_offset()))
                             {
                                 derive_pointer(
                                     state,

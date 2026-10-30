@@ -1,0 +1,38 @@
+// Every iteration restores the declaration after changing its representation.
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>) {
+    owns(p);
+    initialized(p.value,0..1);
+    p.value<=42;
+}
+fn main()->u64 {
+    let p=alloc<Cell>(1);
+    p.value=42;
+    fold Ready(p);
+    let q=update(p,3usize);
+    unfold Ready(q);
+    let outcome=q.value;
+    free(q);
+    finish Ready(q);
+    return outcome;
+}
+fn update(p:Own<Cell>,steps:usize)->Own<Cell>
+requires Ready(p);
+ensures Ready(result);
+{
+    let mut i=0usize;
+    while i<steps {
+        invariant i<=steps;
+        unfold Ready(p);
+        let previous=p.value;
+        if previous<42 {
+            p.value=previous+1;
+            fold Ready(p);
+        } else {
+            p.value=42;
+            fold Ready(p);
+        }
+        i=i+1usize;
+    }
+    return p;
+}

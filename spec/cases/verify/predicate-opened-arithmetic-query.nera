@@ -1,0 +1,36 @@
+// Opened arithmetic is checked with saved relations, including every intermediate.
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>,n:usize) {
+    exists low:usize = 0usize;
+    exists high:usize = 0usize;
+    owns(p);
+    initialized(p.value,0..1);
+    low<=high;
+    high<=10usize;
+    n==high-low;
+}
+fn main()->u64 {
+    let p=alloc<Cell>(1);
+    p.value=42;
+    fold Ready(p,3usize) with (low=2usize,high=5usize);
+    return consume(p,3usize);
+}
+fn consume(p:Own<Cell>,n:usize)->u64
+requires Ready(p,n);
+{
+    unfold Ready(p,n) as (lo,hi);
+    let mut i=0usize;
+    while i<3usize {
+        invariant i<=3usize;
+        invariant hi-lo==n;
+        invariant (hi-lo)*2usize<=20usize;
+        invariant lo+(hi-lo)==hi;
+        i=i+1usize;
+    }
+    fold Ready(p,n) with (low=lo,high=hi);
+    unfold Ready(p,n);
+    let outcome=p.value;
+    free(p);
+    finish Ready(p,n);
+    return outcome;
+}

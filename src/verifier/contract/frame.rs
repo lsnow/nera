@@ -32,6 +32,7 @@ pub(in crate::verifier) fn check(
     let values = SnapshotValues::Bound {
         state,
         snapshots: &snapshots,
+        booleans: None,
     };
     let mut normalizer = VcNormalizer::new(VcLimits::default());
     let mut budget = VcQueryBudget::new(VcLimits::default());

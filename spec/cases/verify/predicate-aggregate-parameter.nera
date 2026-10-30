@@ -1,0 +1,68 @@
+struct Box { value:Own<Arena>, }
+// The stored cursor selects initialized backing; untouched slots stay uninitialized.
+opaque struct Arena { cursor:usize, slots:[u64;8], }
+predicate Ready(p:ptr<Arena>) {
+    owns(p);
+    initialized(p.cursor,0usize..1usize);
+    initialized(p.slots,0usize..p.cursor);
+    p.cursor <= 8usize;
+}
+fn main()->u64 {
+    let a=make();
+    let b=append_owner(a,20);
+    let c=append_owner(b,22);
+    let package=Box { value:c };
+    return consume(package);
+}
+fn make()->Own<Arena>
+ensures Ready(result);
+{
+    let p=alloc<Arena>(1);
+    p.cursor=0usize;
+    fold Ready(p);
+    return p;
+}
+fn append_owner(p:Own<Arena>,value:u64)->Own<Arena>
+requires Ready(p);
+ensures Ready(result);
+{
+    let ignored=append(&mut *p,value);
+    return p;
+}
+fn append(p:&mut Arena,value:u64)->u64
+requires Ready(p);
+ensures Ready(p);
+{
+    unfold Ready(p);
+    let n=p.cursor;
+    if n<8usize {
+        p.slots[n]=value;
+        p.cursor=n+1usize;
+        fold Ready(p);
+        return 0;
+    }
+    fold Ready(p);
+    return 0;
+}
+fn destroy(p:Own<Arena>)->u64
+requires Ready(p);
+{
+    unfold Ready(p);
+    let n=p.cursor;
+    if n>=2usize {
+        let total=p.slots[0]+p.slots[1];
+        free(p);
+        finish Ready(p);
+        return total;
+    }
+    free(p);
+    finish Ready(p);
+    return 0;
+}
+
+fn consume(p:Box)->u64
+requires Ready(p.value);
+{
+    let owned=p.value;
+    return destroy(owned);
+}

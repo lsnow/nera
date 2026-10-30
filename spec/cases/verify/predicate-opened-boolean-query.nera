@@ -1,0 +1,42 @@
+// Whole Boolean guarantees remain available without selecting a disjunct.
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>,n:usize) {
+    exists low:usize = 0usize;
+    exists high:usize = 0usize;
+    exists a:bool = true;
+    exists b:bool = false;
+    exists count:u64 = 0u64;
+    owns(p);
+    initialized(p.value,0..1);
+    low<=high;
+    high<=10usize;
+    n==high-low;
+    a||b;
+    count<=10u64;
+}
+fn main()->u64 {
+    let p=alloc<Cell>(1);
+    p.value=42;
+    fold Ready(p,3usize) with (low=2usize,high=5usize,a=false,b=true,count=7u64);
+    return consume(p,3usize);
+}
+fn consume(p:Own<Cell>,n:usize)->u64
+requires Ready(p,n);
+{
+    unfold Ready(p,n) as (lo,hi,left,right,count);
+    let mut i=0usize;
+    while i<3usize {
+        invariant i<=3usize;
+        invariant left||right;
+        invariant !(!left&&!right);
+        invariant (left||right)==(hi-lo==n);
+        invariant ((hi-lo<=10usize)&&(count<=10u64))==(left||right);
+        i=i+1usize;
+    }
+    fold Ready(p,n) with (low=lo,high=hi,a=left,b=right,count=count);
+    unfold Ready(p,n);
+    let outcome=p.value;
+    free(p);
+    finish Ready(p,n);
+    return outcome;
+}

@@ -1,0 +1,40 @@
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>,flag:bool) {
+    exists saved:bool = false;
+    owns(p);
+    initialized(p.value,0..1);
+    saved==flag;
+}
+fn main()->u64 {
+    let p=alloc<Cell>(1);
+    let q=alloc<Cell>(1);
+    p.value=20;
+    q.value=22;
+    fold Ready(p,true) with (saved=true);
+    fold Ready(q,true) with (saved=true);
+    return consume(p,q,true);
+}
+fn consume(p:Own<Cell>,q:Own<Cell>,flag:bool)->u64
+requires Ready(p,flag);
+requires Ready(q,flag);
+{
+    unfold Ready(p,flag) as (left);
+    unfold Ready(q,flag) as (right);
+    let mut i=0usize;
+    while i<3usize {
+        invariant i<=3usize;
+        invariant left==right;
+        i=i+1usize;
+    }
+    fold Ready(p,flag) with (saved=left);
+    fold Ready(q,flag) with (saved=right);
+    unfold Ready(p,flag);
+    unfold Ready(q,flag);
+    let first=p.value;
+    let second=q.value;
+    free(p);
+    finish Ready(p,flag);
+    free(q);
+    finish Ready(q,flag);
+    return first+second;
+}

@@ -27,6 +27,12 @@ pub enum BorrowSliceBound {
     Parameter(u32),
     /// The length metadata of the source slice parameter.
     SourceLength,
+    /// Actual returned length of a checked fixed-array subview. No entry
+    /// precondition is inferred from this coordinate.
+    ReturnedLength,
+    /// Actual byte offset of the returned pointer within the input referent.
+    /// Only valid as an array-slice start paired with ReturnedLength.
+    ReturnedOffset,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -47,6 +53,50 @@ pub enum BorrowProjection {
         stride_bytes: u64,
         alignment: u64,
     },
+    /// A slice of fixed array storage inside a sized input referent. Bounds
+    /// are entry coordinates, except ReturnedLength denotes the independently
+    /// checked pointer/length pair; the array extent is layout-derived.
+    ArraySlice {
+        offset_bytes: u16,
+        length: u16,
+        start: BorrowSliceBound,
+        end: BorrowSliceBound,
+        stride_bytes: u32,
+    },
+}
+
+impl BorrowProjection {
+    pub(crate) fn slice_bounds(self) -> Option<(BorrowSliceBound, BorrowSliceBound)> {
+        match self {
+            Self::ArraySlice {
+                end: BorrowSliceBound::ReturnedLength,
+                ..
+            } => None,
+            Self::Slice { start, end, .. } | Self::ArraySlice { start, end, .. } => {
+                Some((start, end))
+            }
+            _ => None,
+        }
+    }
+    pub(crate) fn slice_stride(self) -> Option<u64> {
+        match self {
+            Self::Slice { stride_bytes, .. } => Some(stride_bytes),
+            Self::ArraySlice { stride_bytes, .. } => Some(u64::from(stride_bytes)),
+            _ => None,
+        }
+    }
+    pub(crate) fn array_length(self) -> Option<u64> {
+        match self {
+            Self::ArraySlice { length, .. } => Some(u64::from(length)),
+            _ => None,
+        }
+    }
+    pub(crate) fn array_offset(self) -> u64 {
+        match self {
+            Self::ArraySlice { offset_bytes, .. } => u64::from(offset_bytes),
+            _ => 0,
+        }
+    }
 }
 
 /// One entry-snapshot predicate selecting a borrow-result world.  Guards use
@@ -61,6 +111,9 @@ pub enum BorrowGuardAtom {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct BorrowResultRelation {
     pub parameter: u32,
+    /// Canonical reference-leaf ordinal within the logical parameter, not a
+    /// byte offset or physical ABI slot. None denotes the direct parameter.
+    pub parameter_field: Option<u32>,
     pub result: u32,
     pub projection: BorrowProjection,
     pub access: BorrowAccess,
@@ -68,9 +121,36 @@ pub struct BorrowResultRelation {
 
 impl BorrowResultRelation {
     #[must_use]
+    pub const fn source(self) -> crate::BoundarySource {
+        match self.parameter_field {
+            Some(field) => crate::BoundarySource::ParameterField {
+                index: self.parameter,
+                field,
+            },
+            None => crate::BoundarySource::Parameter {
+                index: self.parameter,
+            },
+        }
+    }
+
+    /// Structural source claim only; consumers must independently validate
+    /// the field identity and transfer the actual stored authority.
+    #[must_use]
+    pub const fn from_parameter_field(parameter: u32, field: u32, access: BorrowAccess) -> Self {
+        Self {
+            parameter,
+            parameter_field: Some(field),
+            result: 0,
+            projection: BorrowProjection::Whole,
+            access,
+        }
+    }
+
+    #[must_use]
     pub const fn whole(parameter: u32, access: BorrowAccess) -> Self {
         Self {
             parameter,
+            parameter_field: None,
             result: 0,
             projection: BorrowProjection::Whole,
             access,

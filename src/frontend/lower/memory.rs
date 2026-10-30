@@ -2,6 +2,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(test)]
+mod parameter_reference_tests;
+
 use super::invalid_hir;
 use crate::ByteSpan;
 use crate::frontend::FrontendFailure;
@@ -23,6 +26,23 @@ pub(super) struct LoweredMemorySchema {
     types: BTreeMap<HirTypeId, VirTypeId>,
     fields: BTreeMap<HirFieldId, VirFieldId>,
     variants: BTreeMap<HirVariantId, VirVariantId>,
+    parameter_references: BTreeMap<crate::HirRegionId, ParameterReferenceField>,
+}
+
+/// Checked bridge from a logical parameter binder to a complete physical
+/// reference leaf. These are layout facts, not permission or loan evidence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ParameterReferenceField {
+    pub function: crate::HirFunctionId,
+    pub parameter: u32,
+    pub slot: u32,
+    pub pointer_slot: u32,
+    pub permission_slot: u32,
+    pub loan: crate::VirLoanId,
+    pub offset_bytes: u64,
+    pub reference: VirMemoryAccess,
+    pub pointee: VirMemoryAccess,
+    pub mutability: VirMutability,
 }
 
 impl LoweredMemorySchema {
@@ -49,15 +69,31 @@ impl LoweredMemorySchema {
             }
         }
 
-        let types: BTreeMap<_, _> = reachable
-            .iter()
-            .enumerate()
-            .map(|(index, hir)| {
-                u32::try_from(index)
-                    .map(|index| (*hir, VirTypeId::new(index)))
-                    .map_err(|_| invalid_hir(source_span))
-            })
-            .collect::<Result<_, _>>()?;
+        for predicate in hir.predicates() {
+            if let Some(body) = &predicate.representation {
+                for r in &body.resources {
+                    collect_type(hir, r.pointee, &mut reachable, predicate.span)?;
+                }
+            }
+        }
+        // Erase only region distinctions, recursively through anonymous
+        // aggregate storage. This makes a tuple literal and its signature use
+        // one typed layout without conflating nominal structs or mutability.
+        let mut representatives = Vec::new();
+        let mut types = BTreeMap::new();
+        for id in &reachable {
+            let index = representatives
+                .iter()
+                .position(|representative| hir.types_compatible(*id, *representative))
+                .unwrap_or_else(|| {
+                    representatives.push(*id);
+                    representatives.len() - 1
+                });
+            types.insert(
+                *id,
+                VirTypeId::new(u32::try_from(index).map_err(|_| invalid_hir(source_span))?),
+            );
+        }
 
         let reachable_fields: BTreeSet<_> = reachable
             .iter()
@@ -89,18 +125,16 @@ impl LoweredMemorySchema {
 
         let layouts: BTreeMap<_, _> = reachable
             .iter()
-            .enumerate()
-            .map(|(index, ty)| {
+            .map(|ty| {
                 let layout = hir
                     .type_definition(*ty)
                     .and_then(|definition| definition.layout)
                     .ok_or_else(|| invalid_hir(source_span))?;
-                let index = u32::try_from(index).map_err(|_| invalid_hir(source_span))?;
-                Ok((layout, VirLayoutId::new(index)))
+                Ok((layout, VirLayoutId::new(types[ty].get())))
             })
             .collect::<Result<_, FrontendFailure>>()?;
 
-        let vir_types = reachable
+        let vir_types = representatives
             .iter()
             .map(|id| {
                 let definition = hir
@@ -124,7 +158,7 @@ impl LoweredMemorySchema {
                 })
             })
             .collect::<Result<Vec<_>, FrontendFailure>>()?;
-        let type_capabilities = reachable
+        let type_capabilities = representatives
             .iter()
             .map(|id| {
                 hir.type_capabilities(*id)
@@ -161,7 +195,7 @@ impl LoweredMemorySchema {
             })
             .collect::<Result<Vec<_>, FrontendFailure>>()?;
 
-        let vir_layouts = reachable
+        let vir_layouts = representatives
             .iter()
             .map(|ty| {
                 let layout = hir.layout_of(*ty).ok_or_else(|| invalid_hir(source_span))?;
@@ -224,12 +258,113 @@ impl LoweredMemorySchema {
             variants: vir_variants,
         };
         schema.validate().map_err(|_| invalid_hir(source_span))?;
-        Ok(Self {
+        let mut lowered = Self {
             schema,
             types,
             fields,
             variants,
-        })
+            parameter_references: BTreeMap::new(),
+        };
+        lowered.bind_parameter_references(hir)?;
+        Ok(lowered)
+    }
+
+    fn bind_parameter_references(&mut self, hir: &HirProgram) -> Result<(), FrontendFailure> {
+        use crate::{HirRegionOrigin, HirRegionOwner};
+        let mut references = BTreeMap::new();
+        for function in hir
+            .functions()
+            .iter()
+            .filter(|f| f.generic_parameters.is_empty())
+        {
+            let mut entry_plan = None;
+            for (index, ty) in function.signature.parameters.iter().copied().enumerate() {
+                let bindings: Vec<_> = hir
+                    .regions()
+                    .iter()
+                    .filter_map(|region| match (region.owner, region.origin) {
+                        (
+                            HirRegionOwner::Function(owner),
+                            HirRegionOrigin::ParameterField {
+                                index: parameter,
+                                slot,
+                            },
+                        ) if owner == function.id && parameter as usize == index => {
+                            Some((region, slot))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                let fail = || invalid_hir(function.span);
+                let logical = hir.parameter_reference_types(ty);
+                if bindings.is_empty() && logical.as_ref().is_none_or(|slots| slots.is_empty()) {
+                    continue;
+                }
+                let logical = logical.ok_or_else(fail)?;
+                if entry_plan.is_none() {
+                    let accesses = function
+                        .signature
+                        .parameters
+                        .iter()
+                        .map(|ty| self.access(*ty, function.span))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    entry_plan = Some(
+                        crate::vir::plan_parameter_reference_entries(&self.schema, &accesses)
+                            .ok_or_else(fail)?,
+                    );
+                }
+                let physical: Vec<_> = entry_plan
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .filter(|entry| entry.parameter as usize == index)
+                    .collect();
+                if logical.len() != physical.len() || bindings.len() != logical.len() {
+                    return Err(fail());
+                }
+                let mut seen = BTreeSet::new();
+                for (region, slot) in bindings {
+                    let (reference, erased) = *logical.get(slot as usize).ok_or_else(fail)?;
+                    let leaf = physical.get(slot as usize).ok_or_else(fail)?;
+                    if !seen.insert(slot)
+                        || leaf.slot != slot
+                        || leaf.reference != self.access(reference, region.span)?
+                        || !hir.region(erased).is_some_and(|r| {
+                            matches!(
+                                (r.owner, r.origin),
+                                (HirRegionOwner::Type(_), HirRegionOrigin::AggregateErased)
+                            )
+                        })
+                    {
+                        return Err(fail());
+                    }
+                    let field = ParameterReferenceField {
+                        function: function.id,
+                        parameter: index as u32,
+                        slot,
+                        pointer_slot: leaf.pointer_slot,
+                        permission_slot: leaf.permission_slot,
+                        loan: leaf.loan,
+                        offset_bytes: leaf.offset_bytes,
+                        reference: leaf.reference,
+                        pointee: leaf.pointee,
+                        mutability: leaf.mutability,
+                    };
+                    if references.insert(region.id, field).is_some() {
+                        return Err(fail());
+                    }
+                }
+            }
+        }
+        self.parameter_references = references;
+        Ok(())
+    }
+
+    pub(super) fn parameter_reference(
+        &self,
+        region: crate::HirRegionId,
+    ) -> Option<ParameterReferenceField> {
+        self.parameter_references.get(&region).copied()
     }
 
     pub(super) fn access(
@@ -341,7 +476,7 @@ fn collect_statement(
     source_span: ByteSpan,
 ) -> Result<(), FrontendFailure> {
     match &statement.kind {
-        HirStatementKind::Prove { .. } => Ok(()),
+        HirStatementKind::Predicate { .. } | HirStatementKind::Prove { .. } => Ok(()),
         HirStatementKind::Assert { expression: value }
         | HirStatementKind::Let { value, .. }
         | HirStatementKind::Evaluate { expression: value } => {
@@ -487,7 +622,10 @@ fn collect_expression(
                 collect_expression(hir, argument, reachable, source_span)?;
             }
         }
-        HirExpressionKind::Unit | HirExpressionKind::Integer(_) | HirExpressionKind::Bool(_) => {}
+        HirExpressionKind::Unit
+        | HirExpressionKind::Integer(_)
+        | HirExpressionKind::NullPointer
+        | HirExpressionKind::Bool(_) => {}
     }
     Ok(())
 }

@@ -1,0 +1,39 @@
+// Dependent complete runtime coordinates keep separate public identities.
+// Their old algebraic relationship is not assumed after selecting a branch.
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>,count:usize,limit:usize,ordered:bool) {
+    exists used:usize = 0usize;
+    owns(p);
+    initialized(p.value,0..1);
+    p.value<=42;
+    count<=7usize;
+    limit<=21usize;
+    ordered==ordered;
+    used<=7usize;
+}
+fn main()->u64 {
+    return choose(1usize,3usize,true);
+}
+fn choose(first:usize,second:usize,which:bool)->u64
+requires first<=3usize;
+requires second<=3usize;
+{
+    let p=alloc<Cell>(1);
+    p.value=42;
+    let mut count=first+second+1usize;
+    let mut limit=(count+count);
+    if which {
+        fold Ready(p,count,limit,count<=limit) with (used=1usize);
+    } else {
+        count=(second+second)+1usize;
+        limit=(count+count+count);
+        fold Ready(p,count,limit,count<=limit) with (used=2usize);
+    }
+    unfold Ready(p,count,limit,count<=limit) as (saved);
+    fold Ready(p,count,limit,count<=limit) with (used=saved);
+    unfold Ready(p,count,limit,count<=limit);
+    let outcome=p.value;
+    free(p);
+    finish Ready(p,count,limit,count<=limit);
+    return outcome;
+}

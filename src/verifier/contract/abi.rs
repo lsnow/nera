@@ -80,13 +80,12 @@ pub(super) fn install_value_ranges(
         } else {
             ContractInitialization::Initialized
         };
-        let after = if !result_buffer
-            && binding.interface().transfer == crate::VirInterfaceTransfer::Move
-        {
-            ContractInitialization::Uninitialized
-        } else {
-            ContractInitialization::Initialized
-        };
+        let after =
+            if !result_buffer && binding.consumes_indirect_contents(program.runtime().memory) {
+                ContractInitialization::Uninitialized
+            } else {
+                ContractInitialization::Initialized
+            };
         for (state, slot, initialization) in [
             (&mut *requires, *permission_slot, before),
             (&mut *ensures, *returned_slot, after),

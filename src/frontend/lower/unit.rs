@@ -35,8 +35,9 @@ pub(super) struct CanonicalLoweredFunction {
 
 pub(super) fn seal_function(
     draft: DraftLoweredFunction,
-    blocks: Vec<VirBasicBlock>,
+    mut blocks: Vec<VirBasicBlock>,
 ) -> CanonicalLoweredFunction {
+    canonicalize_loan_ids(&mut blocks);
     CanonicalLoweredFunction {
         loop_specs: draft.loop_specs,
         local_specs: draft.local_specs,
@@ -54,5 +55,50 @@ pub(super) fn seal_function(
             source_span: draft.source_span,
         },
         source_map_entries: draft.body.source_map_entries,
+    }
+}
+
+/// Block creation order can differ from lowering order (notably a loop in
+/// one branch followed by a borrow in the other). Loan IDs belong to the
+/// final instruction stream, after pending ends have been materialized.
+fn canonicalize_loan_ids(blocks: &mut [VirBasicBlock]) {
+    use crate::{VirInstruction as I, VirLoanId};
+    let mut ids = std::collections::BTreeMap::new();
+    for block in blocks.iter() {
+        for instruction in &block.instructions {
+            let old = match instruction.instruction {
+                I::LoanBegin { effect, .. } | I::LoanReborrow { effect, .. } => effect.loan,
+                I::LoanReborrowAuthority { loan, .. } => loan,
+                _ => continue,
+            };
+            let next = VirLoanId::new(ids.len() as u32);
+            // Duplicate declarations remain invalid; do not silently repair them.
+            ids.entry(old).or_insert(next);
+        }
+    }
+    for block in blocks {
+        for instruction in &mut block.instructions {
+            match &mut instruction.instruction {
+                I::LoanBegin { effect, .. }
+                | I::LoanReborrow { effect, .. }
+                | I::LoanAliasShared { effect, .. }
+                | I::LoanEnd { effect } => {
+                    if let Some(id) = ids.get(&effect.loan) {
+                        effect.loan = *id;
+                    }
+                    if let Some(parent) = effect.parent.as_mut()
+                        && let Some(id) = ids.get(parent)
+                    {
+                        *parent = *id;
+                    }
+                }
+                I::LoanReborrowAuthority { loan, .. } => {
+                    if let Some(id) = ids.get(loan) {
+                        *loan = *id;
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 }

@@ -81,7 +81,6 @@ fn reads_and_borrows_require_only_the_right_initialized_value_bytes() {
     for source in [
         "fn main() -> u64 { let mut value: u64; return value; }",
         "fn main() -> u64 { let mut value: u64; let r = &value; return 0; }",
-        "fn main() -> u64 { let mut value: u64; let r = &mut value; *r = 42; return 0; }",
         "fn main() -> u64 { let mut value: [u64; 2]; value[0] = 1; let whole = value; return 0; }",
         "fn main() -> u64 { let mut value: [u64; 2]; value[0] = 1; let whole = &value; return 0; }",
         "fn main() -> u64 { let mut value: u64; if choose() { value = 42; } return value; }
@@ -128,14 +127,14 @@ fn storage_declaration_has_no_expression_and_keeps_precise_scalar_effects() {
     let output =
         accepted("fn main() -> u64 { let mut value: u64; value = 1; value = 42; return value; }");
     let hir = output.hir().unwrap();
-    assert_eq!(hir.version(), nera::HirVersion::V23);
+    assert_eq!(hir.version(), nera::HirVersion::CURRENT);
     let body = hir.functions()[0].body().unwrap();
     assert!(matches!(
         body.root.statements[0].kind,
         nera::HirStatementKind::Declare { .. }
     ));
     let unit = output.vir().unwrap().as_unit();
-    assert_eq!(unit.version, nera::VirUnitVersion::V28);
+    assert_eq!(unit.version, nera::VirUnitVersion::V54);
     let instructions: Vec<_> = unit.runtime.functions[0]
         .blocks
         .iter()
@@ -341,4 +340,24 @@ fn resetting_a_partial_subobject_preserves_initialized_siblings() {
         interpret(resolved.runtime()).unwrap().values(),
         [VirRuntimeValue::U64(42)]
     );
+}
+
+#[test]
+fn mutable_storage_execution_does_not_authorize_an_unproved_reference() {
+    let source = "fn main() -> u64 { let mut value: u64; let r = &mut value; *r = 42; return 0; }";
+    let output = accepted(source);
+    let resolved = output.vir().unwrap().resolve().unwrap();
+    // Forming a plain mutable storage view performs no value read. The real
+    // initializing write is executable, but no predicate authorizes formation.
+    assert_eq!(
+        interpret(resolved.runtime()).unwrap().values(),
+        [VirRuntimeValue::U64(0)]
+    );
+    assert!(
+        !verify_program(&resolved, Default::default())
+            .unwrap()
+            .is_memory_checked_core0()
+    );
+    let read = accepted("fn main() -> u64 { let mut value: u64; let r = &mut value; return *r; }");
+    assert!(interpret(read.vir().unwrap().resolve().unwrap().runtime()).is_err());
 }

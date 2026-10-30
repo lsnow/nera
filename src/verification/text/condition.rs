@@ -3,6 +3,24 @@ use crate::ResourceObligationKind as K;
 
 pub(super) fn condition(kind: K) -> String {
     let text = match kind {
+        K::PredicateCleanupPreserved { .. } => {
+            "predicate cleanup retains every remaining resource responsibility"
+        }
+        K::PredicateInvariantPreserved { .. } => {
+            "closed predicate representation survives memory and call effects"
+        }
+        K::PredicateInterfaceValid { .. } => {
+            "predicate ownership is established at the function boundary"
+        }
+        K::PredicateCarrierMovable { .. } => {
+            "sealed predicate carrier is uniquely owned and movable"
+        }
+        K::PredicateActionValid { .. } => {
+            "predicate resource effect is established at this program point"
+        }
+        K::PredicateBoundaryRestored { .. } => {
+            "predicate invariant and cleanup obligations hold at the boundary"
+        }
         K::LoopResourcesPreserved { .. } => {
             "loop allocation identities, permissions and loans are preserved"
         }

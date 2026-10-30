@@ -27,11 +27,9 @@ pub(super) fn restrict(
                     return Some(ResourceState::unreachable());
                 }
                 state.conjoin_path_fact(PathFact::boolean(id, *expected));
-                *state.value_mut(id)? = AbstractValue::Bool(if *expected {
-                    AbstractBool::True
-                } else {
-                    AbstractBool::False
-                });
+                if !state.narrow_bool_value(id, *expected) {
+                    return None;
+                }
             }
             SummaryGuard::Compare {
                 predicate,

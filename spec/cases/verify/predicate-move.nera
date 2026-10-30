@@ -1,0 +1,22 @@
+predicate Slots(storage: ptr<[u64; 8]>) {
+    owns(storage);
+    initialized(storage, 0usize..1usize);
+    storage[0] <= 8;
+}
+
+fn main() -> u64 {
+    let backing = alloc<[u64; 8]>(1);
+    backing[0] = 5;
+    fold Slots(backing);
+    let next = backing;
+    let last = next;
+    if true { assert true; } else { assert false; }
+    let extra = ping();
+    unfold Slots(last);
+    let total = last[0] + extra;
+    free(last);
+    finish Slots(last);
+    return total;
+}
+
+fn ping() -> u64 { return 1; }

@@ -1,0 +1,13 @@
+struct Holder { value:&mut u64, link:ptr<Holder>, }
+struct Box { item:Own<Holder>, }
+fn main()->u64 {
+    let mut value=21;
+    {
+        let p=alloc<Holder>(1);
+        p.value=&mut value;
+        p.link=null<Holder>();
+        let storage=Box {item:p};
+    }
+    value=value+21;
+    return value;
+}

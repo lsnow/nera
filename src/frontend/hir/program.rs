@@ -59,11 +59,65 @@ pub enum HirVersion {
     V22,
     /// Runtime boolean assertion statements.
     V23,
+    /// Typed null addresses and recursive raw-link node layouts.
+    V24,
+    /// Finite predicate representations and located resource effects.
+    V25,
+    /// Typed predicate ownership interfaces.
+    V26,
+    /// Module-owned opaque struct representations.
+    V27,
+    /// Mutable-reference predicate parameters and results.
+    V28,
+    /// Parameter postconditions and fixed-array slice result coordinates.
+    V29,
+    /// Checked return-length coordinates for dynamic fixed-array prefixes.
+    V30,
+    /// Dynamic array endpoints with parameter or constant starts.
+    V31,
+    /// Paired heap-selected array slice return coordinates.
+    V32,
+    /// Canonical nested predicate storage selections and scalar leaves.
+    V33,
+    /// Same-allocation heap-selected initialized prefixes.
+    V34,
+    /// Typed owner field predicate interfaces.
+    V35,
+    /// Owner field predicate postconditions on aggregate results.
+    V36,
+    /// Bounded nested inline scalar contract observations.
+    V37,
+    /// Scoped finite predicate witnesses.
+    V38,
+    /// Function-owned binders for aggregate parameter reference leaves.
+    V39,
+    /// Explicit source coordinates for reference-field borrow results.
+    V40,
+    /// Typed predicate logic and scoped instance witnesses.
+    V41,
+    /// Lexically scoped opened predicate inputs.
+    V42,
+    /// Ordered logical predicate parameters and effect actuals.
+    V43,
+    /// Typed logical actuals on predicate precondition interfaces.
+    V44,
+    /// Predicate postconditions distinguish scalar result and entry inputs.
+    V45,
+    /// Instantiated logical counts for initialized predicate prefixes.
+    V46,
+    /// Typed memory coordinates and aggregate leaves in predicate actuals.
+    V47,
+    /// Opened existential observations in local pure specifications.
+    V48,
+    /// Same-instance opened scalar arguments may discharge finish parameters.
+    V49,
+    /// Finite resource field witnesses and pointee parameter field regions.
+    V50,
 }
 
 impl HirVersion {
     /// The only supported in-memory schema. Older tags are not compatibility modes.
-    pub const CURRENT: Self = Self::V23;
+    pub const CURRENT: Self = Self::V50;
 }
 
 /// Deterministic module path within one compilation unit.
@@ -205,6 +259,7 @@ pub struct HirContract {
 /// Predicate declaration identity reserved for the Spec HIR table.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HirPredicate {
+    pub representation: Option<crate::PredicateRepresentation<HirTypeId>>,
     pub id: HirPredicateId,
     pub module: HirModuleId,
     pub name: String,
@@ -327,6 +382,274 @@ impl HirProgram {
             (Some(HirTypeKind::Reference { pointee: a, mutability: am, .. }), Some(HirTypeKind::Reference { pointee: b, mutability: bm, .. })) if a == b && am == bm)
     }
 
+    pub(super) fn expression_reference_regions(
+        &self,
+        owner: HirFunctionId,
+        expression: &super::HirExpression,
+        depth: usize,
+    ) -> Option<Vec<HirRegionId>> {
+        super::regions::expression_reference_regions(
+            &self.types,
+            &self.fields,
+            expression,
+            &|local| self.local_reference_regions(owner, local, expression.id, depth + 1),
+            &|call, depth| self.aggregate_call_regions(owner, call, depth),
+            depth,
+        )
+    }
+
+    pub(super) fn designated_reference_regions(
+        &self,
+        owner: HirFunctionId,
+        expression: &super::HirExpression,
+        depth: usize,
+    ) -> Option<Vec<HirRegionId>> {
+        super::regions::designated_reference_regions(
+            &self.types,
+            &self.fields,
+            expression,
+            &|local| self.local_reference_regions(owner, local, expression.id, depth + 1),
+            &|call, depth| self.aggregate_call_regions(owner, call, depth),
+            depth,
+        )
+    }
+
+    /// Reconstruct aggregate output binders from the callee body independently
+    /// of pre-HIR inference. Different return paths must agree for a field to
+    /// serve as a single-source ordinary reference in another signature.
+    fn aggregate_call_regions(
+        &self,
+        owner: HirFunctionId,
+        call: &super::HirCall,
+        depth: usize,
+    ) -> Option<Vec<HirRegionId>> {
+        use super::visit::HirVisitor;
+        if depth > 16 {
+            return None;
+        }
+        struct Returns<'a>(Vec<&'a super::HirExpression>);
+        impl<'a> HirVisitor<'a> for Returns<'a> {
+            fn visit_statement(&mut self, statement: &'a super::HirStatement) {
+                if let super::HirStatementKind::Return { value: Some(value) } = &statement.kind {
+                    self.0.push(value);
+                }
+                super::visit::walk_statement(self, statement);
+            }
+        }
+        let function = self.function_by_id(call.callee)?;
+        let mut returns = Returns(Vec::new());
+        returns.visit_block(&function.body()?.root);
+        let mut result = None;
+        for expression in returns.0 {
+            let source = self.expression_reference_regions(call.callee, expression, depth + 1)?;
+            let mapped = source
+                .into_iter()
+                .map(|region| {
+                    let r = self.region(region)?;
+                    if r.owner != HirRegionOwner::Function(call.callee) {
+                        return None;
+                    }
+                    let (index, slot) = match r.origin {
+                        HirRegionOrigin::Parameter { index } => (index, 0),
+                        HirRegionOrigin::ParameterField { index, slot } => (index, slot),
+                        _ => return None,
+                    };
+                    let argument = call.arguments.get(index as usize)?;
+                    let regions = match r.origin {
+                        HirRegionOrigin::ParameterField { .. } => {
+                            self.designated_reference_regions(owner, argument, depth + 1)
+                        }
+                        _ => self.expression_reference_regions(owner, argument, depth + 1),
+                    }?;
+                    regions.get(slot as usize).copied()
+                })
+                .collect::<Option<Vec<_>>>()?;
+            if result.as_ref().is_some_and(|previous| *previous != mapped) {
+                return None;
+            }
+            result = Some(mapped);
+        }
+        result
+    }
+
+    fn local_reference_regions(
+        &self,
+        owner: HirFunctionId,
+        local: super::HirLocalId,
+        use_site: super::HirNodeId,
+        depth: usize,
+    ) -> Option<(HirTypeId, Vec<HirRegionId>)> {
+        use super::visit::HirVisitor;
+        if depth > 16 {
+            return None;
+        }
+        let function = self.function_by_id(owner)?;
+        let body = function.body()?;
+        let ty = body.locals.get(local.index())?.ty;
+        let parameter_regions = if let Some(index) =
+            body.parameters.iter().position(|p| *p == local)
+        {
+            let slots = super::regions::parameter_reference_types(&self.types, &self.fields, ty)?
+                .into_iter()
+                .map(|(_, r)| r)
+                .collect::<Vec<_>>();
+            let regions = slots
+                .into_iter()
+                .enumerate()
+                .map(|(slot, erased)| {
+                    self.regions
+                        .iter()
+                        .find(|r| {
+                            r.owner == HirRegionOwner::Function(owner)
+                                && r.origin
+                                    == HirRegionOrigin::ParameterField {
+                                        index: index as u32,
+                                        slot: slot as u32,
+                                    }
+                        })
+                        .map_or(erased, |r| r.id)
+                })
+                .collect();
+            Some(regions)
+        } else {
+            None
+        };
+        let designated = matches!(
+            self.type_kind(ty),
+            Some(HirTypeKind::Own { .. } | HirTypeKind::Reference { .. })
+        );
+        let slots = if let Some(regions) = parameter_regions {
+            regions
+        } else if designated {
+            super::regions::parameter_reference_types(&self.types, &self.fields, ty)?
+                .into_iter()
+                .map(|(_, r)| r)
+                .collect()
+        } else {
+            super::regions::aggregate_reference_slots(&self.types, &self.fields, ty)?
+        };
+        struct Initializer<'a> {
+            local: super::HirLocalId,
+            value: Option<&'a super::HirExpression>,
+            duplicate: bool,
+        }
+        impl<'a> HirVisitor<'a> for Initializer<'a> {
+            fn visit_statement(&mut self, statement: &'a super::HirStatement) {
+                if let super::HirStatementKind::Let { local, value } = &statement.kind
+                    && *local == self.local
+                {
+                    self.duplicate |= self.value.replace(value).is_some();
+                }
+                super::visit::walk_statement(self, statement);
+            }
+        }
+        let mut initializer = Initializer {
+            local,
+            value: None,
+            duplicate: false,
+        };
+        initializer.visit_block(&body.root);
+        if initializer.duplicate {
+            return None;
+        }
+        let mut regions = if let Some(value) = initializer.value {
+            if designated {
+                self.designated_reference_regions(owner, value, depth + 1)
+                    .unwrap_or(slots)
+            } else {
+                self.expression_reference_regions(owner, value, depth + 1)?
+            }
+        } else {
+            slots
+        };
+        // Independently reconstruct the conservative meet of stored-field
+        // sources. Both arms remain constraints; no branch supplies authority.
+        struct Assignments<'a> {
+            local: super::HirLocalId,
+            use_site: super::HirNodeId,
+            reached: bool,
+            values: Vec<(&'a super::HirPlace, &'a super::HirExpression)>,
+        }
+        impl<'a> HirVisitor<'a> for Assignments<'a> {
+            fn visit_expression(&mut self, expression: &'a super::HirExpression) {
+                self.reached |= expression.id == self.use_site;
+                if !self.reached {
+                    super::visit::walk_expression(self, expression);
+                }
+            }
+            fn visit_statement(&mut self, statement: &'a super::HirStatement) {
+                if self.reached {
+                    return;
+                }
+                // Source bookkeeping follows canonical structural order, never
+                // source spans. A RHS is read before its destination changes.
+                super::visit::walk_statement(self, statement);
+                if !self.reached
+                    && let super::HirStatementKind::Assign { destination, value } = &statement.kind
+                    && destination.base == super::HirPlaceBase::Local(self.local)
+                {
+                    self.values.push((destination, value));
+                }
+            }
+        }
+        let mut assignments = Assignments {
+            local,
+            use_site,
+            reached: false,
+            values: Vec::new(),
+        };
+        assignments.visit_block(&body.root);
+        for (place, value) in assignments.values.into_iter().filter(|_| designated) {
+            let (start, count) = super::regions::reference_leaf_range(
+                &self.types,
+                &self.fields,
+                ty,
+                &place.projections,
+            )?;
+            if count == 0 {
+                continue;
+            }
+            let source = self.expression_reference_regions(owner, value, depth + 1)?;
+            if source.len() != count {
+                return None;
+            }
+            for (target, source) in regions
+                .get_mut(start..start + count)?
+                .iter_mut()
+                .zip(source)
+            {
+                *target = super::regions::intersection_region(
+                    &self.regions,
+                    &self.region_constraints,
+                    owner,
+                    body.locals[local.index()].scope,
+                    *target,
+                    source,
+                )?;
+            }
+        }
+        Some((ty, regions))
+    }
+
+    pub(super) fn reference_read_compatible(
+        &self,
+        owner: HirFunctionId,
+        expression: &super::HirExpression,
+        place_type: HirTypeId,
+    ) -> bool {
+        if place_type == expression.ty {
+            return true;
+        }
+        let Some(HirTypeKind::Reference { region, .. }) = self.type_kind(expression.ty) else {
+            return false;
+        };
+        self.reference_compatible(place_type, expression.ty)
+            && self
+                .expression_reference_regions(owner, expression, 0)
+                .as_deref()
+                == Some(&[*region])
+    }
+
     pub(crate) fn call_result_type(&self, call: &super::HirCall) -> Option<HirTypeId> {
         let signature = &self.function_by_id(call.callee)?.signature;
         if !matches!(
@@ -354,6 +677,44 @@ impl HirProgram {
         call: &super::HirCall,
         actual: HirTypeId,
     ) -> bool {
+        let signature = &call.instantiated_signature;
+        let relations = signature
+            .borrow_result
+            .into_iter()
+            .chain(
+                signature
+                    .borrow_result_alternatives
+                    .iter()
+                    .map(|a| a.relation),
+            )
+            .collect::<Vec<_>>();
+        if relations.iter().any(|r| r.parameter_field.is_some()) {
+            let Some(HirTypeKind::Reference { region: result, .. }) = self.type_kind(actual) else {
+                return false;
+            };
+            let Some(HirRegionOwner::Function(owner)) = self.region(*result).map(|r| r.owner)
+            else {
+                return false;
+            };
+            return self.reference_compatible(actual, signature.return_type)
+                && relations.iter().all(|relation| {
+                    call.arguments
+                        .get(relation.parameter as usize)
+                        .and_then(|argument| {
+                            if let Some(field) = relation.parameter_field {
+                                self.designated_reference_regions(owner, argument, 0)?
+                                    .get(field as usize)
+                                    .copied()
+                            } else {
+                                match self.type_kind(argument.ty) {
+                                    Some(HirTypeKind::Reference { region, .. }) => Some(*region),
+                                    _ => None,
+                                }
+                            }
+                        })
+                        .is_some_and(|source| self.region_is_subregion(owner, *result, source))
+                });
+        }
         if self.call_result_type(call) == Some(actual) {
             return true;
         }
@@ -516,6 +877,23 @@ impl HirProgram {
     #[must_use]
     pub fn regions(&self) -> &[HirRegion] {
         &self.regions
+    }
+
+    /// Reference occurrences in canonical inline order; declaration regions may
+    /// repeat, but parameter binders and their physical slots must not.
+    #[cfg(test)]
+    pub(crate) fn aggregate_reference_types(
+        &self,
+        ty: HirTypeId,
+    ) -> Option<Vec<(HirTypeId, HirRegionId)>> {
+        super::regions::aggregate_reference_types(&self.types, &self.fields, ty)
+    }
+
+    pub(crate) fn parameter_reference_types(
+        &self,
+        ty: HirTypeId,
+    ) -> Option<Vec<(HirTypeId, HirRegionId)>> {
+        super::regions::parameter_reference_types(&self.types, &self.fields, ty)
     }
 
     #[must_use]
@@ -704,7 +1082,9 @@ impl HirProgram {
                     HirDeclaration::Function(id) => self
                         .function_by_id(*id)
                         .is_some_and(|function| function.module == module.id),
-                    HirDeclaration::Type(id) => self.type_definition(*id).is_some(),
+                    HirDeclaration::Type(id) => self
+                        .type_definition(*id)
+                        .is_some_and(|ty| ty.opaque.is_none_or(|owner| owner == module.id)),
                     HirDeclaration::Contract(id) => self.contract(*id).is_some_and(|contract| {
                         self.function_by_id(contract.function)
                             .is_some_and(|function| function.module == module.id)
@@ -723,6 +1103,17 @@ impl HirProgram {
         }
 
         for definition in &self.types {
+            require(
+                definition.opaque.is_none_or(|module| {
+                    self.modules.get(module.index()).is_some_and(|m| {
+                        m.declarations
+                            .contains(&HirDeclaration::Type(definition.id))
+                    }) && matches!(definition.kind, HirTypeKind::Struct { .. })
+                }),
+                "type",
+                definition.id.index(),
+                "invalid opaque representation owner",
+            )?;
             require(
                 definition.name.as_ref().is_none_or(|name| !name.is_empty()),
                 "type",
@@ -1056,6 +1447,7 @@ impl HirProgram {
                 "invalid declaration, binder ownership, or gated predicate body",
             )?;
         }
+        super::predicate::validate_predicate_actions(self)?;
         validate_specs(self)?;
         Ok(())
     }
@@ -1072,6 +1464,18 @@ impl HirProgram {
                                     .and_then(|index| function.signature.parameters.get(index))
                                     .and_then(|ty| self.type_borrow_regions(*ty))
                                     .is_some_and(|regions| regions.contains(&region.id)),
+                                HirRegionOrigin::ParameterField { index, slot } => function
+                                    .signature
+                                    .parameters
+                                    .get(index as usize)
+                                    .and_then(|ty| {
+                                        super::regions::parameter_reference_types(
+                                            &self.types,
+                                            &self.fields,
+                                            *ty,
+                                        )
+                                    })
+                                    .is_some_and(|slots| slots.get(slot as usize).is_some()),
                                 HirRegionOrigin::Result => self
                                     .type_borrow_regions(function.signature.return_type)
                                     .is_some_and(|regions| regions.contains(&region.id)),
@@ -1086,13 +1490,14 @@ impl HirProgram {
                         && self
                             .type_borrow_regions(owner)
                             .is_some_and(|regions| regions.contains(&region.id))
-                        && self.fields.iter().any(|field| {
-                            field.owner == owner
-                                && span_contains(field.span, region.span)
-                                && self
-                                    .type_borrow_regions(field.ty)
-                                    .is_some_and(|regions| regions.contains(&region.id))
-                        })
+                        && (matches!(self.type_kind(owner), Some(HirTypeKind::Reference { region: stored, .. }) if *stored == region.id)
+                            || self.fields.iter().any(|field| {
+                                field.owner == owner
+                                    && span_contains(field.span, region.span)
+                                    && self
+                                        .type_borrow_regions(field.ty)
+                                        .is_some_and(|regions| regions.contains(&region.id))
+                            }))
                 }
             };
             require(
@@ -1109,7 +1514,59 @@ impl HirProgram {
         &self,
         function: &HirFunction,
     ) -> Result<(), HirProgramValidationError> {
-        for parameter in &function.signature.parameters {
+        for (index, parameter) in function.signature.parameters.iter().enumerate() {
+            if let Some(slots) =
+                super::regions::parameter_reference_types(&self.types, &self.fields, *parameter)
+                    .map(|fields| fields.into_iter().map(|(_, r)| r).collect::<Vec<_>>())
+                && !slots.is_empty()
+            {
+                let bound = self
+                    .regions
+                    .iter()
+                    .filter_map(|r| match (r.owner, r.origin) {
+                        (
+                            HirRegionOwner::Function(owner),
+                            HirRegionOrigin::ParameterField {
+                                index: parameter,
+                                slot,
+                            },
+                        ) if owner == function.id && parameter as usize == index => Some(slot),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                let unique = bound.iter().copied().collect::<BTreeSet<_>>();
+                require(
+                    bound.len() == slots.len()
+                        && unique.len() == slots.len()
+                        && unique.iter().copied().eq(0..slots.len() as u32)
+                        && slots.iter().all(|id| {
+                            self.region(*id).is_some_and(|r| {
+                                matches!(
+                                    (r.owner, r.origin),
+                                    (HirRegionOwner::Type(_), HirRegionOrigin::AggregateErased)
+                                )
+                            })
+                        }),
+                    "function",
+                    function.id.index(),
+                    "aggregate parameter reference slots require unique function-owned binders",
+                )?;
+                if let Some(HirTypeKind::Reference { region, .. }) = self.type_kind(*parameter) {
+                    require(
+                        self.region(*region).is_some_and(|r| {
+                            r.owner == HirRegionOwner::Function(function.id)
+                                && r.origin
+                                    == HirRegionOrigin::Parameter {
+                                        index: index as u32,
+                                    }
+                        }),
+                        "function",
+                        function.id.index(),
+                        "missing root parameter region",
+                    )?;
+                }
+                continue;
+            }
             let regions = self.type_borrow_regions(*parameter).ok_or_else(|| {
                 validation_error(
                     "function",
@@ -1121,12 +1578,12 @@ impl HirProgram {
                 regions.iter().all(|region| {
                     self.region(*region).is_some_and(|region| {
                         region.owner == HirRegionOwner::Function(function.id)
-                            && matches!(region.origin, HirRegionOrigin::Parameter { .. })
+                            && matches!(region.origin, HirRegionOrigin::Parameter { index: owner } if owner as usize == index)
                     })
                 }),
                 "function",
                 function.id.index(),
-                "parameter type contains a non-parameter or foreign borrow region",
+                "parameter type contains a borrow region from another parameter or owner",
             )?;
         }
 
@@ -1142,17 +1599,73 @@ impl HirProgram {
         require(
             result_regions.iter().all(|region| {
                 self.region(*region).is_some_and(|region| {
-                    region.owner == HirRegionOwner::Function(function.id)
+                    (region.owner == HirRegionOwner::Function(function.id)
                         && matches!(
                             region.origin,
-                            HirRegionOrigin::Parameter { .. } | HirRegionOrigin::Result
-                        )
+                            HirRegionOrigin::Parameter { .. }
+                                | HirRegionOrigin::ParameterField { .. }
+                                | HirRegionOrigin::Result
+                        ))
+                        || (matches!(
+                            self.type_kind(function.signature.return_type),
+                            Some(
+                                HirTypeKind::Struct { .. }
+                                    | HirTypeKind::Tuple(_)
+                                    | HirTypeKind::Array { .. }
+                            )
+                        ) && matches!(
+                            (region.owner, region.origin),
+                            (HirRegionOwner::Type(_), HirRegionOrigin::AggregateErased)
+                        ))
                 })
             }),
             "function",
             function.id.index(),
             "result type contains a lexical or foreign borrow region",
         )
+    }
+
+    fn borrow_source_reference(
+        &self,
+        function: &HirFunction,
+        relation: crate::BorrowResultRelation,
+    ) -> Option<(HirTypeId, super::HirMutability, HirRegionId)> {
+        let parameter = *function
+            .signature
+            .parameters
+            .get(relation.parameter as usize)?;
+        let (ty, region) = if let Some(slot) = relation.parameter_field {
+            if relation.projection != crate::BorrowProjection::Whole {
+                return None;
+            }
+            let fields =
+                super::regions::parameter_reference_types(&self.types, &self.fields, parameter)?;
+            let ty = fields.get(slot as usize)?.0;
+            let region = self
+                .regions
+                .iter()
+                .find(|r| {
+                    r.owner == HirRegionOwner::Function(function.id)
+                        && r.origin
+                            == HirRegionOrigin::ParameterField {
+                                index: relation.parameter,
+                                slot,
+                            }
+                })?
+                .id;
+            (ty, Some(region))
+        } else {
+            (parameter, None)
+        };
+        let HirTypeKind::Reference {
+            pointee,
+            mutability,
+            region: original,
+        } = self.type_kind(ty)?
+        else {
+            return None;
+        };
+        Some((*pointee, *mutability, region.unwrap_or(*original)))
     }
 
     fn validate_borrow_result(
@@ -1174,34 +1687,16 @@ impl HirProgram {
                     .parameters
                     .get(relation.parameter as usize)
                     .is_some_and(|parameter| {
-                        let (
-                            Some(HirTypeKind::Reference {
-                                pointee: input,
-                                mutability: input_mutability,
-                                region: input_region,
-                            }),
-                            Some(HirTypeKind::Reference {
-                                pointee: result,
-                                mutability: result_mutability,
-                                region: result_region,
-                            }),
-                        ) = (self.type_kind(*parameter), self.type_kind(signature.return_type))
-                        else {
-                            return false;
-                        };
-                        if input_mutability != result_mutability
-                            || !self.region_is_subregion(
-                                function.id,
-                                *result_region,
-                                *input_region,
-                            )
-                        {
-                            return false;
-                        }
+                        let Some((input, input_mutability, input_region)) = self.borrow_source_reference(function, relation) else { return false; };
+                        let Some(HirTypeKind::Reference { pointee: result, mutability: result_mutability, region: result_region }) = self.type_kind(signature.return_type) else { return false; };
+                        let input = &input;
+                        if input_mutability != *result_mutability
+                            || !self.region_is_subregion(function.id, *result_region, input_region)
+                        { return false; }
                         match relation.projection {
                             crate::BorrowProjection::Whole => {
                                 input == result
-                                    && (*parameter == signature.return_type
+                                    && (relation.parameter_field.is_some() || *parameter == signature.return_type
                                         || function.body.is_none())
                             }
                             crate::BorrowProjection::Fixed {
@@ -1223,6 +1718,17 @@ impl HirProgram {
                                         .checked_add(size_bytes)
                                         .is_some_and(|end| end <= input_layout.size_bytes)
                                     && offset_bytes % alignment == 0
+                            }
+                            crate::BorrowProjection::ArraySlice { offset_bytes, length, start, end, stride_bytes } => {
+                                let Some(HirTypeKind::Slice { element, .. }) = self.type_kind(*result) else { return false; };
+                                let (Some(input_layout), Some(element_layout)) = (self.layout_of(*input), self.layout_of(*element)) else { return false; };
+                                self.type_capabilities(*element).is_some_and(crate::TypeCapabilities::pointer_free_trivial)
+                                    && u64::from(stride_bytes) == element_layout.size_bytes
+                                    && element_layout.alignment.is_power_of_two()
+                                    && u64::from(offset_bytes) % element_layout.alignment == 0
+                                    && u64::from(length).checked_mul(u64::from(stride_bytes)).and_then(|n| u64::from(offset_bytes).checked_add(n)).is_some_and(|end| end <= input_layout.size_bytes)
+                                    && (((start == crate::BorrowSliceBound::ReturnedOffset || (matches!(start, crate::BorrowSliceBound::Constant(_) | crate::BorrowSliceBound::Parameter(_)) && self.borrow_slice_bound_valid(signature, relation.parameter, start))) && end == crate::BorrowSliceBound::ReturnedLength) || [start, end].iter().all(|b| *b == crate::BorrowSliceBound::SourceLength || self.borrow_slice_bound_valid(signature, relation.parameter, *b)))
+                                    && !matches!((start, end), (crate::BorrowSliceBound::Constant(a), crate::BorrowSliceBound::Constant(b)) if a > b)
                             }
                             crate::BorrowProjection::Slice {
                                 start,
@@ -1282,11 +1788,10 @@ impl HirProgram {
                             && relation.access == access
                             && signature.parameters.get(relation.parameter as usize).is_some_and(
                                 |parameter| {
-                                    self.reference_compatible(*parameter, signature.return_type)
-                                        && self.type_kind(*parameter).is_some_and(|kind| {
-                                            matches!(kind, HirTypeKind::Reference { region: source, .. }
-                                                if self.region_is_subregion(function.id, *region, *source))
-                                        })
+                                    let _ = parameter;
+                                    self.borrow_source_reference(function, relation).is_some_and(|(pointee, access, source)|
+                                        matches!(self.type_kind(signature.return_type), Some(HirTypeKind::Reference { pointee: expected, mutability, .. }) if *expected == pointee && *mutability == access)
+                                        && self.region_is_subregion(function.id, *region, source))
                                 },
                             )
                             && alternative.guard.iter().all(|atom| match atom {
@@ -1316,6 +1821,7 @@ impl HirProgram {
         bound: crate::BorrowSliceBound,
     ) -> bool {
         match bound {
+            crate::BorrowSliceBound::ReturnedLength | crate::BorrowSliceBound::ReturnedOffset => false,
             crate::BorrowSliceBound::Constant(_) => true,
             crate::BorrowSliceBound::Parameter(parameter) => signature
                 .parameters
@@ -1921,6 +2427,144 @@ impl Error for HirProgramValidationError {}
 mod version_tests {
     use super::*;
 
+    const AGGREGATE_PARAMETERS: &str = "struct Leaf { view:&mut u64, } struct Bundle { leaves:[Leaf;2], } \
+         fn main()->u64{return 0;} \
+         fn consume(a:Bundle,b:Bundle)->u64{return 42;}";
+
+    fn aggregate_parameter_fixture() -> HirProgram {
+        let source =
+            crate::SourceFile::from_text("aggregate-parameter-regions.nera", AGGREGATE_PARAMETERS);
+        let lexed = crate::lexer::lex(&source);
+        let parsed =
+            crate::frontend::parser::parse(&source, lexed.tokens(), false).expect("fixture parses");
+        let graph =
+            crate::frontend::modules::ModuleGraph::single(&parsed.ast).expect("single module");
+        super::super::elaborate_modules(&[&parsed.ast], graph)
+            .expect("HIR supports aggregate parameter binders before runtime lowering")
+    }
+
+    #[test]
+    fn aggregate_parameter_binders_reach_validated_runtime_abi() {
+        let source =
+            crate::SourceFile::from_text("aggregate-parameter-regions.nera", AGGREGATE_PARAMETERS);
+        let output = crate::analyze(&source);
+        assert_eq!(
+            output.status(),
+            crate::FrontendStatus::AcceptedProposal,
+            "{:?}",
+            output.issues()
+        );
+        let unit = output.vir().expect("reference aggregate ABI validates");
+        let report = crate::verify_program(&unit.resolve().unwrap(), Default::default()).unwrap();
+        assert!(
+            report.is_memory_checked_core0(),
+            "{:?}",
+            report.diagnostics()
+        );
+    }
+
+    #[test]
+    fn aggregate_parameters_bind_each_reference_occurrence_independently() {
+        let program = aggregate_parameter_fixture();
+        program.validate_tables().expect("valid field binders");
+        let bindings: Vec<_> = program
+            .regions
+            .iter()
+            .filter_map(|region| match region.origin {
+                HirRegionOrigin::ParameterField { index, slot } => {
+                    assert_eq!(
+                        region.owner,
+                        HirRegionOwner::Function(HirFunctionId::new(1))
+                    );
+                    Some((index, slot))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(bindings, [(0, 0), (0, 1), (1, 0), (1, 1)]);
+        assert_eq!(
+            program
+                .regions
+                .iter()
+                .filter(|region| matches!(region.origin, HirRegionOrigin::AggregateErased))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn aggregate_parameter_binders_reject_missing_duplicate_and_foreign_slots() {
+        let base = aggregate_parameter_fixture();
+        let first = base
+            .regions
+            .iter()
+            .position(|region| matches!(region.origin, HirRegionOrigin::ParameterField { .. }))
+            .unwrap();
+        for mutation in 0..6 {
+            let mut program = base.clone();
+            match mutation {
+                0 => {
+                    program.regions.pop();
+                }
+                1 => program.regions[first + 1].origin = program.regions[first].origin,
+                2 => {
+                    program.regions[first].origin =
+                        HirRegionOrigin::ParameterField { index: 0, slot: 2 }
+                }
+                3 => {
+                    program.regions[first].origin =
+                        HirRegionOrigin::ParameterField { index: 2, slot: 0 }
+                }
+                4 => program.regions[first].owner = HirRegionOwner::Function(HirFunctionId::new(0)),
+                _ => program.regions[first].origin = HirRegionOrigin::Parameter { index: 0 },
+            }
+            assert!(program.validate_tables().is_err(), "mutation {mutation}");
+        }
+    }
+
+    #[test]
+    fn aggregate_parameter_slot_collection_is_bounded_and_preserves_occurrences() {
+        let program = aggregate_parameter_fixture();
+        let bundle = program.functions[1].signature.parameters[0];
+        let slots = super::super::regions::aggregate_reference_slots(
+            &program.types,
+            &program.fields,
+            bundle,
+        )
+        .expect("bounded inline shape");
+        assert_eq!(slots.len(), 2);
+        assert_eq!(
+            slots[0], slots[1],
+            "one erased declaration, two physical occurrences"
+        );
+
+        let mut cyclic = program.clone();
+        let field = match &cyclic.types[bundle.index()].kind {
+            HirTypeKind::Struct { fields } => fields[0],
+            _ => unreachable!(),
+        };
+        cyclic.fields[field.index()].ty = bundle;
+        assert!(super::super::regions::aggregate_reference_slots(
+            &cyclic.types, &cyclic.fields, bundle,
+        ).is_none(), "malformed cycles must terminate");
+
+        let mut oversized = program.clone();
+        let array = oversized.fields[field.index()].ty;
+        let HirTypeKind::Array { length, .. } = &mut oversized.types[array.index()].kind else {
+            unreachable!();
+        };
+        *length = 257;
+        assert!(
+            super::super::regions::aggregate_reference_slots(
+                &oversized.types,
+                &oversized.fields,
+                bundle,
+            )
+            .is_none(),
+            "oversized interface must fail closed"
+        );
+    }
+
     #[test]
     fn schema_version_is_checked_at_the_table_boundary() {
         let output = crate::analyze(&crate::SourceFile::from_text(
@@ -1951,6 +2595,18 @@ mod version_tests {
             HirVersion::V18,
             HirVersion::V19,
             HirVersion::V20,
+            HirVersion::V38,
+            HirVersion::V39,
+            HirVersion::V40,
+            HirVersion::V41,
+            HirVersion::V42,
+            HirVersion::V43,
+            HirVersion::V44,
+            HirVersion::V45,
+            HirVersion::V46,
+            HirVersion::V47,
+            HirVersion::V48,
+            HirVersion::V49,
         ] {
             program.version = old;
             let error = program.validate_tables().expect_err("old schema rejected");

@@ -1,0 +1,23 @@
+// Resources and logical parameters are interleaved in declaration order.
+struct Cell { value:u64, }
+predicate Ready(limit:usize,p:ptr<Cell>,enabled:bool,tag:u64) {
+    exists used:usize = limit - 1usize;
+    owns(p);
+    initialized(p.value,0..1);
+    used < limit;
+    enabled;
+    tag == 42u64;
+}
+fn main()->u64 {
+    let p=alloc<Cell>(1);
+    p.value=42;
+    let capacity=7usize;
+    fold Ready(capacity,p,true,40u64 + 2u64);
+    unfold Ready(capacity,p,true,42u64) as (saved);
+    fold Ready(capacity,p,true,42u64) with (used = saved);
+    unfold Ready(7usize,p,true,42u64);
+    let value=p.value;
+    free(p);
+    finish Ready(7usize,p,true,42u64);
+    return value;
+}

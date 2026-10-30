@@ -40,15 +40,15 @@ fn local_object_payload_moves_and_copies_preserve_pointer_metadata() {
 }
 
 #[test]
-fn different_origins_and_opaque_owner_returns_do_not_gain_identity() {
+fn different_origins_and_opaque_owner_returns_do_not_gain_ordering_rights() {
     for source in [
-        "fn main() -> u64 { let a=1; let b=2; let x=&raw a; let mut p=x; if choose() { p=&raw b; } if p==x { return 42; } return 0; } fn choose()->bool { return true; }",
+        "fn main() -> u64 { let a=1; let b=2; let x=&raw a; let mut p=x; if choose() { p=&raw b; } if p<=x { return 42; } return 0; } fn choose()->bool { return true; }",
         // Recursive replacement releases the old instance; a proved identity
         // recursion is now positive coverage in summary_recursive.
-        "fn main() -> u64 { let p=alloc<u64>(1); *p=42; let old=&raw *p; let returned=replace(p,false); let new=&raw *returned; if old==new { return 42; } return 0; } fn replace(p:Own<u64>,stop:bool)->Own<u64> { if stop { free(p); let q=alloc<u64>(1); *q=42; return q; } return replace(p,true); }",
+        "fn main() -> u64 { let p=alloc<u64>(1); *p=42; let old=&raw *p; let returned=replace(p,false); let new=&raw *returned; if old<=new { return 42; } return 0; } fn replace(p:Own<u64>,stop:bool)->Own<u64> { if stop { free(p); let q=alloc<u64>(1); *q=42; return q; } return replace(p,true); }",
         // Same concrete selection, but the parameter's incoming arithmetic
         // domain is not assumed to equal a newly constructed view domain.
-        "fn main()->u64 { let a=[1,2]; return check(&a[..]); } fn check(p:&[u64])->u64 { if len(p)>0usize { let x=&raw p[0]; let s=&p[..]; let y=&raw s[0]; if x==y { return 42; } } return 0; }",
+        "fn main()->u64 { let a=[1,2]; return check(&a[..]); } fn check(p:&[u64])->u64 { if len(p)>0usize { let x=&raw p[0]; let s=&p[..]; let y=&raw s[0]; if x<=y { return 42; } } return 0; }",
     ] {
         let output = frontend_checks::accepted("unknown-origin.nera", source);
         let resolved = output.vir().unwrap().resolve().unwrap();
@@ -66,7 +66,7 @@ fn incoming_parameter_domain_is_not_the_pointee_object_domain() {
     use nera::*;
     let output = frontend_checks::accepted(
         "parameter-domain.nera",
-        "fn main()->u64 { let a=[1,2]; return check(&a[0]); } fn check(p:&u64)->u64 { let x=&raw *p; let y=x+0; if x==y { return 42; } return 0; }",
+        "fn main()->u64 { let a=[1,2]; return check(&a[0]); } fn check(p:&u64)->u64 { let x=&raw *p; let y=x+0; if x<=y { return 42; } return 0; }",
     );
     let mut unit = output.vir().unwrap().as_unit().clone();
     let instruction = unit.runtime.functions[1]
@@ -128,8 +128,8 @@ fn parameter_anchors_are_scoped_and_selection_does_not_change_object_identity() 
 #[test]
 fn transferred_owners_do_not_leave_a_live_promise_for_old_raw_aliases() {
     for source in [
-        "fn main() -> u64 { let p=alloc<u64>(1); *p=42; let old=&raw *p; consume(p); if old==old { return 42; } return 0; } fn consume(p: Own<u64>) { free(p); return; }",
-        "struct Box { p: Own<u64>, } fn main() -> u64 { let p=alloc<u64>(1); *p=42; let old=&raw *p; let b=Box { p: p }; consume(b); if old==old { return 42; } return 0; } fn consume(b: Box) { return; }",
+        "fn main() -> u64 { let p=alloc<u64>(1); *p=42; let old=&raw *p; consume(p); if old<=old { return 42; } return 0; } fn consume(p: Own<u64>) { free(p); return; }",
+        "struct Box { p: Own<u64>, } fn main() -> u64 { let p=alloc<u64>(1); *p=42; let old=&raw *p; let b=Box { p: p }; consume(b); if old<=old { return 42; } return 0; } fn consume(b: Box) { return; }",
     ] {
         let output = frontend_checks::accepted("transferred-instance.nera", source);
         let resolved = output.vir().unwrap().resolve().unwrap();

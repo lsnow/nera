@@ -910,6 +910,37 @@ fn describe_obligation(obligation: ResourceObligation) -> String {
         ResourceObligationKind::LoanReborrowDepthWithinBudget { loan, limit } => {
             format!("loan l{} fits the reborrow-depth limit {limit}", loan.get())
         }
+        ResourceObligationKind::PredicateCleanupPreserved { holder } => {
+            format!("predicate holder {holder} retains every remaining cleanup responsibility")
+        }
+        ResourceObligationKind::PredicateInvariantPreserved { holder } => format!(
+            "closed predicate holder {holder} retains its representation and loan restrictions"
+        ),
+        ResourceObligationKind::PredicateInterfaceValid { predicate, ensures } => format!(
+            "predicate {} ownership is established at {} boundary",
+            predicate.get(),
+            if ensures { "result" } else { "parameter" }
+        ),
+        ResourceObligationKind::PredicateCarrierMovable { permission } => {
+            format!(
+                "sealed predicate carrier {} is uniquely owned and movable",
+                permission.get()
+            )
+        }
+        ResourceObligationKind::PredicateActionValid { action } => {
+            format!("predicate effect {action} must be established from held resources")
+        }
+        ResourceObligationKind::PredicateBoundaryRestored {
+            holder,
+            function_exit,
+        } => format!(
+            "predicate holder {holder} must {}",
+            if function_exit {
+                "be transferred or retired before function exit"
+            } else {
+                "be folded before an observing call"
+            }
+        ),
         ResourceObligationKind::OwnershipConserved { allocation } => format!(
             "owned allocation {allocation} is dropped, freed, or transferred exactly once at this return"
         ),

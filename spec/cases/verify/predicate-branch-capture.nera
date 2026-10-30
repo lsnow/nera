@@ -1,0 +1,45 @@
+// The private witness is chosen from different bounded scalar call results.
+// Only the sealed declaration survives the branch, not either captured value.
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>) {
+    exists used:usize = 0usize;
+    owns(p);
+    initialized(p.value,0..1);
+    p.value<=42;
+    used<=7usize;
+}
+fn main()->u64 {
+    let p=alloc<Cell>(1);
+    p.value=42;
+    fold Ready(p);
+    let q=choose(p,true,true);
+    unfold Ready(q);
+    let outcome=q.value;
+    free(q);
+    finish Ready(q);
+    return outcome;
+}
+fn bounded(seed:bool)->usize
+ensures result<=7usize;
+{
+    if seed { return 1usize; }
+    return 6usize;
+}
+fn choose(p:Own<Cell>,seed:bool,which:bool)->Own<Cell>
+requires Ready(p);
+ensures Ready(result);
+{
+    let first=bounded(seed);
+    let mut inverted=true;
+    if seed { inverted=false; }
+    let second=bounded(inverted);
+    unfold Ready(p);
+    if which {
+        fold Ready(p) with (used=first);
+    } else {
+        fold Ready(p) with (used=second);
+    }
+    unfold Ready(p) as (saved);
+    fold Ready(p) with (used=saved);
+    return p;
+}

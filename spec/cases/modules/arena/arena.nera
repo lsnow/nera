@@ -1,0 +1,66 @@
+module arena;
+// The 8.1–8.3 backing/left/middle/remaining example behind a sealed owner API.
+pub opaque struct Arena { cursor:usize, slots:[u64;6], }
+pub predicate Ready(p:ptr<Arena>) {
+    exists used:usize = p.cursor;
+    owns(p);
+    initialized(p.slots,0usize..6usize);
+    used<=6usize;
+}
+pub fn make()->Own<Arena>
+ensures Ready(result);
+ensures result.cursor==0usize;
+{
+    let p=alloc<Arena>(1);
+    p.cursor=0usize;
+    let backing=alloc<[u64;6]>(1);
+    let mut i=0usize;
+    while i<6usize {
+        invariant i<=6usize;
+        invariant initialized(backing,0usize..i);
+        backing[i]=0;
+        i=i+1usize;
+    }
+    p.slots=*backing;
+    free(backing);
+    fold Ready(p);
+    return p;
+}
+pub fn reserve(p:&mut Arena,count:usize)->&mut [u64]
+requires Ready(p);
+requires count<=6usize;
+ensures Ready(p);
+ensures p.cursor==old(p.cursor)+len(result);
+ensures len(result)<=count;
+{
+    unfold Ready(p);
+    let start=p.cursor;
+    let end=start+count;
+    if end<=6usize {
+        p.cursor=end;
+        let view=&mut p.slots[start..end];
+        fold Ready(p);
+        return view;
+    }
+    let empty=&mut p.slots[0usize..0usize];
+    fold Ready(p);
+    return empty;
+}
+pub fn reset(p:&mut Arena)
+requires Ready(p);
+ensures Ready(p);
+ensures p.cursor==0usize;
+{
+    unfold Ready(p);
+    p.cursor=0usize;
+    fold Ready(p);
+    return;
+}
+pub fn destroy(p:Own<Arena>)
+requires Ready(p);
+{
+    unfold Ready(p);
+    free(p);
+    finish Ready(p);
+    return;
+}

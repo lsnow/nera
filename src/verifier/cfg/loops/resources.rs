@@ -5,8 +5,8 @@ use crate::verifier::spec::separation::MatchLedger;
 use crate::verifier::transfer::{SymbolicSpecMemoryQuery, query_symbolic_spec_memory, spec_alive};
 use crate::vir::ResourceLoopAtom as A;
 use crate::{
-    AffineExpression, SymbolicRangeBound, VirSpecEnvironment, VirSpecSnapshot as S, VirSpecTermId,
-    VirSpecTermKind as T,
+    AbstractByteRange, AffineExpression, SymbolicRangeBound, VirSpecEnvironment,
+    VirSpecSnapshot as S, VirSpecTermId, VirSpecTermKind as T,
 };
 
 fn bound(
@@ -131,7 +131,21 @@ pub(super) fn assume_initialized(
     let memory = &unit.as_unit().memory;
     let source = pointer.memory_access().unwrap();
     let stride = memory.object_shape(query.layout).unwrap().size_bytes();
-    let length = memory.object_shape(source).unwrap().size_bytes() / stride;
+    let size = if let Some(view) = pointer.slice_footprint() {
+        let AbstractByteRange::Exact(range) = view.range else {
+            return false;
+        };
+        let Some(base) = pointer.offset_bytes().exact_value() else {
+            return false;
+        };
+        if view.provenance != pointer.provenance() || range.start() != base {
+            return false;
+        }
+        range.end() - base
+    } else {
+        memory.object_shape(source).unwrap().size_bytes()
+    };
+    let length = size / stride;
     state.assume_loop_initialized(
         pointer,
         query.layout,

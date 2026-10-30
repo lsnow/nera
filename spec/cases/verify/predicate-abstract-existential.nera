@@ -1,0 +1,49 @@
+// Hidden scalar values travel through ordinary contracts. Defaults are choices
+// for local fold, not a recipe for reconstructing a caller's hidden values.
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>,limit:usize,flag:bool) {
+    exists used:usize = 999usize;
+    exists enabled:bool = false;
+    exists location:ptr<Cell> = p;
+    owns(p);
+    initialized(p.value,0..1);
+    used<=limit;
+    enabled==flag;
+    location==p;
+}
+fn main()->u64 {
+    let p=make(8usize,true);
+    let q=relay(p,8usize,true);
+    return consume(q,8usize,true);
+}
+fn make(limit:usize,flag:bool)->Own<Cell>
+ensures Ready(result,limit,flag);
+{
+    let p=alloc<Cell>(1);
+    p.value=42;
+    fold Ready(p,limit,flag) with (used=0usize,enabled=flag);
+    return p;
+}
+fn forward(p:Own<Cell>,limit:usize,flag:bool)->Own<Cell>
+requires Ready(p,limit,flag);
+ensures Ready(result,limit,flag);
+{
+    unfold Ready(p,limit,flag) as (saved,on,place);
+    fold Ready(p,limit,flag) with (used=saved+0usize,enabled=on,location=place);
+    return p;
+}
+fn relay(p:Own<Cell>,limit:usize,flag:bool)->Own<Cell>
+requires Ready(p,limit,flag);
+ensures Ready(result,limit,flag);
+{
+    return forward(p,limit,flag);
+}
+fn consume(p:Own<Cell>,limit:usize,flag:bool)->u64
+requires Ready(p,limit,flag);
+{
+    unfold Ready(p,limit,flag);
+    let outcome=p.value;
+    free(p);
+    finish Ready(p,limit,flag);
+    return outcome;
+}

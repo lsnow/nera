@@ -9,15 +9,48 @@ impl ResourceState {
     ) {
         let renames: Vec<_> = retained.iter().map(|id| (*id, *id)).collect();
         let frame = entry.project_cfg_edge(&renames);
+        self.inherit_predicate_scalar_aliases(&frame);
         self.path_condition = frame.path_condition;
         self.relations = frame.relations;
         self.word_expressions = frame.word_expressions;
+        self.word_origins = frame.word_origins;
+        self.bool_origins = frame.bool_origins;
     }
+    #[cfg(test)]
     pub(in crate::verifier) fn inherit_loop_resources(
         &mut self,
         entry: &Self,
         modified: &BTreeSet<AbstractAllocationId>,
     ) -> bool {
+        self.inherit_loop_resources_with_predicates(entry, modified, &BTreeSet::new())
+    }
+
+    pub(in crate::verifier) fn inherit_loop_resources_with_predicates(
+        &mut self,
+        entry: &Self,
+        modified: &BTreeSet<AbstractAllocationId>,
+        repacked: &BTreeSet<PredicateHolder>,
+    ) -> bool {
+        let mut candidate = self.clone();
+        if !candidate.try_inherit_loop_resources(entry, modified, repacked) {
+            return false;
+        }
+        *self = candidate;
+        true
+    }
+
+    fn try_inherit_loop_resources(
+        &mut self,
+        entry: &Self,
+        modified: &BTreeSet<AbstractAllocationId>,
+        repacked: &BTreeSet<PredicateHolder>,
+    ) -> bool {
+        if modified
+            .iter()
+            .any(|id| !entry.allocations.contains_key(id))
+        {
+            return false;
+        }
         if entry.allocations.values().any(|a| {
             !a.object_state().resource_payloads().is_empty()
                 || !a.object_state().active_variants().is_empty()
@@ -28,6 +61,9 @@ impl ResourceState {
             loan.footprint()
                 .is_some_and(|f| matches!(f.range, AbstractByteRange::Symbolic { .. }))
         }) {
+            return false;
+        }
+        if !self.inherit_loop_predicate_frame(entry, modified, repacked) {
             return false;
         }
         self.allocations = entry.allocations.clone();
@@ -49,7 +85,8 @@ impl ResourceState {
                 .forget_uninitialized(extent)
                 .expect("allocation extent");
         }
-        true
+        self.assume_loop_predicate_representation(entry, modified, repacked)
+            .is_ok()
     }
 
     pub(in crate::verifier) fn stable_loop_value(value: AbstractValue) -> bool {
@@ -69,12 +106,34 @@ impl ResourceState {
         }
     }
 
+    #[cfg(test)]
     pub(in crate::verifier) fn loop_resources_match(
         &self,
         expected: &Self,
         values: &[VirValueId],
     ) -> bool {
-        self.allocations.len() == expected.allocations.len()
+        self.loop_resources_match_with_predicates(expected, values, &BTreeSet::new())
+    }
+
+    #[cfg(test)]
+    pub(in crate::verifier) fn loop_resources_match_with_predicates(
+        &self,
+        expected: &Self,
+        values: &[VirValueId],
+        repacked: &BTreeSet<PredicateHolder>,
+    ) -> bool {
+        self.loop_resources_match_with_parameters(expected, values, repacked, &Default::default())
+    }
+
+    pub(in crate::verifier) fn loop_resources_match_with_parameters(
+        &self,
+        expected: &Self,
+        values: &[VirValueId],
+        repacked: &BTreeSet<PredicateHolder>,
+        parameters: &LoopPredicateParameters,
+    ) -> bool {
+        self.loop_predicates_match_with_parameters(expected, repacked, parameters)
+            && self.allocations.len() == expected.allocations.len()
             && expected
                 .loans
                 .iter()

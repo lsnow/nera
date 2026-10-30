@@ -72,6 +72,7 @@ impl PassLedger {
 pub(super) fn canonicalize_function(
     memory: &VirMemorySchema,
     mut draft: DraftLoweredFunction,
+    predicate_parameters: &[u32],
 ) -> Result<CanonicalLoweredFunction, FrontendFailure> {
     let source_span = draft.source_span;
     let blocks = run_passes_with_specs(
@@ -84,6 +85,7 @@ pub(super) fn canonicalize_function(
         source_span,
         Some(&draft.abi),
         &mut draft.local_specs,
+        predicate_parameters,
     )
     .map_err(|error| pass_failure(error, source_span))?;
     Ok(seal_function(draft, blocks))
@@ -156,6 +158,7 @@ fn run_passes(
         source_span,
         abi,
         &mut [],
+        &[],
     )
 }
 
@@ -170,6 +173,7 @@ fn run_passes_with_specs(
     source_span: ByteSpan,
     abi: Option<&crate::VirAbiSignature>,
     local_specs: &mut [super::local_spec::LocalSpec],
+    predicate_parameters: &[u32],
 ) -> Result<Vec<VirBasicBlock>, PostCfgError> {
     let mut ledger = PassLedger::new();
     let mut sealed = None;
@@ -178,8 +182,14 @@ fn run_passes_with_specs(
         match pass {
             PostCfgPass::InitializationEffects => {
                 validate_pending_identities(&blocks)?;
-                assignment::plan_initialization_effects(memory, &mut blocks, source_span, abi)
-                    .map_err(PostCfgError::InitializationPlanning)?;
+                assignment::plan_initialization_effects(
+                    memory,
+                    &mut blocks,
+                    source_span,
+                    abi,
+                    predicate_parameters,
+                )
+                .map_err(PostCfgError::InitializationPlanning)?;
             }
             PostCfgPass::LoanEndEffects => {
                 loan_end::plan_with_specs(

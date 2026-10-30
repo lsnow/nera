@@ -60,7 +60,7 @@ fn scalar_and_cell_runtime_baselines_do_not_claim_contract_proofs() {
 }
 
 #[test]
-fn arena_runtime_baseline_records_the_actual_boundary() {
+fn arena_runtime_baseline_infers_cursor_updates_without_explicit_contracts() {
     let source = fixture::erased(fixture::ARENA);
     let output = analyze(&SourceFile::from_text("arena-erased.nera", &source));
     assert_eq!(
@@ -71,9 +71,31 @@ fn arena_runtime_baseline_records_the_actual_boundary() {
     );
     let unit = output.vir().unwrap();
     let report = verify_program(&unit.resolve().unwrap(), CfgAnalysisConfig::default()).unwrap();
+    assert!(report.is_memory_checked_core0());
+    // Inferred summaries now carry the guarded heap update across the bool call.
+    // This proves memory obligations, not the erased user postconditions.
+    assert!(
+        report
+            .functions()
+            .values()
+            .all(|f| f.summary().state == SummaryState::Closed && f.proofs().is_empty())
+    );
+    assert!(unit.as_unit().specs.trust_entries().is_empty());
+    assert_eq!(
+        interpret(unit.resolve().unwrap().runtime())
+            .unwrap()
+            .values(),
+        [VirRuntimeValue::U64(49)]
+    );
+
+    // The caller must use the actual updated cursor, not the successful branch's
+    // bound on `end` or the contracts removed from this baseline.
+    let invalid = source.replace("*cursor = end;", "*cursor = 7usize;");
+    assert_ne!(invalid, source);
+    let output = frontend_checks::accepted("arena-bad-cursor.nera", &invalid);
+    let resolved = output.vir().unwrap().resolve().unwrap();
+    let report = verify_program(&resolved, CfgAnalysisConfig::default()).unwrap();
     assert!(!report.is_memory_checked_core0());
-    // A bool-returning cursor update does not currently export its new heap value
-    // to the next slice range. Do not accept an arbitrary failure as this gap.
     assert!(
         report
             .functions()
@@ -82,16 +104,9 @@ fn arena_runtime_baseline_records_the_actual_boundary() {
             .any(|o| matches!(
                 o.obligation().kind(),
                 ResourceObligationKind::SliceRangeWithinBounds { .. }
-            ) && o.obligation().status() == ObligationStatus::Unknown)
+            ) && !o.obligation().is_proven())
     );
-    assert!(unit.as_unit().specs.trust_entries().is_empty());
-    // Concrete success does not turn the abstract Unknown into a proof.
-    assert_eq!(
-        interpret(unit.resolve().unwrap().runtime())
-            .unwrap()
-            .values(),
-        [VirRuntimeValue::U64(49)]
-    );
+    assert!(interpret(resolved.runtime()).is_err());
 }
 
 #[test]
@@ -201,7 +216,7 @@ fn measure_contract_baseline_when_requested() {
     for (name, source, expected) in [
         ("scalar-erased", fixture::SCALAR, true),
         ("cell-erased", fixture::CELL, true),
-        ("arena-erased", fixture::ARENA, false),
+        ("arena-erased", fixture::ARENA, true),
     ] {
         let output = frontend_checks::accepted(name, &fixture::erased(source));
         measure(name, output.vir().unwrap(), expected);

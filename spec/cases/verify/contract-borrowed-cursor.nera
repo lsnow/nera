@@ -1,0 +1,19 @@
+struct Buffer { cursor:usize, slots:[u64;8], }
+
+fn main()->u64 {
+    let mut p=Buffer{cursor:2usize, slots:[0,0,0,42,0,0,0,0]};
+    let view=take(&mut p,3usize);
+    return view[1];
+}
+
+fn take(p:&mut Buffer,count:usize)->&mut [u64]
+    requires p.cursor<=4usize;
+    requires count<=4usize;
+    ensures len(result)==count;
+    ensures p.cursor==old(p.cursor)+count;
+{
+    let start=p.cursor;
+    let end=start+count;
+    p.cursor=end;
+    return &mut p.slots[start..end];
+}

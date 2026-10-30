@@ -29,6 +29,7 @@ mod tests {
             bytes: BTreeMap::new(),
             objects: Vec::new(),
             resource_payloads: BTreeMap::new(),
+            raw_payloads: BTreeMap::new(),
         }
     }
 

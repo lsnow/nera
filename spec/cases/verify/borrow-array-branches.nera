@@ -1,0 +1,26 @@
+struct Buffer { tag:u64, data:[u64;4], }
+
+fn main()->u64 {
+    let p=alloc<Buffer>(1);
+    p.tag=0;
+    p.data=[10,42,30,40];
+    let answer=client(&mut *p,1usize,true,true);
+    free(p);
+    return answer;
+}
+
+fn client(p:&mut Buffer,count:usize,first:bool,second:bool)->u64 {
+    let view=choose(p,count);
+    let mut answer=0;
+    if len(view)>0usize {
+        if first {
+            if second { answer=view[0]; }
+        }
+    }
+    return answer;
+}
+
+fn choose(p:&mut Buffer,count:usize)->&mut [u64] {
+    if count>0usize { return &mut p.data[1usize..3usize]; }
+    return &mut p.data[0usize..0usize];
+}

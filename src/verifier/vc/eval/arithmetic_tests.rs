@@ -138,7 +138,11 @@ fn undefined_arithmetic_is_not_a_boolean_and_short_circuit_is_ordered() {
             &function(),
             &mut budget
         ),
-        Some(AbstractBool::True)
+        None
+    );
+    assert!(
+        budget.exhausted,
+        "snapshot preflight also consumes the query budget"
     );
 }
 

@@ -3,6 +3,7 @@ use std::error::Error;
 use std::fmt;
 mod closure;
 mod loops;
+mod predicate;
 pub use loops::LoopCandidateAttempt;
 
 use crate::{
@@ -130,6 +131,7 @@ impl CfgAnalysisConfig {
 /// Exact CFG construct responsible for one resource obligation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CfgObligationOrigin {
+    PredicateAction { id: u32 },
     Instruction { index: usize },
     Jump { target: VirBlockId },
     BranchThen { target: VirBlockId },
@@ -191,9 +193,9 @@ impl CfgObligation {
 /// Fixed-point entry and post-instruction state for one basic block.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CfgBlockAnalysis {
-    entry_state: ResourceState,
-    instruction_states: Vec<ResourceState>,
-    exit_state: ResourceState,
+    entry_state: Result<ResourceState, ResourceJoinError>,
+    instruction_states: Result<Vec<ResourceState>, ResourceJoinError>,
+    exit_state: Result<ResourceState, ResourceJoinError>,
     entry_conditional_state: ConditionalResourceState,
     instruction_conditional_states: Vec<ConditionalResourceState>,
     exit_conditional_state: ConditionalResourceState,
@@ -201,20 +203,18 @@ pub struct CfgBlockAnalysis {
 }
 
 impl CfgBlockAnalysis {
-    #[must_use]
-    pub const fn entry_state(&self) -> &ResourceState {
-        &self.entry_state
+    /// Conservative single-state view; use the conditional view when packages cannot join.
+    pub fn entry_state(&self) -> Result<&ResourceState, &ResourceJoinError> {
+        self.entry_state.as_ref()
     }
 
-    #[must_use]
-    pub const fn exit_state(&self) -> &ResourceState {
-        &self.exit_state
+    pub fn exit_state(&self) -> Result<&ResourceState, &ResourceJoinError> {
+        self.exit_state.as_ref()
     }
 
-    /// Abstract state immediately after each instruction in source order.
-    #[must_use]
-    pub fn instruction_states(&self) -> &[ResourceState] {
-        &self.instruction_states
+    /// Conservative states after each instruction; fails if any disjunction cannot join.
+    pub fn instruction_states(&self) -> Result<&[ResourceState], &ResourceJoinError> {
+        self.instruction_states.as_deref()
     }
 
     #[must_use]
@@ -250,10 +250,14 @@ pub struct FunctionReturnState {
     state: ResourceState,
     /// Logical observation before the checked ABI return consumes authorities.
     observation_state: Option<ResourceState>,
+    field_exports: BTreeMap<crate::VirLoanId, ObligationStatus>,
     values: Vec<AbstractValue>,
 }
 
 impl FunctionReturnState {
+    pub(super) fn field_exports(&self) -> &BTreeMap<crate::VirLoanId, ObligationStatus> {
+        &self.field_exports
+    }
     pub(super) fn observation_state(&self) -> &ResourceState {
         self.observation_state.as_ref().unwrap_or(&self.state)
     }
@@ -465,6 +469,10 @@ pub enum CfgAnalysisError {
         limit: u64,
     },
     ContractInstantiation,
+    PredicateEntry {
+        predicate: crate::VirPredicateId,
+        error: super::PredicateError,
+    },
     ContractApplication(ContractApplicationError),
     InstructionSiteLimitExceeded,
     MissingInstructionSite {
@@ -574,6 +582,11 @@ impl fmt::Display for CfgAnalysisError {
             Self::ContractInstantiation => formatter.write_str(
                 "validated VIR contract table could not be instantiated for CFG analysis",
             ),
+            Self::PredicateEntry { predicate, error } => write!(
+                formatter,
+                "cannot establish entry representation for predicate{}: {error}",
+                predicate.get()
+            ),
             Self::ContractApplication(error) => error.fmt(formatter),
             Self::InstructionSiteLimitExceeded => {
                 formatter.write_str("CFG has more instruction sites than the verifier can name")
@@ -598,6 +611,7 @@ impl Error for CfgAnalysisError {
             Self::InstructionTransfer { error, .. } => Some(error),
             Self::ResourceJoin { error, .. } => Some(error),
             Self::ContractApplication(error) => Some(error),
+            Self::PredicateEntry { error, .. } => Some(error),
             Self::LoopInvariantResourceStateUnsupported
             | Self::LoopInvariantBudgetExceeded(_)
             | Self::MissingFunction(_)
@@ -701,6 +715,10 @@ pub(super) fn analyze_function_cfg_with_summaries(
         .collect::<Vec<_>>();
     let mut supplied =
         entry_state(contract, &parameters).map_err(CfgAnalysisError::ContractApplication)?;
+    if let Some(pure) = &contract.pure {
+        pure.install_scalar_relations(&mut supplied, &parameters, config.relation_limits)
+            .ok_or(CfgAnalysisError::ContractInstantiation)?;
+    }
     let abi = program
         .runtime()
         .abis
@@ -712,6 +730,7 @@ pub(super) fn analyze_function_cfg_with_summaries(
         &abi.signature,
         program.runtime().borrows,
         program.runtime().memory,
+        contract,
     )
     .ok_or(CfgAnalysisError::ContractInstantiation)?;
     if function_id != program.runtime().entry
@@ -733,29 +752,44 @@ pub(super) fn analyze_function_cfg_with_summaries(
             return Err(CfgAnalysisError::ContractInstantiation);
         }
     }
-    if let Some(pure) = &contract.pure {
-        pure.install_memory_entry(
-            &mut supplied,
-            &parameters.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
-        )
-        .ok_or(CfgAnalysisError::ContractInstantiation)?;
-    }
-    if supplied.loans().len() > config.max_active_loans_per_case || config.max_aliases_per_loan == 0
-    {
-        let loans = supplied.loans().keys().copied().collect::<Vec<_>>();
-        for loan in loans {
-            if let Some(loan) = supplied.loan_mut(loan) {
-                loan.set_activity(LoanActivity::MaybeActive);
-            }
-        }
-        supplied.mark_loan_precision_loss(super::resource::LoanPrecisionLoss::ActiveLoanBudget);
-    }
+    let field_entries = if program.runtime().borrows.regions().iter().any(|region| {
+        region.owner == function_id
+            && matches!(
+                region.origin,
+                crate::VirBorrowRegionOrigin::ParameterField { .. }
+            )
+    }) {
+        let accesses = abi
+            .signature
+            .parameters()
+            .iter()
+            .map(|binding| binding.value().access())
+            .collect::<Option<Vec<_>>>()
+            .ok_or(CfgAnalysisError::ContractInstantiation)?;
+        crate::vir::plan_parameter_reference_entries(program.runtime().memory, &accesses)
+            .ok_or(CfgAnalysisError::ContractInstantiation)?
+    } else {
+        Vec::new()
+    };
     for (parameter_index, binding) in abi.signature.parameters().iter().enumerate() {
-        if binding.interface().transfer != crate::VirInterfaceTransfer::Move {
+        if !matches!(
+            binding.interface().transfer,
+            crate::VirInterfaceTransfer::Move | crate::VirInterfaceTransfer::BorrowMutable
+        ) && !field_entries
+            .iter()
+            .any(|field| field.parameter as usize == parameter_index)
+        {
             continue;
         }
-        let crate::VirAbiValue::IndirectAggregate { access } = binding.value() else {
-            continue;
+        let access = match binding.value() {
+            crate::VirAbiValue::IndirectAggregate { access } => *access,
+            crate::VirAbiValue::Pointer { pointee, .. }
+                if crate::vir::predicate_resource_fields(program.runtime().memory, *pointee)
+                    .is_some_and(|fields| !fields.is_empty()) =>
+            {
+                *pointee
+            }
+            _ => continue,
         };
         let [pointer_slot, _permission_slot] = binding.parameter_slots() else {
             return Err(CfgAnalysisError::ContractInstantiation);
@@ -767,13 +801,66 @@ pub(super) fn analyze_function_cfg_with_summaries(
             .id;
         let parameter =
             u32::try_from(parameter_index).map_err(|_| CfgAnalysisError::ContractInstantiation)?;
-        let installed = install_aggregate_abi_payloads(
-            &mut supplied,
-            program.runtime().memory,
-            pointer,
-            *access,
-            |leaf| AbstractAllocationId::abi_entry_payload(function_id.get(), parameter, leaf),
-        )
+        let mut fields = BTreeMap::new();
+        for field in field_entries
+            .iter()
+            .filter(|field| field.parameter == parameter)
+        {
+            let mut regions = program.runtime().borrows.regions().iter().filter(|region| {
+                region.owner == function_id
+                    && region.origin
+                        == crate::VirBorrowRegionOrigin::ParameterField {
+                            index: parameter,
+                            slot: field.slot,
+                        }
+            });
+            let region = regions
+                .next()
+                .ok_or(CfgAnalysisError::ContractInstantiation)?;
+            if regions.next().is_some() {
+                return Err(CfgAnalysisError::ContractInstantiation);
+            }
+            // Predicate import below installs its declared minimum. Do not
+            // manufacture complete referents for a predicate-bearing buffer.
+            let initialized = !contract.predicates.iter().any(|interface| {
+                !interface.metadata.ensures
+                    && interface
+                        .metadata
+                        .bindings
+                        .iter()
+                        .zip(&interface.projections)
+                        .any(|((pointer, _), projection)| {
+                            *pointer == field.pointer_slot
+                                && *projection == Some((field.offset_bytes, field.reference))
+                        })
+            });
+            fields.insert(
+                super::resource::ResourcePayloadKey::new(field.offset_bytes, field.reference),
+                super::transfer::AggregateEntryLoan {
+                    region: region.id,
+                    loan: field.loan,
+                    initialized,
+                },
+            );
+        }
+        let installed = if fields.is_empty() {
+            install_aggregate_abi_payloads(
+                &mut supplied,
+                program.runtime().memory,
+                pointer,
+                access,
+                |leaf| AbstractAllocationId::abi_entry_payload(function_id.get(), parameter, leaf),
+            )
+        } else {
+            super::transfer::install_aggregate_parameter_payloads(
+                &mut supplied,
+                program.runtime().memory,
+                pointer,
+                access,
+                &fields,
+                |leaf| AbstractAllocationId::abi_entry_payload(function_id.get(), parameter, leaf),
+            )
+        }
         .map_err(|error| CfgAnalysisError::InstructionTransfer {
             block: entry_block.id,
             error,
@@ -782,6 +869,34 @@ pub(super) fn analyze_function_cfg_with_summaries(
             return Err(CfgAnalysisError::ContractInstantiation);
         }
     }
+    if supplied.loans().len() > config.max_active_loans_per_case || config.max_aliases_per_loan == 0
+    {
+        let loans = supplied.loans().keys().copied().collect::<Vec<_>>();
+        for loan in loans {
+            if let Some(loan) = supplied.loan_mut(loan) {
+                loan.set_activity(LoanActivity::MaybeActive);
+            }
+        }
+        supplied.mark_loan_precision_loss(super::resource::LoanPrecisionLoss::ActiveLoanBudget);
+    }
+    supplied.seed_parameter_origins(
+        function_id,
+        &parameters.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+    );
+    contract
+        .install_predicate_entry(
+            &mut supplied,
+            &parameters.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        )
+        .map_err(|(predicate, error)| CfgAnalysisError::PredicateEntry { predicate, error })?;
+    if let Some(pure) = &contract.pure {
+        pure.install_memory_entry(
+            &mut supplied,
+            &parameters.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        )
+        .ok_or(CfgAnalysisError::ContractInstantiation)?;
+    }
+    supplied.seed_scalar_origins();
     analyze_function_cfg_internal(
         program,
         function_id,
@@ -865,6 +980,7 @@ fn analyze_function_cfg_attempt(
     let relation_sources = super::relation::audit::SourceIndex::new(program, function);
     let summary_events = std::cell::RefCell::new(super::summary::EffectJournal::default());
     let evaluation_context = BlockEvaluationContext {
+        function_entry: &function_entry_state,
         loop_blocks: &loop_blocks,
         scalar_anchors: &scalar_anchors,
         summary_context: super::summary::SummaryTransferContext {
@@ -1041,31 +1157,15 @@ fn analyze_function_cfg_attempt(
                 limit: config.max_relation_evidence,
             });
         }
-        let entry_state =
-            evaluated
-                .entry
-                .collapsed()
-                .map_err(|error| CfgAnalysisError::ResourceJoin {
-                    block: block_id,
-                    error,
-                })?;
+        // Compatibility projections are optional views, not analysis inputs.
+        // Distinct valid packages may have no representable single-state join.
+        let entry_state = evaluated.entry.collapsed();
         let instruction_states = evaluated
             .instruction_states
             .iter()
             .map(ConditionalResourceState::collapsed)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| CfgAnalysisError::ResourceJoin {
-                block: block_id,
-                error,
-            })?;
-        let exit_state =
-            evaluated
-                .exit_state
-                .collapsed()
-                .map_err(|error| CfgAnalysisError::ResourceJoin {
-                    block: block_id,
-                    error,
-                })?;
+            .collect();
+        let exit_state = evaluated.exit_state.collapsed();
         block_results.insert(
             block_id,
             CfgBlockAnalysis {
@@ -1084,9 +1184,9 @@ fn analyze_function_cfg_attempt(
         block_results
             .entry(block_id)
             .or_insert_with(|| CfgBlockAnalysis {
-                entry_state: ResourceState::unreachable(),
-                instruction_states: Vec::new(),
-                exit_state: ResourceState::unreachable(),
+                entry_state: Ok(ResourceState::unreachable()),
+                instruction_states: Ok(Vec::new()),
+                exit_state: Ok(ResourceState::unreachable()),
                 entry_conditional_state: ConditionalResourceState::unreachable(),
                 instruction_conditional_states: Vec::new(),
                 exit_conditional_state: ConditionalResourceState::unreachable(),
@@ -1199,6 +1299,7 @@ struct SuccessorState {
 
 #[derive(Clone, Copy)]
 struct BlockEvaluationContext<'analysis, 'unit> {
+    function_entry: &'analysis ResourceState,
     loop_blocks: &'analysis BTreeSet<VirBlockId>,
     scalar_anchors: &'analysis [VirValueId],
     summary_context: super::summary::SummaryTransferContext<'analysis>,
@@ -1345,7 +1446,7 @@ fn classify_boolean_returns(
                 continue;
             }
             for expected in [false, true] {
-                let mut refined = refine_branch(
+                let refined = refine_branch(
                     block.id,
                     case,
                     *value,
@@ -1353,14 +1454,6 @@ fn classify_boolean_returns(
                     direct_comparison_definition(block, *value),
                     context.program.runtime().memory,
                 )?;
-                if refined.path_condition().is_reachable() {
-                    *refined.value_mut(*value).expect("return value exists") =
-                        AbstractValue::Bool(if expected {
-                            AbstractBool::True
-                        } else {
-                            AbstractBool::False
-                        });
-                }
                 cases.push(refined);
             }
         }
@@ -1414,6 +1507,16 @@ fn evaluate_block_step(
     let mut obligations = Vec::new();
     let mut relation_evidence = Vec::new();
     let mut relation_queries = Vec::new();
+    if step == 0 {
+        obligations.extend(predicate::apply(
+            program,
+            VirLocation::BlockEntry {
+                function: function.id,
+                block: block.id,
+            },
+            &mut state,
+        )?);
+    }
     for (index, instruction) in block.instructions.iter().enumerate().skip(step).take(1) {
         let call_site = *instruction_sites.get(&(block.id, index)).ok_or(
             CfgAnalysisError::MissingInstructionSite {
@@ -1525,7 +1628,10 @@ fn evaluate_block_step(
                 &instruction.instruction,
                 memory,
                 &state,
-                transferred.state(),
+                match transferred.states.as_slice() {
+                    [state] => Some(state),
+                    _ => None,
+                },
                 record.obligation(),
             )
             .map_err(|()| CfgAnalysisError::RelationEvidenceMismatch {
@@ -1542,34 +1648,39 @@ fn evaluate_block_step(
         };
         let finding = VerifierFinding::runtime(program, location, instruction.source_span)
             .ok_or(CfgAnalysisError::InvalidFinding { location })?;
-        if let Some(evidence) = (super::provenance::Capture {
-            finding,
-            config,
-            case_ordinal,
-            instruction: &instruction.instruction,
-            before: &state,
-            after: transferred.state(),
-            obligations: transferred.obligations(),
-            query_count: transferred.queries.as_ref().map_or(0, Vec::len),
-            sources: relation_sources,
-        })
-        .record()
-        {
-            provenance_weight = provenance_weight.saturating_add(evidence.weight());
-            provenance_evidence.push(evidence);
-            if provenance_weight
-                .saturating_add(relation_evidence.len())
-                .saturating_add(relation_queries.len())
-                > config.max_relation_evidence
+        for (outcome_ordinal, outcome) in transferred.states.iter().enumerate() {
+            if let Some(evidence) = (super::provenance::Capture {
+                finding,
+                config,
+                case_ordinal,
+                outcome_ordinal,
+                instruction: &instruction.instruction,
+                before: &state,
+                after: outcome,
+                obligations: transferred.obligations(),
+                query_count: transferred.queries.as_ref().map_or(0, Vec::len),
+                sources: relation_sources,
+            })
+            .record()
             {
-                return Err(CfgAnalysisError::RelationEvidenceBudgetExceeded {
-                    block: block.id,
-                    limit: config.max_relation_evidence,
-                });
+                provenance_weight = provenance_weight.saturating_add(evidence.weight());
+                provenance_evidence.push(evidence);
+                if provenance_weight
+                    .saturating_add(relation_evidence.len())
+                    .saturating_add(relation_queries.len())
+                    > config.max_relation_evidence
+                {
+                    return Err(CfgAnalysisError::RelationEvidenceBudgetExceeded {
+                        block: block.id,
+                        limit: config.max_relation_evidence,
+                    });
+                }
             }
         }
-        state = transferred.state().clone();
-        outcomes.extend(transferred.cases.unwrap_or_else(|| vec![state.clone()]));
+        for mut outcome in transferred.states {
+            obligations.extend(predicate::apply(program, location, &mut outcome)?);
+            outcomes.push(outcome);
+        }
     }
 
     if step < block.instructions.len() || !state.path_condition().is_reachable() {
@@ -1697,11 +1808,83 @@ fn evaluate_block_step(
                 .abis
                 .function(function.id)
                 .ok_or(CfgAnalysisError::ContractInstantiation)?;
+            let mut return_view = state.clone();
+            let mut predicate_exports = ReturnPredicateExports::default();
+            let inputs = function
+                .blocks
+                .iter()
+                .find(|b| b.id == function.entry)
+                .ok_or(CfgAnalysisError::MissingBlock(function.entry))?
+                .parameters
+                .iter()
+                .map(|p| p.id)
+                .collect::<Vec<_>>();
+            if let Some(contract) = contracts.and_then(|cs| cs.get(function.contract)) {
+                for interface in contract.predicates.iter().filter(|i| i.metadata.ensures) {
+                    let status = if interface
+                        .export_post(
+                            &mut return_view,
+                            values,
+                            &inputs,
+                            &abi.signature,
+                            context.function_entry,
+                        )
+                        .is_ok()
+                    {
+                        predicate_exports
+                            .payloads
+                            .extend(interface.projected_allocations(&return_view, values, &inputs));
+                        for (_, slot) in &interface.metadata.bindings {
+                            if let Some(AbstractValue::Permission(permission)) = values
+                                .get(*slot as usize)
+                                .and_then(|value| return_view.value(*value))
+                                && let super::resource::PermissionAuthority::Loan(loan) =
+                                    permission.authority()
+                            {
+                                predicate_exports.loans.insert(loan);
+                            }
+                        }
+                        ObligationStatus::Proven
+                    } else {
+                        ObligationStatus::Unknown
+                    };
+                    let location = VirLocation::Terminator {
+                        function: function.id,
+                        block: block.id,
+                    };
+                    obligations.push(cfg_obligation(
+                        program,
+                        block.id,
+                        CfgObligationOrigin::Return,
+                        location,
+                        ResourceObligation::new(
+                            ResourceObligationKind::PredicateInterfaceValid {
+                                predicate: interface.metadata.predicate,
+                                ensures: true,
+                            },
+                            status,
+                            span,
+                        ),
+                    )?);
+                }
+            }
+            let field_exports = super::borrow_interface::stored::field_export_statuses(
+                &return_view,
+                function.id,
+                program.runtime().borrows,
+                &abi.signature,
+                memory,
+                &inputs,
+                values,
+                &predicate_exports.payloads,
+            )
+            .ok_or(CfgAnalysisError::ContractInstantiation)?;
             let transfer = transfer_return(
                 block.id,
-                &state,
+                &return_view,
                 values,
-                &function.signature.results,
+                &predicate_exports,
+                &field_exports,
                 &abi.signature,
                 memory,
                 span,
@@ -1731,6 +1914,7 @@ fn evaluate_block_step(
                         .and_then(|cs| cs.get(function.contract))
                         .filter(|c| c.observes_memory())
                         .map(|_| state.clone()),
+                    field_exports,
                     values: transfer.values,
                 });
             }
@@ -1938,6 +2122,12 @@ fn transfer_edge(
     })
 }
 
+#[derive(Default)]
+struct ReturnPredicateExports {
+    loans: BTreeSet<crate::VirLoanId>,
+    payloads: BTreeSet<AbstractAllocationId>,
+}
+
 struct ReturnTransfer {
     state: ResourceState,
     values: Vec<AbstractValue>,
@@ -1945,15 +2135,21 @@ struct ReturnTransfer {
     successful: bool,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Keep boundary identities, state, evidence and shared budget explicit at the resource adapter"
+)]
 fn transfer_return(
     block: VirBlockId,
     state: &ResourceState,
     values: &[VirValueId],
-    expected: &[VirType],
+    predicate_exports: &ReturnPredicateExports,
+    field_exports: &BTreeMap<crate::VirLoanId, ObligationStatus>,
     abi: &crate::VirAbiSignature,
     memory: &VirMemorySchema,
     source_span: ByteSpan,
 ) -> Result<ReturnTransfer, CfgAnalysisError> {
+    let expected = &abi.physical().results;
     if values.len() != expected.len() {
         return Err(CfgAnalysisError::InvalidReturnShape {
             block,
@@ -1963,6 +2159,11 @@ fn transfer_return(
     }
     let mut facts = Vec::with_capacity(values.len());
     let mut obligations = Vec::new();
+    if let Some(obligation) =
+        super::borrow_interface::returned_slice_obligation(state, values, abi, source_span)
+    {
+        obligations.push(obligation);
+    }
     let mut permission_values = Vec::new();
     let mut transferred_allocations = BTreeSet::new();
     for (index, binding) in abi.parameters().iter().enumerate() {
@@ -1979,16 +2180,30 @@ fn transfer_return(
                 },
                 source_span,
             ));
-            obligations.extend(super::borrow_interface::export_value_obligations(
-                state,
-                loan,
-                abi,
-                memory,
-                source_span,
-            ));
+            // Successful predicate export checked the actual representation
+            // and its unique carrier. It does not promise an initialized T.
+            if !predicate_exports.loans.contains(&loan) {
+                obligations.extend(super::borrow_interface::export_value_obligations(
+                    state,
+                    loan,
+                    abi,
+                    memory,
+                    source_span,
+                ));
+            }
         }
     }
+    for (&loan, status) in field_exports {
+        obligations.push(ResourceObligation::new(
+            ResourceObligationKind::LoanEndedExactlyOnce { loan },
+            *status,
+            source_span,
+        ));
+    }
     for (&loan, fact) in state.loans() {
+        if field_exports.contains_key(&loan) {
+            continue;
+        }
         let status = match fact.activity() {
             LoanActivity::Ended => ObligationStatus::Proven,
             LoanActivity::Active | LoanActivity::Suspended
@@ -2091,7 +2306,19 @@ fn transfer_return(
                 });
             let status = match &payload {
                 Some(super::resource::MovePathState::Available(payload)) => {
-                    aggregate_abi_payload_status(state, memory, leaf.access(), payload)
+                    aggregate_abi_payload_status(
+                        state,
+                        memory,
+                        leaf.access(),
+                        payload,
+                        storage.map(|id| {
+                            (
+                                id,
+                                super::resource::ResourcePayloadKey::new(offset, leaf.access()),
+                            )
+                        }),
+                        matches!(payload.pointer().provenance(), AbstractProvenance::Known(id) if predicate_exports.payloads.contains(&id)),
+                    )
                 }
                 Some(super::resource::MovePathState::Moved) => ObligationStatus::Refuted,
                 Some(super::resource::MovePathState::Unknown) | None => ObligationStatus::Unknown,
@@ -2105,7 +2332,8 @@ fn transfer_return(
                 status,
                 source_span,
             ));
-            if let Some(super::resource::MovePathState::Available(payload)) = payload
+            if leaf.kind() == crate::VirPointerKind::Own
+                && let Some(super::resource::MovePathState::Available(payload)) = payload
                 && let AbstractProvenance::Known(allocation) = payload.pointer().provenance()
             {
                 transferred_allocations.insert(allocation);
@@ -2167,6 +2395,18 @@ fn transfer_return(
                 pending.push(child);
             }
         }
+    }
+    // The current runtime ABI cannot transfer a ghost holder. Retain the
+    // cleanup obligation even when all represented allocations are dead.
+    for holder in state.predicate_instances().keys() {
+        obligations.push(ResourceObligation::new(
+            ResourceObligationKind::PredicateBoundaryRestored {
+                holder: holder.0,
+                function_exit: true,
+            },
+            ObligationStatus::Refuted,
+            source_span,
+        ));
     }
     for (&allocation_id, allocation) in state.allocations() {
         let status = match (allocation.liveness(), allocation.ownership()) {
@@ -2234,6 +2474,9 @@ fn refine_branch(
 
     let mut refined = state.clone();
     refined.conjoin_path_fact(PathFact::boolean(condition, expected));
+    // Contradictions were checked above. An absent abstract value must not
+    // turn an otherwise feasible path into an unreachable one.
+    refined.narrow_bool_value(condition, expected);
     if let Some(comparison) = comparison {
         let effective = if expected {
             comparison

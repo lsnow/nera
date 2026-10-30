@@ -310,6 +310,7 @@ fn cfg_projection_keeps_unpassed_alias_authority_alive() {
         .block(VirBlockId::new(1))
         .expect("successor analyzed")
         .instruction_states()
+        .unwrap()
         .last()
         .expect("loan end state recorded")
         .loan(VirLoanId::new(0))
@@ -385,7 +386,8 @@ fn reborrow_suspends_parent_and_exact_child_end_restores_it() {
     let states = analysis
         .block(nera::VirBlockId::new(0))
         .expect("entry block analyzed")
-        .instruction_states();
+        .instruction_states()
+        .unwrap();
     assert_eq!(
         states[5]
             .loan(VirLoanId::new(0))
@@ -820,7 +822,8 @@ fn loan_budgets_degrade_to_unknown_without_granting_authority() {
     let begin_state = &analysis
         .block(VirBlockId::new(0))
         .expect("entry analyzed")
-        .instruction_states()[4];
+        .instruction_states()
+        .unwrap()[4];
     assert!(begin_state.loan(VirLoanId::new(0)).is_none());
     assert!(matches!(
         begin_state.value(VirValueId::new(5)),

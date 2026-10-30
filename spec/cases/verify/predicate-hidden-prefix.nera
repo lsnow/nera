@@ -1,0 +1,27 @@
+// A hidden count needs no fabricated SSA root when actual bytes already
+// establish its entire possible prefix. The rest of the buffer stays invalid.
+struct Buffer { slots:[u64;4], }
+predicate Ready(p:ptr<Buffer>) {
+    exists used:usize = 0usize;
+    owns(p);
+    initialized(p.slots,0usize..1usize);
+    initialized(p.slots,0usize..used);
+    used<=1usize;
+}
+fn main()->u64 {
+    let p=alloc<Buffer>(1);
+    p.slots[0]=42;
+    fold Ready(p) with (used=1usize);
+    let q=relay(p);
+    unfold Ready(q);
+    let outcome=q.slots[0];
+    free(q);
+    finish Ready(q);
+    return outcome;
+}
+fn relay(p:Own<Buffer>)->Own<Buffer>
+requires Ready(p);
+ensures Ready(result);
+{
+    return p;
+}

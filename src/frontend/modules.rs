@@ -48,6 +48,7 @@ impl ModuleGraph {
                 .map(|d| (&d.name, d.span))
                 .chain(ast.enums.iter().map(|d| (&d.name, d.span)))
                 .chain(ast.functions.iter().map(|d| (&d.name, d.span)))
+                .chain(ast.predicates.iter().map(|d| (&d.name, d.span)))
             {
                 let key = format!("{path}::{name}");
                 if symbols
@@ -142,7 +143,7 @@ impl ModuleGraph {
                 let check = |ty: &AstType, span| {
                     check_public_type(ty, span, i, &scopes, &symbols, &s.generics)
                 };
-                if ast.public.contains(&s.name) {
+                if ast.public.contains(&s.name) && !s.opaque {
                     for f in &s.fields {
                         check(&f.ty, f.span)?;
                     }
@@ -260,6 +261,8 @@ fn check_public_type(
         AstType::ConstArray {
             element: pointee, ..
         }
+        | AstType::OwnPointer { pointee }
+        | AstType::RawPointer { pointee }
         | AstType::Reference { pointee, .. }
         | AstType::Slice { element: pointee }
         | AstType::Array {

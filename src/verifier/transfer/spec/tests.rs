@@ -55,6 +55,254 @@ fn query(authority: bool, initialized: bool) -> SpecMemoryQuery {
     }
 }
 
+fn observing_parent() -> ResourceState {
+    let mut s = state();
+    let provenance = AbstractProvenance::Known(allocation_id());
+    let whole = ByteRange::new(0, 16).unwrap();
+    let child = ByteRange::new(8, 16).unwrap();
+    let parent_id = VirLoanId::new(10);
+    for (loan_id, range, parent, activity, carrier) in [
+        (parent_id, whole, None, LoanActivity::Suspended, id(2)),
+        (
+            VirLoanId::new(11),
+            child,
+            Some(parent_id),
+            LoanActivity::Active,
+            id(4),
+        ),
+    ] {
+        s.define_loan(
+            loan_id,
+            AbstractLoan::new(
+                provenance,
+                range,
+                VirLoanKind::Mutable,
+                crate::VirBorrowRegionId::new(0),
+                parent,
+                activity,
+            )
+            .with_footprint(Some(MemoryFootprint {
+                provenance,
+                access: VirMemoryAccess::core_u64(),
+                stride_bytes: 8,
+                range: AbstractByteRange::Exact(range),
+                envelope: range,
+            }))
+            .with_authority(carrier),
+        )
+        .unwrap();
+        let value = AbstractValue::Permission(
+            AbstractPermission::new(
+                provenance,
+                AbstractByteRange::Exact(range),
+                AccessPermission::Write,
+                FreeCapability::No,
+            )
+            .with_authority(PermissionAuthority::Loan(loan_id)),
+        );
+        if carrier == id(2) {
+            *s.value_mut(carrier).unwrap() = value;
+        } else {
+            s.define_value(carrier, value).unwrap();
+        }
+    }
+    let allocation = s.allocation_mut(allocation_id()).unwrap();
+    allocation.mark_initialized(whole).unwrap();
+    allocation.mark_valid(whole).unwrap();
+    allocation.record_scalar_content(
+        ByteRange::new(0, 8).unwrap(),
+        VirMemoryAccess::core_u64(),
+        AbstractValue::U64(U64Interval::exact(42)),
+    );
+    s
+}
+
+fn contract_read(
+    s: &ResourceState,
+    q: SpecMemoryQuery,
+    limits: VcLimits,
+) -> Option<ObligationStatus> {
+    let before = s.clone();
+    let result = query_contract_memory(
+        s,
+        &VirMemorySchema::core_u64(),
+        q,
+        VirMemoryAccess::core_u64(),
+        &mut VcQueryBudget::new(limits),
+    );
+    assert_eq!(
+        *s, before,
+        "logical observations never restore loans or tokens"
+    );
+    result
+}
+
+#[test]
+fn contract_read_can_observe_disjoint_parent_bytes_without_runtime_authority() {
+    let s = observing_parent();
+    let q = SpecMemoryQuery {
+        access: AccessPermission::Read,
+        ..query(true, true)
+    };
+    assert_eq!(
+        contract_read(&s, q, VcLimits::default()),
+        Some(ObligationStatus::Proven)
+    );
+    assert_eq!(
+        check(&s, q),
+        ObligationStatus::Refuted,
+        "ordinary points-to access retains runtime authority rules"
+    );
+    assert_eq!(
+        contract_read(&s, query(true, true), VcLimits::default()),
+        Some(ObligationStatus::Refuted),
+        "logical observation grants no write access"
+    );
+    let transfer = super::super::transfer_instruction_with_memory(
+        &s,
+        &SpannedVirInstruction {
+            instruction: VirInstruction::Load {
+                result: VirValue {
+                    id: id(5),
+                    ty: VirType::U64,
+                },
+                pointer: id(1),
+                permission: id(2),
+                access: VirMemoryAccess::core_u64(),
+            },
+            source_span: ByteSpan::new(0, 1).unwrap(),
+        },
+        &VirMemorySchema::core_u64(),
+    )
+    .unwrap();
+    assert!(transfer.obligations().iter().any(|obligation| matches!(
+        obligation.kind(),
+        ResourceObligationKind::LoanCompatible { .. }
+    ) && obligation.status()
+        == ObligationStatus::Refuted));
+}
+
+#[test]
+fn contract_parent_observations_require_real_carriers_ranges_and_complete_loan_state() {
+    let q = SpecMemoryQuery {
+        access: AccessPermission::Read,
+        ..query(true, true)
+    };
+    for mutation in 0..14 {
+        let mut s = observing_parent();
+        let parent = VirLoanId::new(10);
+        match mutation {
+            0 => {
+                s.loan_mut(parent).unwrap().remove_authority(id(2));
+            }
+            1 => {
+                let AbstractValue::Permission(p) = s.value_mut(id(2)).unwrap() else {
+                    unreachable!()
+                };
+                p.mark_consumed();
+            }
+            2 => s
+                .loan_mut(parent)
+                .unwrap()
+                .set_activity(LoanActivity::Ended),
+            3 => s
+                .loan_mut(parent)
+                .unwrap()
+                .set_activity(LoanActivity::MaybeActive),
+            4..=6 => {
+                let range = ByteRange::new(0, 16).unwrap();
+                let provenance = if mutation == 6 {
+                    AbstractProvenance::Unknown
+                } else {
+                    AbstractProvenance::Known(allocation_id())
+                };
+                *s.loan_mut(VirLoanId::new(11)).unwrap() = AbstractLoan::new(
+                    provenance,
+                    range,
+                    VirLoanKind::Mutable,
+                    crate::VirBorrowRegionId::new(0),
+                    Some(parent),
+                    LoanActivity::Active,
+                )
+                .with_footprint((mutation != 5).then_some(MemoryFootprint {
+                    provenance,
+                    access: VirMemoryAccess::core_u64(),
+                    stride_bytes: 8,
+                    range: AbstractByteRange::Exact(range),
+                    envelope: range,
+                }))
+                .with_authority(id(4));
+            }
+            7 => s.mark_loan_precision_loss(LoanPrecisionLoss::LoanJoin),
+            8 => s.allocation_mut(allocation_id()).unwrap().mark_dead(),
+            9 => {
+                s.allocation_mut(allocation_id())
+                    .unwrap()
+                    .forget_initialization(ByteRange::new(0, 8).unwrap())
+                    .unwrap();
+            }
+            10 => {
+                let loan = s.loan(parent).unwrap();
+                *s.loan_mut(parent).unwrap() = AbstractLoan::new(
+                    loan.provenance(),
+                    loan.range(),
+                    loan.kind(),
+                    loan.region(),
+                    Some(parent),
+                    loan.activity(),
+                )
+                .with_footprint(loan.footprint())
+                .with_authority(id(2));
+            }
+            11 => {
+                s.allocation_mut(allocation_id())
+                    .unwrap()
+                    .forget_validity(ByteRange::new(0, 8).unwrap())
+                    .unwrap();
+            }
+            12 | 13 => {
+                let AbstractValue::Permission(permission) = *s.value(id(2)).unwrap() else {
+                    unreachable!()
+                };
+                *s.value_mut(id(2)).unwrap() = AbstractValue::Permission(
+                    AbstractPermission::new(
+                        if mutation == 12 {
+                            AbstractProvenance::Unknown
+                        } else {
+                            permission.provenance()
+                        },
+                        if mutation == 13 {
+                            AbstractByteRange::Exact(ByteRange::new(0, 4).unwrap())
+                        } else {
+                            permission.range()
+                        },
+                        permission.access(),
+                        FreeCapability::No,
+                    )
+                    .with_authority(permission.authority()),
+                );
+            }
+            _ => unreachable!(),
+        }
+        assert_ne!(
+            contract_read(&s, q, VcLimits::default()),
+            Some(ObligationStatus::Proven),
+            "mutation {mutation}"
+        );
+    }
+    assert_ne!(
+        contract_read(
+            &observing_parent(),
+            q,
+            VcLimits {
+                max_query_steps: 0,
+                ..Default::default()
+            }
+        ),
+        Some(ObligationStatus::Proven)
+    );
+}
+
 #[test]
 fn symbolic_loop_observations_preserve_access_rules_and_fail_closed() {
     let memory = VirMemorySchema::core_u64();

@@ -1,0 +1,35 @@
+// A borrowed slice consumes a logical initialized prefix at an ordinary call.
+struct Buffer { slots:[u64;4], }
+predicate Ready(p:ptr<Buffer>,index:usize) {
+    exists used:usize;
+    owns(p);
+    initialized(p.slots,0usize..used);
+    index<used;
+    used<=3usize;
+}
+fn main()->u64 {
+    let p=alloc<Buffer>(1);
+    p.slots[0]=7;
+    p.slots[1]=42;
+    fold Ready(p,1usize) with (used=2usize);
+    return consume(p,1usize);
+}
+fn consume(p:Own<Buffer>,index:usize)->u64
+requires Ready(p,index);
+requires index<3usize;
+{
+    unfold Ready(p,index) as (saved);
+    let end=index+1usize;
+    let view=&p.slots[0usize..end];
+    fold Ready(p,index) with (used=saved);
+    let value=read(view,index);
+    unfold Ready(p,index);
+    free(p);
+    finish Ready(p,index);
+    return value;
+}
+
+fn read(view:&[u64],index:usize)->u64 {
+    if index<len(view) { return view[index]; }
+    return 0;
+}

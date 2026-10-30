@@ -1,4 +1,4 @@
-//! Stage 7.8.3.1 pins current boundaries; it does not implement inference.
+//! Historical borrow baseline, checked against the current supported profile.
 use nera::verification::{TextReportMode, render_text, verify_source};
 use nera::{
     FrontendStatus, ObligationStatus, ResourceObligationKind, SourceFile,
@@ -6,71 +6,87 @@ use nera::{
 };
 
 #[test]
-fn future_path_dependent_source_interfaces_are_rejected_before_execution() {
-    // 7.8.3.3 admits a unique source among several inputs. Conditional source
-    // alternatives remain gated until 7.8.3.4, even in uncalled functions.
-    for (name, function) in [
-        (
-            "choose",
-            "fn choose(flag:bool,a:&u64,b:&u64)->&u64{if flag{return a;}return b;}",
-        ),
-        (
-            "choose_mut",
-            "fn choose_mut(flag:bool,a:&mut u64,b:&mut u64)->&mut u64{if flag{return a;}return b;}",
-        ),
-    ] {
-        let mutable = name.ends_with("mut");
-        let borrow = if mutable { "&mut" } else { "&" };
-        let flag = if name.starts_with("choose") {
-            "true,"
-        } else {
-            ""
-        };
-        let call = format!(
-            "let mut a=42;let mut b=7;let r={name}({flag}{borrow} a,{borrow} b);return *r;"
+fn conditional_source_interfaces_check_both_shared_and_mutable_paths() {
+    for borrow in ["&", "&mut"] {
+        let function = format!(
+            "fn choose(flag:bool,a:{borrow} u64,b:{borrow} u64)->{borrow} u64{{if flag{{return a;}}return b;}}"
         );
-        for body in ["return 42;", call.as_str()] {
-            let source = SourceFile::from_text(name, format!("fn main()->u64{{{body}}}{function}"));
-            let output = analyze(&source);
-            assert_eq!(
-                output.status(),
-                FrontendStatus::Unsupported,
-                "{name}: {:?}",
-                output.issues()
-            );
-            assert!(
-                output.issues().iter().any(|issue| issue
-                    .diagnostic()
-                    .message()
-                    .contains("multiple path-dependent input sources")),
-                "{name}: {:?}",
-                output.issues()
-            );
-            assert!(output.hir().is_none());
-            assert!(output.vir().is_none());
+        for (body, expected) in [
+            ("return 42;".to_owned(), 42),
+            (
+                format!(
+                    "let mut a=42;let mut b=7;let r=choose(true,{borrow} a,{borrow} b);return *r;"
+                ),
+                42,
+            ),
+            (
+                format!(
+                    "let mut a=42;let mut b=7;let r=choose(false,{borrow} a,{borrow} b);return *r;"
+                ),
+                7,
+            ),
+        ] {
+            let source =
+                SourceFile::from_text("choose", format!("fn main()->u64{{{body}}}{function}"));
             let report = verify_source(&source, Default::default());
-            assert!(!report.is_checked());
-            assert!(report.validated_unit().is_none());
+            assert!(
+                report.is_checked(),
+                "{}",
+                render_text(&report, TextReportMode::Explain)
+            );
+            assert_eq!(
+                nera::interpret(
+                    report
+                        .validated_unit()
+                        .unwrap()
+                        .resolve()
+                        .unwrap()
+                        .runtime()
+                )
+                .unwrap()
+                .values(),
+                [nera::VirRuntimeValue::U64(expected)]
+            );
         }
     }
 }
 
 #[test]
+fn stored_shared_field_projection_checks_and_executes() {
+    let source = SourceFile::from_text(
+        "stored-reference-field",
+        "struct Holder { value:&u64, } fn main()->u64{let value=42; let holder=Holder{value:&value}; let view=extract(&holder);return *view;} fn extract(holder:&Holder)->&u64{return holder.value;}",
+    );
+    let report = verify_source(&source, Default::default());
+    assert!(
+        report.is_checked(),
+        "{}",
+        render_text(&report, TextReportMode::Explain)
+    );
+    assert_eq!(
+        nera::interpret(
+            report
+                .validated_unit()
+                .unwrap()
+                .resolve()
+                .unwrap()
+                .runtime()
+        )
+        .unwrap()
+        .values(),
+        [nera::VirRuntimeValue::U64(42)]
+    );
+}
+
+#[test]
 fn unsupported_projection_shapes_are_not_misclassified_as_supported_views() {
-    for (name, source, status, message) in [
-        (
-            "stored-reference-field",
-            "struct Holder { value:&u64, } fn extract(holder:&Holder)->&u64{return holder.value;} fn main()->u64{return 42;}",
-            FrontendStatus::Unsupported,
-            "projection",
-        ),
-        (
+    {
+        let (name, source, status, message) = (
             "tail",
             "fn tail(p:&[u64])->&[u64]{if len(p)>0usize{return &p[1..];}return p;} fn main()->u64{return 42;}",
             FrontendStatus::Unsupported,
             "multiple path-dependent input sources",
-        ),
-    ] {
+        );
         let file = SourceFile::from_text(name, source);
         let output = analyze(&file);
         assert_eq!(output.status(), status, "{name}: {:?}", output.issues());

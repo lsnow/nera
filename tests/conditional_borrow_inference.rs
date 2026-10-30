@@ -58,7 +58,7 @@ fn boolean_guard_infers_both_shared_sources() {
             })
     );
     let dump = output.vir().unwrap().stable_dump();
-    assert!(dump.starts_with("vir-unit-v28\n"));
+    assert!(dump.starts_with("vir-unit-v54\n"));
     assert!(dump.contains("borrow-result-alt0["));
     assert!(dump.contains("param0=true"));
     assert!(dump.contains("param0=false"));
@@ -70,6 +70,79 @@ fn boolean_guard_infers_both_shared_sources() {
     nera::backend::X86_64_UNKNOWN_LINUX_GNU
         .codegen_program(unit.runtime())
         .unwrap();
+}
+
+#[test]
+fn early_returns_keep_guards_on_the_remaining_path() {
+    for (first, middle) in [
+        ("if first{return a;}", "if second{return b;}"),
+        ("{if first{return a;}}", "if second{return b;}"),
+        (
+            "if first{return a;}",
+            "if second{return b;}else{let ignored=0;}",
+        ),
+    ] {
+        let source = format!(
+            "fn main()->u64{{let a=10;let b=12;let c=20;let x=choose(true,false,&a,&b,&c);let y=choose(false,true,&a,&b,&c);let z=choose(false,false,&a,&b,&c);return *x+*y+*z;}}
+             fn choose(first:bool,second:bool,a:&u64,b:&u64,c:&u64)->&u64{{{first}{middle}return c;}}"
+        );
+        let output = analyze_checked(&source);
+        let alternatives = &output.hir().unwrap().functions()[1]
+            .signature
+            .borrow_result_alternatives;
+        assert_eq!(alternatives.len(), 3);
+        let last = alternatives
+            .iter()
+            .find(|a| a.relation.parameter == 4)
+            .unwrap();
+        assert_eq!(
+            last.guard,
+            [
+                BorrowGuardAtom::Boolean {
+                    parameter: 0,
+                    expected: false
+                },
+                BorrowGuardAtom::Boolean {
+                    parameter: 1,
+                    expected: false
+                },
+            ]
+        );
+        assert_eq!(
+            interpret(output.vir().unwrap().resolve().unwrap().runtime())
+                .unwrap()
+                .values(),
+            [VirRuntimeValue::U64(42)]
+        );
+    }
+}
+
+#[test]
+fn shadowed_guard_cannot_be_used_as_the_entry_boolean() {
+    let output = analyze(&SourceFile::from_text(
+        "shadowed-guard.nera",
+        "fn main()->u64{return 0;} fn choose(flag:bool,a:&u64,b:&u64)->&u64{{let flag=false;if flag{return a;}}return b;}",
+    ));
+    assert_ne!(output.status(), FrontendStatus::AcceptedProposal);
+    assert!(output.vir().is_none());
+}
+
+#[test]
+fn branch_local_reference_shadow_does_not_escape_into_the_continuation() {
+    let output = analyze_checked(
+        "fn main()->u64{let a=20;let b=22;let x=choose(true,&a,&b);let y=choose(false,&a,&b);return *x+*y;}
+         fn choose(flag:bool,a:&u64,b:&u64)->&u64{let selected=a;if flag{let selected=b;}else{return b;}return selected;}",
+    );
+    let alternatives = &output.hir().unwrap().functions()[1]
+        .signature
+        .borrow_result_alternatives;
+    assert_eq!(alternatives.len(), 2);
+    assert_eq!(
+        interpret(output.vir().unwrap().resolve().unwrap().runtime())
+            .unwrap()
+            .values(),
+        [VirRuntimeValue::U64(42)]
+    );
 }
 
 #[test]

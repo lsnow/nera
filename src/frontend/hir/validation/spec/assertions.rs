@@ -263,7 +263,8 @@ fn valid_pointer(
     authority: bool,
 ) -> bool {
     let ty = match snapshot {
-        HirSpecSnapshot::EntryParameter { .. }
+        HirSpecSnapshot::Opened { .. }
+        | HirSpecSnapshot::EntryParameter { .. }
         | HirSpecSnapshot::LoopEntry { .. }
         | HirSpecSnapshot::Memory { .. }
         | HirSpecSnapshot::Length { .. } => return false,

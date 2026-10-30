@@ -1,0 +1,28 @@
+struct Holder { value: &mut u64, }
+predicate Held(p: ptr<Holder>) {
+    exists item: ptr<u64> = p.value;
+    owns(p);
+    item == p.value;
+}
+fn main() -> u64 {
+    let mut value = 42;
+    let p = alloc<Holder>(1);
+    p.value = &mut value;
+    let view = &mut *p;
+    fold Held(view);
+    inspect(view);
+    unfold Held(view);
+    finish Held(view);
+    let q = p.value;
+    let answer = *q;
+    free(p);
+    return answer;
+}
+fn inspect(p: &mut Holder)
+requires Held(p);
+ensures Held(p);
+{
+    unfold Held(p) as (item);
+    fold Held(p) with (item = item);
+    return;
+}

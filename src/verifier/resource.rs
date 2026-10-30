@@ -17,12 +17,19 @@ mod loop_frame;
 mod loop_partition;
 mod object;
 mod pointer;
+mod predicate;
 mod scalar;
+mod scalar_origin;
+pub(crate) use scalar_origin::{
+    BoolOrigin, ScalarCellSnapshot, ScalarOrigin, ScalarOriginCell, ScalarOriginDifference,
+    ScalarOriginRoot, ScalarOriginTransport,
+};
 mod state;
 use super::relation::{
     difference::{DifferenceLimits, DifferencePremise},
     state::RelationState,
 };
+pub(crate) use contents::HeapInitializationPrefix;
 use initialization::InitializationPrefixes;
 use state::ExpressionRemapper;
 #[cfg(test)]
@@ -32,6 +39,7 @@ pub use bytes::*;
 pub use loan::*;
 pub use object::*;
 pub use pointer::*;
+pub use predicate::*;
 pub use scalar::*;
 pub use state::*;
 

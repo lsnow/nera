@@ -43,6 +43,9 @@ impl Elaborator {
         let function = self.current_function.expect("function contract");
         let contract = self.function_declarations[function.index()].contract;
         for clause in clauses {
+            if self.predicate_contract(clause)? {
+                continue;
+            }
             let position = if clause.ensures {
                 HirSpecContractPosition::Ensures
             } else {
@@ -146,8 +149,9 @@ impl Elaborator {
                 let (pointer, mut layout) =
                     self.resource_pointer(builtin, pointer, expression.span)?;
                 if self.loop_spec_context.is_some()
-                    && let Some(HirTypeKind::Array { element, .. }) =
-                        self.type_definition(layout).map(|t| &t.kind)
+                    && let Some(
+                        HirTypeKind::Array { element, .. } | HirTypeKind::Slice { element, .. },
+                    ) = self.type_definition(layout).map(|t| &t.kind)
                 {
                     layout = *element;
                 }
@@ -259,6 +263,12 @@ impl Elaborator {
             ));
         }
         let (ty, kind) = match &expression.kind {
+            L::Call { .. } => {
+                return Err(FrontendFailure::unsupported(
+                    span,
+                    "logical calls with these operands require a predicate interface",
+                ));
+            }
             L::InitializedRange { .. } | L::ResourceRange { .. } => {
                 return Err(FrontendFailure::unsupported(
                     span,
@@ -555,6 +565,44 @@ impl Elaborator {
                         span,
                     ));
                 }
+                if self.contract_position.is_none()
+                    && let Some((
+                        ty,
+                        crate::predicate_logic::WitnessInput::Opened {
+                            action,
+                            holder,
+                            binder,
+                        },
+                    )) = self
+                        .scopes
+                        .iter()
+                        .rev()
+                        .find_map(|scope| scope.ghost_bindings.get(name))
+                        .copied()
+                {
+                    let ty = match ty {
+                        crate::predicate_logic::LogicType::U64 => self.core_types.u64_,
+                        crate::predicate_logic::LogicType::Usize => self.core_types.usize_,
+                        crate::predicate_logic::LogicType::Bool => self.core_types.bool_,
+                        crate::predicate_logic::LogicType::Resource(_) => {
+                            return Err(FrontendFailure::unsupported(
+                                span,
+                                "resource-position witnesses are not scalar specification values",
+                            ));
+                        }
+                    };
+                    return Ok(self.spec_term(
+                        clause,
+                        ty,
+                        HirSpecTermKind::Snapshot(HirSpecSnapshot::Opened {
+                            function: self.current_function.unwrap(),
+                            action,
+                            holder,
+                            binder,
+                        }),
+                        span,
+                    ));
+                }
                 let binding = self.lookup(name, span)?;
                 if ![
                     self.core_types.bool_,
@@ -747,12 +795,37 @@ impl Elaborator {
         let (pointee, projection) = match projections {
             [] => (pointee, M::Cell),
             [A::Field { name, .. }] => {
+                self.require_representation_access(pointee, span)?;
                 let field = self
                     .fields
                     .iter()
                     .find(|f| f.owner == pointee && f.name == *name)
                     .ok_or_else(fail)?;
                 (field.ty, M::Field(field.id))
+            }
+            fields
+                if (2..=16).contains(&fields.len())
+                    && fields.iter().all(|p| matches!(p, A::Field { .. })) =>
+            {
+                let mut ty = pointee;
+                let mut path = Vec::new();
+                for projection in fields {
+                    let A::Field { name, .. } = projection else {
+                        unreachable!()
+                    };
+                    self.require_representation_access(ty, span)?;
+                    let field = self
+                        .fields
+                        .iter()
+                        .find(|f| f.owner == ty && f.name == *name)
+                        .ok_or_else(fail)?;
+                    path.push(field.id);
+                    ty = field.ty;
+                }
+                (
+                    ty,
+                    M::Fields(crate::SpecMemoryFieldPath::new(&path).ok_or_else(fail)?),
+                )
             }
             [A::Index { index, .. }] => {
                 let element = match self.type_definition(pointee).map(|t| &t.kind) {

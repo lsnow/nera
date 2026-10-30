@@ -15,6 +15,7 @@ use std::fmt;
 
 mod access;
 mod call;
+mod call_frame;
 mod domain;
 mod error;
 mod loan;
@@ -34,11 +35,15 @@ mod tests;
 mod value;
 
 use crate::VirPointerDomain;
-use access::{ObjectAccessFacts, PermissionAccessContext};
-pub(super) use call::ContractTransferContext;
-pub(super) use call::{aggregate_abi_payload_status, install_aggregate_abi_payloads};
+use access::{AccessPurpose, ObjectAccessFacts, PermissionAccessContext};
+pub(super) use call::{
+    AggregateEntryLoan, aggregate_abi_payload_status, install_aggregate_abi_payloads,
+    install_aggregate_parameter_payloads,
+};
+pub(super) use call::{ContractTransferContext, reference_ssa_export_status};
 use domain::pointer_range;
 pub use error::TransferError;
+use obligation::ConditionalInstructionTransfer;
 pub use obligation::{
     InstructionSequenceTransfer, InstructionTransfer, ObligationStatus, ResourceObligation,
     ResourceObligationKind,
@@ -95,7 +100,6 @@ pub fn transfer_instruction_with_memory(
 ) -> Result<InstructionTransfer, TransferError> {
     if !input.path_condition().is_reachable() {
         return Ok(InstructionTransfer {
-            cases: None,
             queries: Some(Vec::new()),
             state: input.clone(),
             obligations: Vec::new(),
@@ -115,12 +119,11 @@ pub(super) fn transfer_instruction_with_loans_and_memory(
     memory: &VirMemorySchema,
     relation_limits: DifferenceLimits,
     loan_context: LoanTransferContext<'_>,
-) -> Result<InstructionTransfer, TransferError> {
+) -> Result<ConditionalInstructionTransfer, TransferError> {
     if !input.path_condition().is_reachable() {
-        return Ok(InstructionTransfer {
-            cases: None,
+        return Ok(ConditionalInstructionTransfer {
             queries: Some(Vec::new()),
-            state: input.clone(),
+            states: vec![input.clone()],
             obligations: Vec::new(),
         });
     }
@@ -133,7 +136,7 @@ pub(super) fn transfer_instruction_with_loans_and_memory(
     );
     transfer.relation_limits = relation_limits;
     transfer.apply(&instruction.instruction)?;
-    Ok(transfer.finish())
+    Ok(transfer.finish_cases())
 }
 
 /// Applies one contract-aware transfer using the program's canonical schema.
@@ -144,12 +147,11 @@ pub(super) fn transfer_instruction_with_contracts_and_memory(
     memory: &VirMemorySchema,
     relation_limits: DifferenceLimits,
     loan_context: LoanTransferContext<'_>,
-) -> Result<InstructionTransfer, TransferError> {
+) -> Result<ConditionalInstructionTransfer, TransferError> {
     if !input.path_condition().is_reachable() {
-        return Ok(InstructionTransfer {
-            cases: None,
+        return Ok(ConditionalInstructionTransfer {
             queries: Some(Vec::new()),
-            state: input.clone(),
+            states: vec![input.clone()],
             obligations: Vec::new(),
         });
     }
@@ -162,7 +164,7 @@ pub(super) fn transfer_instruction_with_contracts_and_memory(
     );
     transfer.relation_limits = relation_limits;
     transfer.apply(&instruction.instruction)?;
-    Ok(transfer.finish())
+    Ok(transfer.finish_cases())
 }
 
 /// Applies stage-5.2 transfer to a straight-line VIR instruction sequence.
@@ -359,7 +361,57 @@ impl<'environment> TransferBuilder<'environment> {
         }
     }
 
-    fn finish(mut self) -> InstructionTransfer {
+    fn finish(self) -> InstructionTransfer {
+        // Public straight-line transfers have no summary context and cannot
+        // split. Keep their single-state API separate from CFG alternatives.
+        assert!(self.cases.is_none());
+        let mut transfer = self.finish_cases();
+        InstructionTransfer {
+            state: transfer.states.pop().expect("single transfer state"),
+            queries: transfer.queries,
+            obligations: transfer.obligations,
+        }
+    }
+
+    fn finish_cases(mut self) -> ConditionalInstructionTransfer {
+        // Check every body-summary alternative, not just the joined state.
+        let states = self
+            .cases
+            .as_deref()
+            .unwrap_or(std::slice::from_ref(&self.state));
+        let mut checks = std::collections::BTreeMap::new();
+        for state in states.iter().filter(|s| s.path_condition().is_reachable()) {
+            for (holder, cleanup, valid) in state
+                .closed_predicate_checks()
+                .into_iter()
+                .map(|(h, valid)| (h, false, valid))
+                .chain(
+                    state
+                        .predicate_cleanup_checks()
+                        .into_iter()
+                        .map(|(h, valid)| (h, true, valid)),
+                )
+            {
+                checks
+                    .entry((holder, cleanup))
+                    .and_modify(|v| *v &= valid)
+                    .or_insert(valid);
+            }
+        }
+        for ((holder, cleanup), valid) in checks {
+            self.require(
+                if cleanup {
+                    ResourceObligationKind::PredicateCleanupPreserved { holder: holder.0 }
+                } else {
+                    ResourceObligationKind::PredicateInvariantPreserved { holder: holder.0 }
+                },
+                if valid {
+                    ObligationStatus::Proven
+                } else {
+                    ObligationStatus::Unknown
+                },
+            );
+        }
         if self
             .obligations
             .iter()
@@ -368,10 +420,9 @@ impl<'environment> TransferBuilder<'environment> {
             self.state = ResourceState::unreachable();
             self.cases = None;
         }
-        InstructionTransfer {
-            cases: self.cases,
+        ConditionalInstructionTransfer {
+            states: self.cases.unwrap_or_else(|| vec![self.state]),
             queries: self.relations.queries.finish(),
-            state: self.state,
             obligations: self.obligations,
         }
     }
@@ -460,6 +511,7 @@ impl<'environment> TransferBuilder<'environment> {
             }
             VirInstruction::Constant { result, value } => {
                 let fact = match value {
+                    VirConstant::NullPointer(_) => AbstractValue::Pointer(unknown_pointer()),
                     VirConstant::U64(value) => AbstractValue::U64(U64Interval::exact(*value)),
                     VirConstant::Bool(true) => AbstractValue::Bool(AbstractBool::True),
                     VirConstant::Bool(false) => AbstractValue::Bool(AbstractBool::False),
@@ -490,6 +542,30 @@ impl<'environment> TransferBuilder<'environment> {
                     AbstractValue::U64(add_word_intervals(left_interval, right_interval)),
                 )?;
                 self.set_word_expression(result.id, expression);
+                if left_interval
+                    .upper()
+                    .checked_add(right_interval.upper())
+                    .is_some()
+                {
+                    let origin = self
+                        .state
+                        .word_origin(*left)
+                        .zip(right_interval.exact_value())
+                        .or_else(|| {
+                            self.state
+                                .word_origin(*right)
+                                .zip(left_interval.exact_value())
+                        })
+                        .and_then(|(origin, n)| origin.add(n))
+                        .or_else(|| {
+                            self.state
+                                .word_origin(*left)?
+                                .sum(self.state.word_origin(*right)?)
+                        });
+                    if let Some(origin) = origin {
+                        self.state.set_word_origin(result.id, origin);
+                    }
+                }
                 // Establish mathematical addition only from an independent
                 // no-wrap check on the actual pre-operation intervals.
                 if left_interval
@@ -562,6 +638,7 @@ impl<'environment> TransferBuilder<'environment> {
                 access,
             } => {
                 scalar_fact(self.memory, &self.state, *value, *access)?;
+                let prefixes = self.scalar_write_prefix_frame(*pointer, *access);
                 self.memory_access(
                     *pointer,
                     *permission,
@@ -571,6 +648,7 @@ impl<'environment> TransferBuilder<'environment> {
                     *access,
                 )?;
                 self.record_scalar_write(*pointer, *value, *access);
+                self.restore_scalar_write_prefix_frame(prefixes);
                 Ok(())
             }
             VirInstruction::Write {
@@ -580,6 +658,7 @@ impl<'environment> TransferBuilder<'environment> {
                 access,
             } => {
                 scalar_fact(self.memory, &self.state, *value, *access)?;
+                let prefixes = self.scalar_write_prefix_frame(*pointer, *access);
                 self.memory_access(
                     *pointer,
                     *permission,
@@ -589,6 +668,7 @@ impl<'environment> TransferBuilder<'environment> {
                     *access,
                 )?;
                 self.record_scalar_write(*pointer, *value, *access);
+                self.restore_scalar_write_prefix_frame(prefixes);
                 Ok(())
             }
             VirInstruction::Load {
@@ -612,6 +692,10 @@ impl<'environment> TransferBuilder<'environment> {
                     Some(crate::VirMemoryTypeKind::Integer(
                         crate::VirIntegerType::U64 | crate::VirIntegerType::Usize,
                     )) => AbstractValue::U64(U64Interval::unknown()),
+                    Some(crate::VirMemoryTypeKind::Pointer {
+                        kind: crate::VirPointerKind::Raw,
+                        ..
+                    }) => AbstractValue::Pointer(unknown_pointer()),
                     _ => return Err(TransferError::InvalidValidatedMemoryAccess(*access)),
                 };
                 let value = if self.obligations.iter().all(|o| o.is_proven()) {
@@ -619,7 +703,9 @@ impl<'environment> TransferBuilder<'environment> {
                 } else {
                     value
                 };
-                self.define(*result, value)
+                self.define(*result, value)?;
+                self.bind_scalar_read_prefixes(*pointer, result.id, *access);
+                Ok(())
             }
             VirInstruction::EnumDiscriminant {
                 result,
@@ -634,6 +720,7 @@ impl<'environment> TransferBuilder<'environment> {
                 access,
             } => {
                 scalar_fact(self.memory, &self.state, *value, *access)?;
+                let prefixes = self.scalar_write_prefix_frame(*pointer, *access);
                 self.memory_access(
                     *pointer,
                     *permission,
@@ -643,6 +730,7 @@ impl<'environment> TransferBuilder<'environment> {
                     *access,
                 )?;
                 self.record_scalar_write(*pointer, *value, *access);
+                self.restore_scalar_write_prefix_frame(prefixes);
                 Ok(())
             }
             VirInstruction::ResourceInitialize {
@@ -1225,8 +1313,9 @@ fn copyable_object_status(memory: &VirMemorySchema, access: VirMemoryAccess) -> 
         })
         && memory.object_shape(access).is_ok_and(|shape| {
             shape.resource_leaves().iter().all(|leaf| {
-                leaf.kind() == VirPointerKind::Reference
-                    && leaf.mutability() == VirMutability::Const
+                leaf.kind() == VirPointerKind::Raw
+                    || (leaf.kind() == VirPointerKind::Reference
+                        && leaf.mutability() == VirMutability::Const)
             })
         });
     if supported {
@@ -1240,10 +1329,6 @@ fn movable_object_status(memory: &VirMemorySchema, shape: &VirObjectShape) -> Ob
     if memory
         .type_capabilities(shape.access().ty)
         .is_none_or(|capability| capability.size != crate::SizeCapability::Sized)
-        || shape
-            .resource_leaves()
-            .iter()
-            .any(|leaf| leaf.kind() == VirPointerKind::Raw)
     {
         ObligationStatus::Refuted
     } else {
@@ -1278,13 +1363,9 @@ fn builtin_droppable_object_status(
                 crate::DropCapability::TrivialDrop | crate::DropCapability::BuiltinDrop
             ) && capability.size == crate::SizeCapability::Sized
         })
-        && memory.object_shape(access).is_ok_and(|shape| {
-            !shape.resource_leaves().is_empty()
-                && shape
-                    .resource_leaves()
-                    .iter()
-                    .all(|leaf| leaf.kind() != VirPointerKind::Raw)
-        });
+        && memory
+            .object_shape(access)
+            .is_ok_and(|shape| !shape.resource_leaves().is_empty());
     if supported {
         ObligationStatus::Proven
     } else {
@@ -1293,6 +1374,20 @@ fn builtin_droppable_object_status(
 }
 
 pub(super) fn object_drop_payload_status(
+    state: &ResourceState,
+    payload: &TypedResourcePayload,
+) -> ObligationStatus {
+    let empty = match payload.pointer().provenance() {
+        AbstractProvenance::Known(id) => state.allocation(id).map_or(
+            ObligationStatus::Unknown,
+            allocation_resource_payload_empty_status,
+        ),
+        _ => ObligationStatus::Unknown,
+    };
+    combine_statuses([object_drop_owner_status(state, payload), empty])
+}
+
+pub(super) fn object_drop_owner_status(
     state: &ResourceState,
     payload: &TypedResourcePayload,
 ) -> ObligationStatus {
@@ -1312,7 +1407,6 @@ pub(super) fn object_drop_payload_status(
         liveness_status(allocation.liveness()),
         ownership_status(allocation.ownership()),
         full_permission_status(permission.range(), allocation.size_bytes()),
-        allocation_resource_payload_empty_status(allocation),
     ])
 }
 
@@ -1604,6 +1698,10 @@ fn scalar_fact(
         Some(crate::VirMemoryTypeKind::Integer(
             crate::VirIntegerType::U64 | crate::VirIntegerType::Usize,
         )) => word_fact(state, id).map(|_| ()),
+        Some(crate::VirMemoryTypeKind::Pointer {
+            kind: crate::VirPointerKind::Raw,
+            ..
+        }) => pointer_fact(state, id).map(|_| ()),
         _ => Err(TransferError::InvalidValidatedMemoryAccess(access)),
     }
 }
@@ -2026,6 +2124,26 @@ fn loan_authority_access_status(
     limits: DifferenceLimits,
     pairs: &TransferRelations,
 ) -> ObligationStatus {
+    combine_statuses([
+        state
+            .loan(loan_id)
+            .map_or(ObligationStatus::Unknown, |loan| {
+                loan_activity_access_status(loan.activity())
+            }),
+        loan_authority_base_access_status(state, loan_id, permission, access, limits, pairs),
+    ])
+}
+
+/// Actual carrier, provenance, range and mutability, independent of whether
+/// the caller is executing an access or checking a read-only observation.
+fn loan_authority_base_access_status(
+    state: &ResourceState,
+    loan_id: VirLoanId,
+    permission: VirValueId,
+    access: LoanAccess,
+    limits: DifferenceLimits,
+    pairs: &TransferRelations,
+) -> ObligationStatus {
     let Some(loan) = state.loan(loan_id) else {
         return ObligationStatus::Unknown;
     };
@@ -2058,7 +2176,6 @@ fn loan_authority_access_status(
         } else {
             ObligationStatus::Refuted
         },
-        loan_activity_access_status(loan.activity()),
         provenance_equal_status(loan.provenance(), access.pointer.provenance()),
         range,
         capability,

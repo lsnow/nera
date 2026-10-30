@@ -717,6 +717,23 @@ struct Allocation {
     bytes: BTreeMap<u64, u8>,
     objects: Vec<RuntimeObject>,
     resource_payloads: BTreeMap<RuntimeResourcePayloadKey, RuntimeOwnedPayload>,
+    raw_payloads: BTreeMap<RuntimeResourcePayloadKey, (u64, VirRuntimePointer)>,
+}
+
+impl Allocation {
+    fn invalidate_raw_byte(&mut self, offset: u64) {
+        self.raw_payloads.retain(|key, (width, _)| {
+            offset < key.offset_bytes || offset - key.offset_bytes >= *width
+        });
+    }
+    fn write_byte(&mut self, offset: u64, byte: u8) {
+        self.invalidate_raw_byte(offset);
+        self.bytes.insert(offset, byte);
+    }
+    fn remove_byte(&mut self, offset: &u64) {
+        self.invalidate_raw_byte(*offset);
+        self.bytes.remove(offset);
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -744,6 +761,7 @@ enum RuntimeAllocationKind {
     LocalStorage,
 }
 
+#[derive(Clone)]
 struct BlockFrame {
     values: BTreeMap<VirValueId, VirRuntimeValue>,
     consumed_permissions: BTreeSet<VirValueId>,
@@ -759,6 +777,7 @@ struct RuntimeBlockArgument {
 struct CallReturn {
     results: Vec<VirValue>,
     loan_authorities: Vec<loan_shadow::RuntimeBorrowReturn>,
+    stored_borrows: Vec<loan_shadow::RuntimeStoredBorrowReturn>,
     source_span: ByteSpan,
 }
 
@@ -952,6 +971,7 @@ struct Interpreter {
     config: VirInterpreterConfig,
     steps: u64,
     allocation_instances: allocation_instance::RuntimeInstanceSequence,
+    loan_frame_instances: allocation_instance::RuntimeInstanceSequence,
     allocations: BTreeMap<u64, Allocation>,
     trace: Vec<VirTraceEvent>,
 }
@@ -962,6 +982,7 @@ impl Interpreter {
             config,
             steps: 0,
             allocation_instances: allocation_instance::RuntimeInstanceSequence::default(),
+            loan_frame_instances: allocation_instance::RuntimeInstanceSequence::default(),
             allocations: BTreeMap::new(),
             trace: Vec::new(),
         }
@@ -1006,6 +1027,7 @@ impl Interpreter {
             Vec::new(),
             None,
             entry_function.source_span,
+            self.fresh_loan_frame(entry_function.source_span)?,
         )?];
         loop {
             let frame_index = stack.len().checked_sub(1).ok_or_else(|| {
@@ -1097,7 +1119,7 @@ impl Interpreter {
                         aliases_per_loan: self.config.max_aliases_per_loan,
                         reborrow_depth: self.config.max_reborrow_depth,
                     };
-                    let loan_authorities = frame.loan_shadow.prepare_call(
+                    let borrow_call = frame.loan_shadow.prepare_call(
                         &frame.block_frame,
                         arguments,
                         results,
@@ -1115,20 +1137,34 @@ impl Interpreter {
                         arguments,
                         Some(CallReturn {
                             results: results.clone(),
-                            loan_authorities,
+                            loan_authorities: borrow_call.returns,
+                            stored_borrows: Vec::new(),
                             source_span: spanned.source_span,
                         }),
                         spanned.source_span,
+                        self.fresh_loan_frame(spanned.source_span)?,
                     )?;
                     if target.abi.is_some() {
                         callee_frame.loan_shadow.import_parameters(
                             &mut callee_frame.block_frame,
                             callee,
                             program.as_runtime(),
+                            &stack[frame_index].loan_shadow,
+                            &borrow_call.imports,
                             limits,
                             spanned.source_span,
                         )?;
                     }
+                    let stored_borrows = callee_frame.loan_shadow.import_stored_parameters(
+                        &stack[frame_index].loan_shadow,
+                        &mut self.allocations,
+                        &callee_frame.block_frame,
+                        callee,
+                        program.as_runtime(),
+                        limits,
+                        spanned.source_span,
+                    )?;
+                    callee_frame.call_return.as_mut().unwrap().stored_borrows = stored_borrows;
                     stack.push(callee_frame);
                 } else {
                     let frame = &mut stack[frame_index];
@@ -1214,7 +1250,53 @@ impl Interpreter {
                         abi,
                         block.terminator.source_span,
                     )?;
-                    frame.loan_shadow.export_parameters(
+                    {
+                        let (callers, current) = stack.split_at_mut(frame_index);
+                        let frame = &mut current[0];
+                        if let Some(call) = &mut frame.call_return
+                            && !call.stored_borrows.is_empty()
+                        {
+                            let caller = callers.last_mut().ok_or_else(|| {
+                                error(
+                                    VirExecutionErrorKind::InvalidRuntimeState,
+                                    block.terminator.source_span,
+                                )
+                            })?;
+                            let destinations = interface::stored_destinations(
+                                program.memory,
+                                &frame.result_buffers,
+                                abi,
+                                &frame.block_frame,
+                                values,
+                                block.terminator.source_span,
+                            )?;
+                            let value_exits = interface::stored_value_exits(
+                                program.memory,
+                                abi,
+                                values,
+                                &call.results,
+                                block.terminator.source_span,
+                            )?;
+                            let restored = frame.loan_shadow.restore_stored_parameters(
+                                &mut caller.loan_shadow,
+                                &mut self.allocations,
+                                program.memory,
+                                &mut frame.block_frame,
+                                &call.stored_borrows,
+                                &destinations,
+                                &value_exits,
+                                RuntimeLoanLimits {
+                                    active_loans: self.config.max_active_loans,
+                                    aliases_per_loan: self.config.max_aliases_per_loan,
+                                    reborrow_depth: self.config.max_reborrow_depth,
+                                },
+                                block.terminator.source_span,
+                            )?;
+                            call.loan_authorities.extend(restored);
+                        }
+                    }
+                    let frame = &mut stack[frame_index];
+                    let returned_authorities = frame.loan_shadow.export_parameters(
                         &frame.block_frame,
                         values,
                         abi,
@@ -1223,20 +1305,6 @@ impl Interpreter {
                     stack[frame_index]
                         .loan_shadow
                         .finish(block.terminator.source_span)?;
-                    let returned_authorities = values
-                        .iter()
-                        .map(|value| {
-                            stack[frame_index]
-                                .block_frame
-                                .loan_authority(*value)
-                                .map(|authority| {
-                                    stack[frame_index]
-                                        .loan_shadow
-                                        .root_loan(authority.loan, block.terminator.source_span)
-                                })
-                                .transpose()
-                        })
-                        .collect::<Result<Vec<_>, _>>()?;
                     let values = stack[frame_index]
                         .block_frame
                         .active_values(values, block.terminator.source_span)?;
@@ -1381,6 +1449,23 @@ impl Interpreter {
                 left,
                 right,
             } => {
+                if matches!(
+                    predicate,
+                    super::VirIntegerPredicate::Equal | super::VirIntegerPredicate::NotEqual
+                ) {
+                    let a = pointer_value(frame, *left, span)?;
+                    let b = pointer_value(frame, *right, span)?;
+                    let equal = a.allocation == b.allocation && a.offset_bytes == b.offset_bytes;
+                    return frame.insert(
+                        *result,
+                        VirRuntimeValue::Bool(if *predicate == super::VirIntegerPredicate::Equal {
+                            equal
+                        } else {
+                            !equal
+                        }),
+                        span,
+                    );
+                }
                 let (a, b) = self.pointer_pair(frame, *left, *right, span)?;
                 frame.insert(
                     *result,
@@ -1402,6 +1487,19 @@ impl Interpreter {
             }
             VirInstruction::Constant { result, value } => {
                 let value = match value {
+                    VirConstant::NullPointer(access) => {
+                        VirRuntimeValue::Pointer(VirRuntimePointer {
+                            allocation: u64::MAX,
+                            offset_bytes: 0,
+                            access: *access,
+                            view_range: None,
+                            paths: super::VirPointerPaths {
+                                object: None,
+                                domain: None,
+                            },
+                            domain: crate::VirPointerDomain::Unknown,
+                        })
+                    }
                     VirConstant::U64(value) => VirRuntimeValue::U64(*value),
                     VirConstant::Bool(value) => VirRuntimeValue::Bool(*value),
                 };
@@ -1482,6 +1580,7 @@ impl Interpreter {
                             bytes: BTreeMap::new(),
                             objects,
                             resource_payloads: BTreeMap::new(),
+                            raw_payloads: BTreeMap::new(),
                         },
                     )
                     .is_some()
@@ -1542,6 +1641,7 @@ impl Interpreter {
                                 .into_iter()
                                 .collect(),
                             resource_payloads: BTreeMap::new(),
+                            raw_payloads: BTreeMap::new(),
                         },
                     )
                     .is_some()
@@ -1579,6 +1679,17 @@ impl Interpreter {
                 access,
             } => {
                 let pointer = pointer_value(frame, *pointer, span)?;
+                let raw = if matches!(
+                    memory.kind(access.ty),
+                    Some(VirMemoryTypeKind::Pointer {
+                        kind: super::VirPointerKind::Raw,
+                        ..
+                    })
+                ) {
+                    Some(pointer_value(frame, *value, span)?)
+                } else {
+                    None
+                };
                 let value = scalar_value(memory, frame, *value, *access, span)?;
                 self.live_allocation(pointer.allocation, span)?;
                 let permission = frame.permission(*permission, span)?;
@@ -1588,7 +1699,25 @@ impl Interpreter {
                     value,
                     WriteKind::Initialize,
                     MemoryAccessContext::new(memory, *access, span),
-                )
+                )?;
+                if let Some(raw) = raw {
+                    let width = memory
+                        .layout(access.layout)
+                        .expect("validated access")
+                        .size_bytes;
+                    self.allocations
+                        .get_mut(&pointer.allocation)
+                        .expect("checked allocation")
+                        .raw_payloads
+                        .insert(
+                            RuntimeResourcePayloadKey {
+                                offset_bytes: pointer.offset_bytes,
+                                access: *access,
+                            },
+                            (width, raw),
+                        );
+                }
+                Ok(())
             }
             VirInstruction::Write {
                 pointer,
@@ -1597,6 +1726,17 @@ impl Interpreter {
                 access,
             } => {
                 let pointer = pointer_value(frame, *pointer, span)?;
+                let raw = if matches!(
+                    memory.kind(access.ty),
+                    Some(VirMemoryTypeKind::Pointer {
+                        kind: super::VirPointerKind::Raw,
+                        ..
+                    })
+                ) {
+                    Some(pointer_value(frame, *value, span)?)
+                } else {
+                    None
+                };
                 let value = scalar_value(memory, frame, *value, *access, span)?;
                 self.live_allocation(pointer.allocation, span)?;
                 let permission = frame.permission(*permission, span)?;
@@ -1606,7 +1746,25 @@ impl Interpreter {
                     value,
                     WriteKind::Write,
                     MemoryAccessContext::new(memory, *access, span),
-                )
+                )?;
+                if let Some(raw) = raw {
+                    let width = memory
+                        .layout(access.layout)
+                        .expect("validated access")
+                        .size_bytes;
+                    self.allocations
+                        .get_mut(&pointer.allocation)
+                        .expect("checked allocation")
+                        .raw_payloads
+                        .insert(
+                            RuntimeResourcePayloadKey {
+                                offset_bytes: pointer.offset_bytes,
+                                access: *access,
+                            },
+                            (width, raw),
+                        );
+                }
+                Ok(())
             }
             VirInstruction::Load {
                 result,
@@ -1627,6 +1785,22 @@ impl Interpreter {
                     Some(VirMemoryTypeKind::Integer(
                         super::VirIntegerType::U64 | super::VirIntegerType::Usize,
                     )) => VirRuntimeValue::U64(value),
+                    Some(VirMemoryTypeKind::Pointer {
+                        kind: super::VirPointerKind::Raw,
+                        ..
+                    }) => {
+                        let key = RuntimeResourcePayloadKey {
+                            offset_bytes: pointer.offset_bytes,
+                            access: *access,
+                        };
+                        let (_, raw) = self.allocations[&pointer.allocation]
+                            .raw_payloads
+                            .get(&key)
+                            .ok_or_else(|| {
+                                error(VirExecutionErrorKind::InvalidRuntimeState, span)
+                            })?;
+                        VirRuntimeValue::Pointer(*raw)
+                    }
                     _ => return Err(error(VirExecutionErrorKind::InvalidRuntimeState, span)),
                 };
                 frame.insert(*result, value, span)
@@ -1650,6 +1824,17 @@ impl Interpreter {
                 access,
             } => {
                 let pointer = pointer_value(frame, *pointer, span)?;
+                let raw = if matches!(
+                    memory.kind(access.ty),
+                    Some(VirMemoryTypeKind::Pointer {
+                        kind: super::VirPointerKind::Raw,
+                        ..
+                    })
+                ) {
+                    Some(pointer_value(frame, *value, span)?)
+                } else {
+                    None
+                };
                 let value = scalar_value(memory, frame, *value, *access, span)?;
                 self.live_allocation(pointer.allocation, span)?;
                 let permission = frame.permission(*permission, span)?;
@@ -1659,7 +1844,25 @@ impl Interpreter {
                     value,
                     WriteKind::Store,
                     MemoryAccessContext::new(memory, *access, span),
-                )
+                )?;
+                if let Some(raw) = raw {
+                    let width = memory
+                        .layout(access.layout)
+                        .expect("validated access")
+                        .size_bytes;
+                    self.allocations
+                        .get_mut(&pointer.allocation)
+                        .expect("checked allocation")
+                        .raw_payloads
+                        .insert(
+                            RuntimeResourcePayloadKey {
+                                offset_bytes: pointer.offset_bytes,
+                                access: *access,
+                            },
+                            (width, raw),
+                        );
+                }
+                Ok(())
             }
             VirInstruction::ResourceInitialize {
                 destination,
@@ -2899,7 +3102,7 @@ impl Interpreter {
         }
         for (index, byte) in encoded.into_iter().enumerate() {
             let offset = pointer.offset_bytes + u64::try_from(index).expect("small scalar layout");
-            allocation.bytes.insert(offset, byte);
+            allocation.write_byte(offset, byte);
         }
         Ok(())
     }
@@ -3048,7 +3251,7 @@ impl Interpreter {
             .expect("checked live resource source");
         allocation.resource_payloads.remove(&key);
         for offset in source.offset_bytes..source.offset_bytes + width {
-            allocation.bytes.remove(&offset);
+            allocation.remove_byte(&offset);
         }
         Ok(payload)
     }
@@ -3195,15 +3398,26 @@ impl Interpreter {
                 })
                 .collect::<Vec<_>>()
         };
+        // Address bytes have a separate provenance shadow. Copy that shadow
+        // with the active bytes, without introducing any resource authority.
+        let source_raw = self.allocations[&source.allocation]
+            .raw_payloads
+            .iter()
+            .filter_map(|(key, &(width, pointer))| {
+                let relative = key.offset_bytes.checked_sub(source.offset_bytes)?;
+                let end = relative.checked_add(width)?;
+                (end <= shape.size_bytes()
+                    && (relative..end).all(|byte| source_offsets.contains(&byte)))
+                .then_some((relative, key.access, (width, pointer)))
+            })
+            .collect::<Vec<_>>();
         {
             let allocation = self
                 .allocations
                 .get_mut(&destination.allocation)
                 .expect("checked live destination");
             for relative in destination_offsets.union(&source_offsets) {
-                allocation
-                    .bytes
-                    .remove(&(destination.offset_bytes + relative));
+                allocation.remove_byte(&(destination.offset_bytes + relative));
             }
             for (relative, byte) in &source_bytes {
                 allocation
@@ -3219,6 +3433,15 @@ impl Interpreter {
                     *payload,
                 );
             }
+            for (relative, access, payload) in source_raw {
+                allocation.raw_payloads.insert(
+                    RuntimeResourcePayloadKey {
+                        offset_bytes: destination.offset_bytes + relative,
+                        access,
+                    },
+                    payload,
+                );
+            }
         }
         if matches!(source_mode, VirObjectSourceMode::Move) {
             let allocation = self
@@ -3226,7 +3449,7 @@ impl Interpreter {
                 .get_mut(&source.allocation)
                 .expect("checked live source");
             for relative in source_offsets {
-                allocation.bytes.remove(&(source.offset_bytes + relative));
+                allocation.remove_byte(&(source.offset_bytes + relative));
             }
             for (relative, access, _) in source_payloads {
                 allocation
@@ -3261,6 +3484,22 @@ impl Interpreter {
                 offset_bytes: pointer.offset_bytes + leaf.bytes().start_bytes(),
                 access: leaf.access(),
             };
+            if leaf.kind() == super::VirPointerKind::Raw {
+                if !self.allocations[&pointer.allocation]
+                    .raw_payloads
+                    .contains_key(&key)
+                {
+                    return Err(error(
+                        VirExecutionErrorKind::InvalidObjectRepresentation {
+                            allocation: pointer.allocation,
+                            offset_bytes: key.offset_bytes,
+                            access: key.access,
+                        },
+                        source_span,
+                    ));
+                }
+                continue;
+            }
             let payload = self.allocations[&pointer.allocation]
                 .resource_payloads
                 .get(&key)
@@ -3330,7 +3569,7 @@ impl Interpreter {
             .get_mut(&pointer.allocation)
             .expect("checked storage reset");
         for offset in offsets {
-            allocation.bytes.remove(&(pointer.offset_bytes + offset));
+            allocation.remove_byte(&(pointer.offset_bytes + offset));
         }
         self.register_runtime_object(pointer, &shape, source_span)
     }
@@ -3368,7 +3607,7 @@ impl Interpreter {
             .get_mut(&pointer.allocation)
             .expect("checked live object");
         for relative in offsets {
-            allocation.bytes.remove(&(pointer.offset_bytes + relative));
+            allocation.remove_byte(&(pointer.offset_bytes + relative));
         }
         self.register_runtime_object(pointer, &shape, source_span)?;
         Ok(())
@@ -3383,6 +3622,25 @@ impl Interpreter {
         access: VirMemoryAccess,
         source_span: ByteSpan,
     ) -> Result<(), VirExecutionError> {
+        let plan = memory.object_drop_plan(access).ok_or_else(|| {
+            error(
+                VirExecutionErrorKind::UnsupportedObjectEffectType { access },
+                source_span,
+            )
+        })?;
+        self.object_drop_contents(memory, loan_shadow, pointer, permission, &plan, source_span)
+    }
+
+    fn object_drop_contents(
+        &mut self,
+        memory: &VirMemorySchema,
+        loan_shadow: &mut RuntimeLoanShadow,
+        pointer: VirRuntimePointer,
+        permission: VirRuntimePermission,
+        plan: &super::ObjectDropPlan,
+        source_span: ByteSpan,
+    ) -> Result<(), VirExecutionError> {
+        let access = plan.access;
         self.check_access(
             pointer,
             permission,
@@ -3419,6 +3677,9 @@ impl Interpreter {
         let all_offsets = self.active_object_offsets(memory, pointer, &shape, source_span)?;
         let mut owned = Vec::new();
         for leaf in shape.resource_leaves() {
+            if leaf.kind() == super::VirPointerKind::Raw {
+                continue;
+            }
             if self
                 .path_inactive_variant(memory, pointer, &shape, leaf.path(), source_span)?
                 .is_some()
@@ -3484,6 +3745,27 @@ impl Interpreter {
                             source_span,
                         ));
                     }
+                    if let Some(child) =
+                        plan.child(key.offset_bytes - pointer.offset_bytes, key.access)
+                    {
+                        // Validate the outer owner before touching its children.
+                        if !payload.permission.can_free_when_complete
+                            || payload.pointer.offset_bytes != 0
+                        {
+                            return Err(error(
+                                VirExecutionErrorKind::InvalidRuntimeState,
+                                source_span,
+                            ));
+                        }
+                        self.object_drop_contents(
+                            memory,
+                            loan_shadow,
+                            payload.pointer,
+                            payload.permission,
+                            child,
+                            source_span,
+                        )?;
+                    }
                     self.free(payload.pointer, payload.permission, source_span)?;
                 }
                 Some(super::VirPointerKind::Reference) => {
@@ -3508,7 +3790,7 @@ impl Interpreter {
             allocation.resource_payloads.remove(&key);
         }
         for relative in all_offsets {
-            allocation.bytes.remove(&(pointer.offset_bytes + relative));
+            allocation.remove_byte(&(pointer.offset_bytes + relative));
         }
         self.register_runtime_object(pointer, &shape, source_span)?;
         Ok(())
@@ -3617,10 +3899,10 @@ impl Interpreter {
             retired.remove(&relative);
         }
         for relative in retired {
-            allocation.bytes.remove(&(pointer.offset_bytes + relative));
+            allocation.remove_byte(&(pointer.offset_bytes + relative));
         }
         for (index, byte) in discriminant.into_iter().enumerate() {
-            allocation.bytes.insert(
+            allocation.write_byte(
                 tag_start + u64::try_from(index).expect("tag index fits u64"),
                 byte,
             );
@@ -3705,8 +3987,11 @@ impl Interpreter {
         Ok(offsets)
     }
 
-    /// Check reference formation, not a read of the object's padding. The
-    /// static slice range is a conservative envelope, as in the verifier.
+    /// Reference formation checks storage and authority. A mutable reference
+    /// to plain storage may carry a partial predicate representation; forming
+    /// it does not read the referent. Actual reads and replace stores still
+    /// check their value bytes. Shared/slice and linear-payload views retain
+    /// their complete-value checks. No Spec facts are consumed at runtime.
     fn check_borrow_value(
         &self,
         memory: &VirMemorySchema,
@@ -3775,6 +4060,16 @@ impl Interpreter {
             ));
         }
         let count = if slice { extent / stride } else { 1 };
+        let storage_only = !slice
+            && matches!(
+                memory.kind(reference.ty),
+                Some(VirMemoryTypeKind::Pointer {
+                    mutability: super::VirMutability::Mutable,
+                    ..
+                })
+            )
+            && shape.resource_leaves().is_empty()
+            && shape.variants().is_empty();
         for index in 0..count {
             let selected = if slice {
                 VirRuntimePointer {
@@ -3786,6 +4081,9 @@ impl Interpreter {
             };
             self.check_object_address(memory, selected, access, span)?;
             self.check_scalar_active_access(memory, selected, span)?;
+            if storage_only {
+                continue;
+            }
             let offsets = self.active_object_offsets(memory, selected, &shape, span)?;
             self.require_object_value(memory, selected, &shape, &offsets, span)?;
             self.active_resource_payloads(memory, selected, &shape, span)?;
@@ -4134,6 +4432,12 @@ impl Interpreter {
         Ok(())
     }
 
+    fn fresh_loan_frame(&mut self, span: ByteSpan) -> Result<u64, VirExecutionError> {
+        self.loan_frame_instances
+            .fresh()
+            .ok_or_else(|| error(VirExecutionErrorKind::InvalidRuntimeState, span))
+    }
+
     fn charge_step(&mut self, source_span: ByteSpan) -> Result<(), VirExecutionError> {
         if self.steps >= self.config.max_steps {
             return Err(error(VirExecutionErrorKind::StepLimitExceeded, source_span));
@@ -4149,6 +4453,7 @@ fn new_function_frame(
     arguments: Vec<VirRuntimeValue>,
     call_return: Option<CallReturn>,
     source_span: ByteSpan,
+    loan_frame: u64,
 ) -> Result<FunctionFrame, VirExecutionError> {
     let function = program
         .function(function_id)
@@ -4171,7 +4476,7 @@ fn new_function_frame(
         next_instruction: 0,
         call_return,
         local_allocations: Vec::new(),
-        loan_shadow: RuntimeLoanShadow::default(),
+        loan_shadow: RuntimeLoanShadow::new(loan_frame),
         result_buffers,
     })
 }
@@ -4624,11 +4929,7 @@ fn ensure_runtime_object_observation_type(
 ) -> Result<(), VirExecutionError> {
     let supported = memory
         .type_capabilities(shape.access().ty)
-        .is_some_and(|capability| capability.size == crate::SizeCapability::Sized)
-        && shape
-            .resource_leaves()
-            .iter()
-            .all(|leaf| leaf.kind() != super::VirPointerKind::Raw);
+        .is_some_and(|capability| capability.size == crate::SizeCapability::Sized);
     if !supported {
         return Err(error(
             VirExecutionErrorKind::UnsupportedObjectEffectType {
@@ -4654,11 +4955,7 @@ fn ensure_runtime_object_drop_type(
                     crate::DropCapability::TrivialDrop | crate::DropCapability::BuiltinDrop
                 )
         })
-        && !shape.resource_leaves().is_empty()
-        && shape
-            .resource_leaves()
-            .iter()
-            .all(|leaf| leaf.kind() != super::VirPointerKind::Raw);
+        && !shape.resource_leaves().is_empty();
     if !supported {
         return Err(error(
             VirExecutionErrorKind::UnsupportedObjectEffectType {
@@ -4684,16 +4981,14 @@ fn ensure_runtime_object_transfer_type(
                 capability.value == crate::ValueCapability::Copy
                     && capability.size == crate::SizeCapability::Sized
             }) && shape.resource_leaves().iter().all(|leaf| {
-                leaf.kind() == super::VirPointerKind::Reference
-                    && leaf.mutability() == super::VirMutability::Const
+                leaf.kind() == super::VirPointerKind::Raw
+                    || (leaf.kind() == super::VirPointerKind::Raw
+                        || (leaf.kind() == super::VirPointerKind::Reference
+                            && leaf.mutability() == super::VirMutability::Const))
             })
         }
         VirObjectSourceMode::Move => {
             capability.is_some_and(|capability| capability.size == crate::SizeCapability::Sized)
-                && shape
-                    .resource_leaves()
-                    .iter()
-                    .all(|leaf| leaf.kind() != super::VirPointerKind::Raw)
                 && (matches!(destination_mode, VirObjectDestinationMode::Initialize)
                     || capability.is_some_and(crate::TypeCapabilities::pointer_free_trivial))
         }
@@ -4901,6 +5196,10 @@ fn scalar_value(
         Some(VirMemoryTypeKind::Integer(
             super::VirIntegerType::U64 | super::VirIntegerType::Usize,
         )) => word_value(frame, id, source_span),
+        Some(VirMemoryTypeKind::Pointer {
+            kind: super::VirPointerKind::Raw,
+            ..
+        }) => pointer_value(frame, id, source_span).map(opaque_runtime_pointer_bits),
         _ => Err(error(
             VirExecutionErrorKind::InvalidRuntimeState,
             source_span,
@@ -5168,6 +5467,7 @@ mod tests {
                         .collect(),
                     objects: Vec::new(),
                     resource_payloads: BTreeMap::new(),
+                    raw_payloads: BTreeMap::new(),
                 },
             );
             let failure = interpreter
@@ -5341,6 +5641,7 @@ mod tests {
                     access: ENUM,
                 }],
                 resource_payloads: BTreeMap::new(),
+                raw_payloads: BTreeMap::new(),
             },
         );
         interpreter

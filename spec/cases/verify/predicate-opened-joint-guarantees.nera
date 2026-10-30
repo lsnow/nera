@@ -1,0 +1,46 @@
+// Joint disjunctions force a result without choosing a witness assignment.
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>) {
+    exists a:bool = true;
+    exists b:bool = false;
+    exists c:bool = false;
+    owns(p);
+    initialized(p.value,0..1);
+    a||b;
+    a||!b;
+    b==c;
+}
+fn main()->u64 {
+    let p=alloc<Cell>(1);
+    p.value=42;
+    fold Ready(p);
+    return consume(p);
+}
+fn forward(p:&mut Cell)
+requires Ready(p);
+ensures Ready(p);
+{
+    unfold Ready(p) as (x,y,z);
+    fold Ready(p) with (a=x,b=y,c=z);
+    return;
+}
+fn consume(p:Own<Cell>)->u64
+requires Ready(p);
+{
+    forward(&mut *p);
+    unfold Ready(p) as (x,y,z);
+    let mut i=0usize;
+    while i<3usize {
+        invariant i<=3usize;
+        invariant x;
+        invariant y==z;
+        invariant (x||y)==x;
+        i=i+1usize;
+    }
+    fold Ready(p) with (a=x,b=y,c=z);
+    unfold Ready(p);
+    let outcome=p.value;
+    free(p);
+    finish Ready(p);
+    return outcome;
+}

@@ -1,4 +1,4 @@
-vir-unit-v28
+vir-unit-v54
 memory {
 target little pointer 8/8 usize 8/8
 type type0 = bool layout layout0 capabilities copy/trivial-drop/resource-free/sized
@@ -6,19 +6,15 @@ type type1 = u64 layout layout1 capabilities copy/trivial-drop/resource-free/siz
 type type2 = usize layout layout2 capabilities copy/trivial-drop/resource-free/sized
 type type3 = slice<const type1> layout layout3 capabilities copy/trivial-drop/resource/sized
 type type4 = slice<const type1> layout layout4 capabilities copy/trivial-drop/resource/sized
-type type5 = slice<const type1> layout layout5 capabilities copy/trivial-drop/resource/sized
-type type6 = array<type1; 4> layout layout6 capabilities copy/trivial-drop/resource-free/sized
-type type7 = raw const pointer<type1> layout layout7 capabilities copy/trivial-drop/resource/sized
-type type8 = slice<const type1> layout layout8 capabilities copy/trivial-drop/resource/sized
+type type5 = array<type1; 4> layout layout5 capabilities copy/trivial-drop/resource-free/sized
+type type6 = raw const pointer<type1> layout layout6 capabilities copy/trivial-drop/resource/sized
 layout layout0 type type0 size 1 align 1 abi scalar fields []
 layout layout1 type type1 size 8 align 8 abi scalar fields []
 layout layout2 type type2 size 8 align 8 abi scalar fields []
 layout layout3 type type3 size 16 align 8 abi scalar-pair fields []
 layout layout4 type type4 size 16 align 8 abi scalar-pair fields []
-layout layout5 type type5 size 16 align 8 abi scalar-pair fields []
-layout layout6 type type6 size 32 align 8 abi aggregate fields []
-layout layout7 type type7 size 8 align 8 abi scalar fields []
-layout layout8 type type8 size 16 align 8 abi scalar-pair fields []
+layout layout5 type type5 size 32 align 8 abi aggregate fields []
+layout layout6 type type6 size 8 align 8 abi scalar fields []
 }
 borrow-regions {
 region bregion0 owner fn2 origin parameter(0) scope function source origin52
@@ -31,92 +27,92 @@ entry fn0
 abi fn0 params [] results [scalar<type1/layout1> effect copy/direct p[] r[0]]
 fn fn0 "main" () -> (u64) contract contract0 entry bb0 @0..562 {
   bb0() @0..562:
-    %0: ptr<type6/layout6>, %1: permission = local-storage access type6/layout6 @23..53
-    %2: ptr<type6/layout6>, %3: permission = local-storage access type6/layout6 @36..52
+    %0: ptr<type5/layout5>, %1: permission = local-storage access type5/layout5 @23..53
+    %2: ptr<type5/layout5>, %3: permission = local-storage access type5/layout5 @36..52
     %4: u64 = const.u64 0 @37..39
-    %5: ptr<type1/layout1> = index.address %2, %4 source type6/layout6 element type1/layout1 stride 8 bounds array(4) @37..39
+    %5: ptr<type1/layout1> = index.address %2, %4 source type5/layout5 element type1/layout1 stride 8 bounds array(4) @37..39
     %6: u64 = const.u64 10 @37..39
     init %5, %6 using %3 access type1/layout1 @37..39
     %7: u64 = const.u64 1 @41..43
-    %8: ptr<type1/layout1> = index.address %2, %7 source type6/layout6 element type1/layout1 stride 8 bounds array(4) @41..43
+    %8: ptr<type1/layout1> = index.address %2, %7 source type5/layout5 element type1/layout1 stride 8 bounds array(4) @41..43
     %9: u64 = const.u64 20 @41..43
     init %8, %9 using %3 access type1/layout1 @41..43
     %10: u64 = const.u64 2 @45..47
-    %11: ptr<type1/layout1> = index.address %2, %10 source type6/layout6 element type1/layout1 stride 8 bounds array(4) @45..47
+    %11: ptr<type1/layout1> = index.address %2, %10 source type5/layout5 element type1/layout1 stride 8 bounds array(4) @45..47
     %12: u64 = const.u64 30 @45..47
     init %11, %12 using %3 access type1/layout1 @45..47
     %13: u64 = const.u64 3 @49..51
-    %14: ptr<type1/layout1> = index.address %2, %13 source type6/layout6 element type1/layout1 stride 8 bounds array(4) @49..51
+    %14: ptr<type1/layout1> = index.address %2, %13 source type5/layout5 element type1/layout1 stride 8 bounds array(4) @49..51
     %15: u64 = const.u64 40 @49..51
     init %14, %15 using %3 access type1/layout1 @49..51
-    object.init.move %0, %2 using %1, %3 access type6/layout6 @23..53
+    object.init.move %0, %2 using %1, %3 access type5/layout5 @23..53
     %16: u64 = const.u64 0 @81..84
-    %17: ptr<type1/layout1> = index.address %0, %16 source type6/layout6 element type1/layout1 stride 8 bounds array(4) @81..84
-    %18 = raw_address %17 using %1 as type7/layout7 @70..84
+    %17: ptr<type1/layout1> = index.address %0, %16 source type5/layout5 element type1/layout1 stride 8 bounds array(4) @81..84
+    %18 = raw_address %17 using %1 as type6/layout6 @70..84
     %19: bool = call "choose" contract contract1 () : () -> (bool) abi canonical @121..129
     branch %19 then bb1(%0, %1, %18, %18, %2, %3, %19) else bb2(%0, %1, %18, %18, %2, %3, %19) @118..187
-  bb1(%20: ptr<type6/layout6>, %21: permission, %22: ptr<type1/layout1>, %23: ptr<type1/layout1>, %24: ptr<type6/layout6>, %25: permission, %26: bool) @130..153:
+  bb1(%20: ptr<type5/layout5>, %21: permission, %22: ptr<type1/layout1>, %23: ptr<type1/layout1>, %24: ptr<type5/layout5>, %25: permission, %26: bool) @130..153:
     %39: u64 = const.u64 8 @141..150
     %40: ptr<type1/layout1> = offset %22, %39 @141..150
     jump bb3(%20, %21, %40, %24, %25) @130..153
-  bb2(%27: ptr<type6/layout6>, %28: permission, %29: ptr<type1/layout1>, %30: ptr<type1/layout1>, %31: ptr<type6/layout6>, %32: permission, %33: bool) @159..187:
+  bb2(%27: ptr<type5/layout5>, %28: permission, %29: ptr<type1/layout1>, %30: ptr<type1/layout1>, %31: ptr<type5/layout5>, %32: permission, %33: bool) @159..187:
     %41: u64 = const.u64 1 @181..184
-    %42: ptr<type1/layout1> = index.address %27, %41 source type6/layout6 element type1/layout1 stride 8 bounds array(4) @181..184
-    %43 = raw_address %42 using %28 as type7/layout7 @170..184
+    %42: ptr<type1/layout1> = index.address %27, %41 source type5/layout5 element type1/layout1 stride 8 bounds array(4) @181..184
+    %43 = raw_address %42 using %28 as type6/layout6 @170..184
     jump bb3(%27, %28, %43, %31, %32) @159..187
-  bb3(%34: ptr<type6/layout6>, %35: permission, %36: ptr<type1/layout1>, %37: ptr<type6/layout6>, %38: permission) @17..562:
+  bb3(%34: ptr<type5/layout5>, %35: permission, %36: ptr<type1/layout1>, %37: ptr<type5/layout5>, %38: permission) @17..562:
     %44: u64 = const.u64 1 @218..221
-    %45: ptr<type1/layout1> = index.address %34, %44 source type6/layout6 element type1/layout1 stride 8 bounds array(4) @218..221
-    %46 = raw_address %45 using %35 as type7/layout7 @207..221
+    %45: ptr<type1/layout1> = index.address %34, %44 source type5/layout5 element type1/layout1 stride 8 bounds array(4) @218..221
+    %46 = raw_address %45 using %35 as type6/layout6 @207..221
     %47: u64 = const.u64 0 @243..244
     jump bb4(%34, %35, %36, %46, %47, %37, %38) @250..309
-  bb4(%48: ptr<type6/layout6>, %49: permission, %50: ptr<type1/layout1>, %51: ptr<type1/layout1>, %52: u64, %53: ptr<type6/layout6>, %54: permission) @250..309:
+  bb4(%48: ptr<type5/layout5>, %49: permission, %50: ptr<type1/layout1>, %51: ptr<type1/layout1>, %52: u64, %53: ptr<type5/layout5>, %54: permission) @250..309:
     %55: u64 = const.u64 3 @264..265
     %56: bool = cmp.ult %52, %55 @262..263
     branch %56 then bb5(%48, %49, %50, %51, %52, %53, %54, %52, %55, %56) else bb7(%48, %49, %50, %51, %52, %53, %54) @250..309
-  bb5(%57: ptr<type6/layout6>, %58: permission, %59: ptr<type1/layout1>, %60: ptr<type1/layout1>, %61: u64, %62: ptr<type6/layout6>, %63: permission, %64: u64, %65: u64, %66: bool) @266..309:
+  bb5(%57: ptr<type5/layout5>, %58: permission, %59: ptr<type1/layout1>, %60: ptr<type1/layout1>, %61: u64, %62: ptr<type5/layout5>, %63: permission, %64: u64, %65: u64, %66: bool) @266..309:
     %80: u64 = const.u64 0 @277..287
     %81: ptr<type1/layout1> = offset %59, %80 @277..287
     %82: u64 = const.u64 1 @305..306
     %83: u64 = add %61, %82 @297..306
     jump bb4(%57, %58, %81, %60, %83, %62, %63) @266..309
-  bb6(%67: ptr<type6/layout6>, %68: permission, %69: ptr<type1/layout1>, %70: ptr<type1/layout1>, %71: ptr<type6/layout6>, %72: permission) @17..562:
+  bb6(%67: ptr<type5/layout5>, %68: permission, %69: ptr<type1/layout1>, %70: ptr<type1/layout1>, %71: ptr<type5/layout5>, %72: permission) @17..562:
     %84: u64 = const.u64 1 @342..343
     %85: u64 = const.u64 3 @345..346
-    %86: ptr<type1/layout1>, %87: u64 = slice.address %67 start %84 end %85 source type6/layout6 slice type8/layout8 element type1/layout1 stride 8 bounds array(4) @341..347
-    %88: ptr<type1/layout1>, %89: permission = loan.begin loan0 shared region bregion2 parent none from %86 using %68 reference type8/layout8 range [8,24) origin origin89 @334..347
+    %86: ptr<type1/layout1>, %87: u64 = slice.address %67 start %84 end %85 source type5/layout5 slice type4/layout4 element type1/layout1 stride 8 bounds array(4) @341..347
+    %88: ptr<type1/layout1>, %89: permission = loan.begin loan0 shared region bregion2 parent none from %86 using %68 reference type4/layout4 range [8,24) origin origin89 @334..347
     %90: ptr<type1/layout1>, %91: u64, %92: permission, %93: permission = call "identity" contract contract2 (%88, %87, %89) : (ptr<type1/layout1>, u64, permission) -> (ptr<type1/layout1>, u64, permission, permission) abi canonical @325..348
-    loan.end loan0 shared region bregion2 parent none from %88 using %93 reference type8/layout8 range [8,24) origin origin88 @325..348
+    loan.end loan0 shared region bregion2 parent none from %88 using %93 reference type4/layout4 range [8,24) origin origin88 @325..348
     %94: u64 = const.u64 0 @378..381
-    %95: ptr<type1/layout1> = index.address %90, %94 source type8/layout8 element type1/layout1 stride 8 bounds slice(%91) @378..381
-    %96 = raw_address %95 using %92 as type7/layout7 @369..381
+    %95: ptr<type1/layout1> = index.address %90, %94 source type4/layout4 element type1/layout1 stride 8 bounds slice(%91) @378..381
+    %96 = raw_address %95 using %92 as type6/layout6 @369..381
     %97: u64 = const.u64 1 @407..410
-    %98: ptr<type1/layout1> = index.address %90, %97 source type8/layout8 element type1/layout1 stride 8 bounds slice(%91) @407..410
-    %99 = raw_address %98 using %92 as type7/layout7 @398..410
+    %98: ptr<type1/layout1> = index.address %90, %97 source type4/layout4 element type1/layout1 stride 8 bounds slice(%91) @407..410
+    %99 = raw_address %98 using %92 as type6/layout6 @398..410
     %100: bool = ptr.cmp.eq %69, %70 @426..428
     branch %100 then bb8(%67, %68, %90, %91, %92, %96, %99, %71, %72, %100) else bb9(%67, %68, %90, %91, %92, %96, %99, %71, %72, %100) @416..546
-  bb7(%73: ptr<type6/layout6>, %74: permission, %75: ptr<type1/layout1>, %76: ptr<type1/layout1>, %77: u64, %78: ptr<type6/layout6>, %79: permission) @250..309:
+  bb7(%73: ptr<type5/layout5>, %74: permission, %75: ptr<type1/layout1>, %76: ptr<type1/layout1>, %77: u64, %78: ptr<type5/layout5>, %79: permission) @250..309:
     jump bb6(%73, %74, %75, %76, %78, %79) @250..309
-  bb8(%101: ptr<type6/layout6>, %102: permission, %103: ptr<type1/layout1>, %104: u64, %105: permission, %106: ptr<type1/layout1>, %107: ptr<type1/layout1>, %108: ptr<type6/layout6>, %109: permission, %110: bool) @438..546:
+  bb8(%101: ptr<type5/layout5>, %102: permission, %103: ptr<type1/layout1>, %104: u64, %105: permission, %106: ptr<type1/layout1>, %107: ptr<type1/layout1>, %108: ptr<type5/layout5>, %109: permission, %110: bool) @438..546:
     %128: u64 = ptr.byte_distance %106, %107 @451..484
     %129: u64 = const.u64 8 @488..494
     %130: bool = cmp.eq %128, %129 @485..487
     branch %130 then bb11(%101, %102, %103, %104, %105, %108, %109, %110, %128, %129, %130) else bb12(%101, %102, %103, %104, %105, %108, %109, %110, %128, %129, %130) @448..540
-  bb9(%111: ptr<type6/layout6>, %112: permission, %113: ptr<type1/layout1>, %114: u64, %115: permission, %116: ptr<type1/layout1>, %117: ptr<type1/layout1>, %118: ptr<type6/layout6>, %119: permission, %120: bool) @416..546:
+  bb9(%111: ptr<type5/layout5>, %112: permission, %113: ptr<type1/layout1>, %114: u64, %115: permission, %116: ptr<type1/layout1>, %117: ptr<type1/layout1>, %118: ptr<type5/layout5>, %119: permission, %120: bool) @416..546:
     jump bb10(%111, %112, %113, %114, %115, %118, %119) @416..546
-  bb10(%121: ptr<type6/layout6>, %122: permission, %123: ptr<type1/layout1>, %124: u64, %125: permission, %126: ptr<type6/layout6>, %127: permission) @17..562:
+  bb10(%121: ptr<type5/layout5>, %122: permission, %123: ptr<type1/layout1>, %124: u64, %125: permission, %126: ptr<type5/layout5>, %127: permission) @17..562:
     %168: u64 = const.u64 0 @558..559
-    loan.end loan0 shared region bregion2 parent none from %123 using %125 reference type8/layout8 range [8,24) origin origin104 @551..560
+    loan.end loan0 shared region bregion2 parent none from %123 using %125 reference type4/layout4 range [8,24) origin origin104 @551..560
     return (%168) @551..560
-  bb11(%131: ptr<type6/layout6>, %132: permission, %133: ptr<type1/layout1>, %134: u64, %135: permission, %136: ptr<type6/layout6>, %137: permission, %138: bool, %139: u64, %140: u64, %141: bool) @495..540:
-    %164: ptr<type1/layout1>, %165: permission = loan.alias-shared loan0 shared region bregion2 parent none from %133 using %135 reference type8/layout8 range [8,24) origin origin103 @524..528
+  bb11(%131: ptr<type5/layout5>, %132: permission, %133: ptr<type1/layout1>, %134: u64, %135: permission, %136: ptr<type5/layout5>, %137: permission, %138: bool, %139: u64, %140: u64, %141: bool) @495..540:
+    %164: ptr<type1/layout1>, %165: permission = loan.alias-shared loan0 shared region bregion2 parent none from %133 using %135 reference type4/layout4 range [8,24) origin origin103 @524..528
     %166: u64, %167: permission = call "inspect" contract contract3 (%164, %134, %165) : (ptr<type1/layout1>, u64, permission) -> (u64, permission) abi canonical @516..529
-    loan.end loan0 shared region bregion2 parent none from %164 using %167 reference type8/layout8 range [8,24) origin origin102 @516..529
-    loan.end loan0 shared region bregion2 parent none from %133 using %135 reference type8/layout8 range [8,24) origin origin101 @509..530
+    loan.end loan0 shared region bregion2 parent none from %164 using %167 reference type4/layout4 range [8,24) origin origin102 @516..529
+    loan.end loan0 shared region bregion2 parent none from %133 using %135 reference type4/layout4 range [8,24) origin origin101 @509..530
     return (%166) @509..530
-  bb12(%142: ptr<type6/layout6>, %143: permission, %144: ptr<type1/layout1>, %145: u64, %146: permission, %147: ptr<type6/layout6>, %148: permission, %149: bool, %150: u64, %151: u64, %152: bool) @448..540:
+  bb12(%142: ptr<type5/layout5>, %143: permission, %144: ptr<type1/layout1>, %145: u64, %146: permission, %147: ptr<type5/layout5>, %148: permission, %149: bool, %150: u64, %151: u64, %152: bool) @448..540:
     jump bb13(%142, %143, %144, %145, %146, %147, %148, %149, %150, %151, %152) @448..540
-  bb13(%153: ptr<type6/layout6>, %154: permission, %155: ptr<type1/layout1>, %156: u64, %157: permission, %158: ptr<type6/layout6>, %159: permission, %160: bool, %161: u64, %162: u64, %163: bool) @438..546:
+  bb13(%153: ptr<type5/layout5>, %154: permission, %155: ptr<type1/layout1>, %156: u64, %157: permission, %158: ptr<type5/layout5>, %159: permission, %160: bool, %161: u64, %162: u64, %163: bool) @438..546:
     jump bb10(%153, %154, %155, %156, %157, %158, %159) @438..546
 }
 
@@ -134,7 +130,7 @@ fn fn2 "identity" (ptr<type1/layout1>, u64, permission) -> (ptr<type1/layout1>, 
     return (%3, %1, %4, %2) @639..651
 }
 
-abi fn3 params [slice<type5/layout5> effect borrow-shared/direct p[0, 1, 2] r[1]] results [scalar<type1/layout1> effect copy/direct p[] r[0]]
+abi fn3 params [slice<type4/layout4> effect borrow-shared/direct p[0, 1, 2] r[1]] results [scalar<type1/layout1> effect copy/direct p[] r[0]]
 fn fn3 "inspect" (ptr<type1/layout1>, u64, permission) -> (u64, permission) contract contract3 entry bb0 @654..843 {
   bb0(%0: ptr<type1/layout1>, %1: u64, %2: permission) @654..843:
     %3: u64 = const.u64 0 @707..713
@@ -142,8 +138,8 @@ fn fn3 "inspect" (ptr<type1/layout1>, u64, permission) -> (u64, permission) cont
     branch %4 then bb1(%0, %1, %2, %1, %3, %4) else bb2(%0, %1, %2, %1, %3, %4) @692..827
   bb1(%5: ptr<type1/layout1>, %6: u64, %7: permission, %8: u64, %9: u64, %10: bool) @714..827:
     %20: u64 = const.u64 0 @745..748
-    %21: ptr<type1/layout1> = index.address %5, %20 source type5/layout5 element type1/layout1 stride 8 bounds slice(%6) @745..748
-    %22 = raw_address %21 using %7 as type7/layout7 @736..748
+    %21: ptr<type1/layout1> = index.address %5, %20 source type4/layout4 element type1/layout1 stride 8 bounds slice(%6) @745..748
+    %22 = raw_address %21 using %7 as type6/layout6 @736..748
     %23: u64 = const.u64 8 @786..795
     %24: ptr<type1/layout1> = offset %22, %23 @786..795
     %25: u64 = ptr.byte_distance %22, %24 @761..796

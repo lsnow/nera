@@ -19,7 +19,7 @@ pub(super) fn stable_dump(unit: &VirUnit) -> String {
 
 pub(super) fn stable_runtime_dump(runtime: RuntimeVirView<'_>) -> String {
     let mut output = String::new();
-    writeln!(output, "runtime-vir-v17").expect("writing VIR to a String cannot fail");
+    writeln!(output, "runtime-vir-v26").expect("writing VIR to a String cannot fail");
     dump_memory_schema(&mut output, runtime.memory).expect("writing VIR to a String cannot fail");
     writeln!(output, "borrow-regions {{").expect("writing VIR to a String cannot fail");
     dump_borrow_environment(&mut output, runtime.borrows)
@@ -57,6 +57,32 @@ fn dump_unit(output: &mut String, unit: &VirUnit) -> fmt::Result {
         VirUnitVersion::V24 => writeln!(output, "vir-unit-v24")?,
         VirUnitVersion::V27 => writeln!(output, "vir-unit-v27")?,
         VirUnitVersion::V28 => writeln!(output, "vir-unit-v28")?,
+        VirUnitVersion::V29 => writeln!(output, "vir-unit-v29")?,
+        VirUnitVersion::V30 => writeln!(output, "vir-unit-v30")?,
+        VirUnitVersion::V31 => writeln!(output, "vir-unit-v31")?,
+        VirUnitVersion::V32 => writeln!(output, "vir-unit-v32")?,
+        VirUnitVersion::V33 => writeln!(output, "vir-unit-v33")?,
+        VirUnitVersion::V34 => writeln!(output, "vir-unit-v34")?,
+        VirUnitVersion::V35 => writeln!(output, "vir-unit-v35")?,
+        VirUnitVersion::V36 => writeln!(output, "vir-unit-v36")?,
+        VirUnitVersion::V37 => writeln!(output, "vir-unit-v37")?,
+        VirUnitVersion::V38 => writeln!(output, "vir-unit-v38")?,
+        VirUnitVersion::V40 => writeln!(output, "vir-unit-v40")?,
+        VirUnitVersion::V41 => writeln!(output, "vir-unit-v41")?,
+        VirUnitVersion::V42 => writeln!(output, "vir-unit-v42")?,
+        VirUnitVersion::V44 => writeln!(output, "vir-unit-v44")?,
+        VirUnitVersion::V45 => writeln!(output, "vir-unit-v45")?,
+        VirUnitVersion::V46 => writeln!(output, "vir-unit-v46")?,
+        VirUnitVersion::V48 => writeln!(output, "vir-unit-v48")?,
+        VirUnitVersion::V52 => writeln!(output, "vir-unit-v52")?,
+        VirUnitVersion::V54 => writeln!(output, "vir-unit-v54")?,
+        VirUnitVersion::V53 => writeln!(output, "vir-unit-v53")?,
+        VirUnitVersion::V51 => writeln!(output, "vir-unit-v51")?,
+        VirUnitVersion::V50 => writeln!(output, "vir-unit-v50")?,
+        VirUnitVersion::V49 => writeln!(output, "vir-unit-v49")?,
+        VirUnitVersion::V47 => writeln!(output, "vir-unit-v47")?,
+        VirUnitVersion::V43 => writeln!(output, "vir-unit-v43")?,
+        VirUnitVersion::V39 => writeln!(output, "vir-unit-v39")?,
         VirUnitVersion::V26 => writeln!(output, "vir-unit-v26")?,
         VirUnitVersion::V25 => writeln!(output, "vir-unit-v25")?,
     }
@@ -154,6 +180,31 @@ fn dump_specs(output: &mut String, specs: &super::VirSpecEnvironment) -> fmt::Re
                 || "none".to_owned(),
                 |clause| format!("clause{}", clause.get())
             )
+        )?;
+    }
+    for predicate in specs.predicates() {
+        if let Some(body) = &predicate.representation {
+            writeln!(
+                output,
+                "predicate-representation predicate{} {:?}",
+                predicate.id.get(),
+                body
+            )?;
+        }
+    }
+    for interface in specs.predicate_interfaces() {
+        writeln!(output, "predicate-interface {:?}", interface)?;
+    }
+    for action in specs.predicate_actions() {
+        writeln!(
+            output,
+            "predicate-effect {} predicate{} {:?} origin{} {:?} witnesses {:?}",
+            action.id,
+            action.predicate.get(),
+            action.location,
+            action.origin.get(),
+            action.kind,
+            action.witnesses
         )?;
     }
     for binder in specs.binders() {
@@ -257,6 +308,9 @@ fn dump_borrow_environment(output: &mut String, borrows: &VirBorrowEnvironment) 
             VirBorrowRegionOrigin::Lexical => write!(output, "lexical")?,
             VirBorrowRegionOrigin::Parameter { index } => {
                 write!(output, "parameter({index})")?;
+            }
+            VirBorrowRegionOrigin::ParameterField { index, slot } => {
+                write!(output, "parameter-field({index},{slot})")?
             }
             VirBorrowRegionOrigin::Result { index } => write!(output, "result({index})")?,
             VirBorrowRegionOrigin::Inferred => write!(output, "inferred")?,
@@ -573,6 +627,19 @@ fn dump_spec_term_kind(output: &mut String, kind: &super::VirSpecTermKind) -> fm
             c.get(),
             d.get()
         ),
+        super::VirSpecTermKind::Snapshot(super::VirSpecSnapshot::Opened {
+            function,
+            action,
+            holder,
+            binder,
+        }) => write!(
+            output,
+            "opened(f{}, action{}, holder{}, binder{})",
+            function.get(),
+            action,
+            holder,
+            binder
+        ),
         super::VirSpecTermKind::Snapshot(super::VirSpecSnapshot::Memory {
             function,
             parameter,
@@ -810,6 +877,9 @@ fn dump_abi_signature(
             " borrow-result{}=param{}/{:?}/{:?}",
             relation.result, relation.parameter, relation.projection, relation.access
         )?;
+        if let Some(field) = relation.parameter_field {
+            write!(output, " source-field={field}")?;
+        }
     }
     for (index, alternative) in signature.borrow_result_alternatives().iter().enumerate() {
         write!(output, " borrow-result-alt{index}[")?;
@@ -830,6 +900,9 @@ fn dump_abi_signature(
             "]=result{}:param{}/{:?}/{:?}",
             relation.result, relation.parameter, relation.projection, relation.access
         )?;
+        if let Some(field) = relation.parameter_field {
+            write!(output, " source-field={field}")?;
+        }
     }
     writeln!(output)
 }
@@ -942,6 +1015,7 @@ fn dump_instruction(output: &mut String, spanned: &SpannedVirInstruction) -> fmt
         VirInstruction::Constant { result, value } => {
             write_value_declaration(output, *result)?;
             match value {
+                VirConstant::NullPointer(access) => write!(output, " = const.null {access:?}")?,
                 VirConstant::U64(value) => write!(output, " = const.u64 {value}")?,
                 VirConstant::Bool(value) => write!(output, " = const.bool {value}")?,
             }

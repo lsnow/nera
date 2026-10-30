@@ -1,0 +1,69 @@
+// A finite opaque representation; predicate state owns the entire allocation.
+opaque struct Arena {
+    cursor: usize,
+    slots: [u64; 8],
+}
+predicate Ready(p: ptr<Arena>) {
+    owns(p);
+    initialized(p, 0usize..1usize);
+    p.cursor <= 8usize;
+}
+fn main() -> u64 {
+    let a = make();
+    let b = fill(a);
+    let c = reset(b);
+    return destroy(c);
+}
+fn make() -> Own<Arena>
+ensures Ready(result);
+{
+    let p = alloc<Arena>(1);
+    p.cursor = 0usize;
+    p.slots = [0, 0, 0, 0, 0, 0, 0, 0];
+    fold Ready(p);
+    return p;
+}
+fn fill(p: Own<Arena>) -> Own<Arena>
+requires Ready(p);
+ensures Ready(result);
+{
+    unfold Ready(p);
+    let left = &mut p.slots[0usize..2usize];
+    let right = &mut p.slots[2usize..4usize];
+    left[0] = 12;
+    right[0] = 30;
+    p.cursor = 4usize;
+    fold Ready(p);
+    let returned = prepare(left);
+    let total = returned[0] + right[0];
+    unfold Ready(p);
+    p.slots[0] = total;
+    fold Ready(p);
+    return p;
+}
+fn reset(p: Own<Arena>) -> Own<Arena>
+requires Ready(p);
+ensures Ready(result);
+{
+    unfold Ready(p);
+    p.cursor = 0usize;
+    fold Ready(p);
+    return p;
+}
+fn destroy(p: Own<Arena>) -> u64
+requires Ready(p);
+{
+    unfold Ready(p);
+    let total = p.slots[0];
+    free(p);
+    finish Ready(p);
+    return total;
+}
+
+fn prepare(view: &mut [u64]) -> &mut [u64]
+requires len(view) == 2usize;
+ensures len(result) == 2usize;
+{
+    view[0] = 12;
+    return view;
+}

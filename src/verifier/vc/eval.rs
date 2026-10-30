@@ -6,7 +6,9 @@ use super::super::resource::{AbstractBool, AbstractValue, PathFact, ResourceStat
 use super::arena::{VcArena, VcLimits, VcTerm, VcTermId};
 #[cfg(test)]
 mod arithmetic_tests;
+mod boolean;
 mod numeric;
+mod opened;
 #[cfg(test)]
 mod witness_tests;
 use crate::verifier::relation::{audit::QueryLog, difference::DifferenceLimits};
@@ -19,6 +21,9 @@ pub(in crate::verifier) enum SnapshotValues<'a> {
     Bound {
         state: &'a ResourceState,
         snapshots: &'a BTreeMap<VirSpecSnapshot, (AbstractValue, Option<crate::AffineExpression>)>,
+        // Query-local names supplied by the boundary adapter. These do not
+        // denote addresses, SSA slots, predicates, or resource permissions.
+        booleans: Option<&'a BTreeMap<VirSpecSnapshot, u32>>,
     },
 }
 
@@ -56,6 +61,11 @@ pub(in crate::verifier) fn evaluate_contract_u64(
 enum PureValue {
     Unavailable,
     Bool(AbstractBool),
+    BooleanIdentity {
+        identity: u32,
+        negated: bool,
+        known: AbstractBool,
+    },
     U64(Number),
 }
 
@@ -152,7 +162,7 @@ pub(in crate::verifier) fn validate_witness(
             VcTerm::Binder(_) => return None,
             VcTerm::Snapshot(snapshot)
                 if matches!(
-                    snapshot_value(*snapshot, values, Some(function)),
+                    snapshot_value(*snapshot, values, Some(function), budget),
                     PureValue::Unavailable
                 ) =>
             {
@@ -176,7 +186,7 @@ pub(in crate::verifier) fn validate_witness(
             budget,
         )?,
     ) {
-        (crate::VirSpecType::Bool, PureValue::Bool(_))
+        (crate::VirSpecType::Bool, PureValue::Bool(_) | PureValue::BooleanIdentity { .. })
         | (crate::VirSpecType::U64, PureValue::U64(_)) => Some(()),
         _ => None,
     }
@@ -200,6 +210,29 @@ fn evaluate_value(
         return None;
     }
     arena.get(root)?;
+    let mut pending = vec![root];
+    let mut seen = BTreeSet::new();
+    let mut has_opened = false;
+    while let Some(id) = pending.pop() {
+        budget.charge(1)?;
+        if !seen.insert(id) {
+            continue;
+        }
+        let term = arena.get(id)?;
+        if let VcTerm::Snapshot(snapshot @ VirSpecSnapshot::Opened { .. }) = term {
+            has_opened = true;
+            if matches!(
+                snapshot_value(*snapshot, values, function, budget),
+                PureValue::Unavailable
+            ) {
+                return Some(PureValue::Unavailable);
+            }
+        }
+        budget.charge(term.child_count())?;
+        for i in 0..term.child_count() {
+            pending.push(term.child_at(i)?);
+        }
+    }
     let mut evaluated = BTreeMap::new();
     let mut stack = vec![(root, 0)];
 
@@ -214,13 +247,28 @@ fn evaluate_value(
         let term = arena.get(id)?;
         if next == 0 {
             budget.charge(1)?;
+            // Try the complete opened formula before interval-only children
+            // discard relationships between hidden operands. The adapter must
+            // prove every new arithmetic intermediate, not just the root.
+            if has_opened && let Some(value) = opened::evaluate(arena, id, values, function, budget)
+            {
+                evaluated.insert(id, value);
+                continue;
+            }
+            if budget.exhausted {
+                return None;
+            }
         }
         if next > 0 {
             let previous = evaluated.get(&term.child_at(next - 1)?)?;
             let decisive = match (term, previous) {
                 (_, PureValue::Unavailable) => Some(PureValue::Unavailable),
-                (VcTerm::And(_), PureValue::Bool(AbstractBool::False)) => Some(*previous),
-                (VcTerm::Or(_), PureValue::Bool(AbstractBool::True)) => Some(*previous),
+                (VcTerm::And(_), value) if bool_value(*value) == AbstractBool::False => {
+                    Some(*previous)
+                }
+                (VcTerm::Or(_), value) if bool_value(*value) == AbstractBool::True => {
+                    Some(*previous)
+                }
                 _ => None,
             };
             if let Some(value) = decisive {
@@ -299,7 +347,7 @@ fn evaluate_node(
             )?)
         }
         VcTerm::Binder(_) => PureValue::Bool(AbstractBool::Unknown),
-        VcTerm::Snapshot(snapshot) => snapshot_value(*snapshot, values, function),
+        VcTerm::Snapshot(snapshot) => snapshot_value(*snapshot, values, function, budget),
         VcTerm::Equal(left, right) => {
             if left == right {
                 PureValue::Bool(AbstractBool::True)
@@ -309,6 +357,15 @@ fn evaluate_node(
                     (a, b) => equal(a, b),
                 })
             }
+        }
+        VcTerm::LessThan(left, right) | VcTerm::LessOrEqual(left, right)
+            if left == right && matches!(child(*left)?, PureValue::U64(_)) =>
+        {
+            PureValue::Bool(if matches!(term, VcTerm::LessOrEqual(..)) {
+                AbstractBool::True
+            } else {
+                AbstractBool::False
+            })
         }
         VcTerm::LessThan(left, right) => PureValue::Bool(compare(
             child(*left)?,
@@ -324,25 +381,21 @@ fn evaluate_node(
             values,
             budget,
         )?),
-        VcTerm::Not(operand) => PureValue::Bool(match bool_value(child(*operand)?) {
-            AbstractBool::True => AbstractBool::False,
-            AbstractBool::False => AbstractBool::True,
-            AbstractBool::Unknown => AbstractBool::Unknown,
-        }),
-        VcTerm::And(operands) => PureValue::Bool(eval_and(
+        VcTerm::Not(operand) => boolean::not(child(*operand)?),
+        VcTerm::And(operands) => boolean::junction(
             operands
                 .iter()
-                .map(|operand| child(*operand).map(bool_value))
-                .collect::<Option<Vec<_>>>()?
-                .into_iter(),
-        )),
-        VcTerm::Or(operands) => PureValue::Bool(eval_or(
+                .map(|operand| child(*operand))
+                .collect::<Option<Vec<_>>>()?,
+            false,
+        ),
+        VcTerm::Or(operands) => boolean::junction(
             operands
                 .iter()
-                .map(|operand| child(*operand).map(bool_value))
-                .collect::<Option<Vec<_>>>()?
-                .into_iter(),
-        )),
+                .map(|operand| child(*operand))
+                .collect::<Option<Vec<_>>>()?,
+            true,
+        ),
     })
 }
 
@@ -350,13 +403,54 @@ fn snapshot_value(
     snapshot: VirSpecSnapshot,
     values: SnapshotValues<'_>,
     function: Option<&VirFunction>,
+    budget: &mut VcQueryBudget,
 ) -> PureValue {
-    if let SnapshotValues::Bound { snapshots, .. } = values {
+    if let VirSpecSnapshot::Opened {
+        function: owner,
+        action,
+        holder,
+        binder,
+    } = snapshot
+    {
+        if budget
+            .charge(crate::predicate_logic::MAX_SUBSTITUTION_NODES)
+            .is_none()
+        {
+            return PureValue::Unavailable;
+        }
+        if function.is_none_or(|f| f.id != owner) {
+            return PureValue::Unavailable;
+        }
+        return match values
+            .state()
+            .and_then(|state| state.opened_predicate_snapshot(action, holder, binder))
+        {
+            Some((AbstractValue::U64(interval), expression)) => {
+                PureValue::U64(Number::new(interval, expression))
+            }
+            Some((AbstractValue::Bool(value), _)) => PureValue::Bool(value),
+            _ => PureValue::Unavailable,
+        };
+    }
+    if let SnapshotValues::Bound {
+        snapshots,
+        booleans,
+        ..
+    } = values
+    {
         return match snapshots.get(&snapshot) {
             Some((AbstractValue::U64(interval), expression)) => {
                 PureValue::U64(Number::new(*interval, *expression))
             }
-            Some((AbstractValue::Bool(value), _)) => PureValue::Bool(*value),
+            Some((AbstractValue::Bool(value), _)) => booleans
+                .and_then(|ids| ids.get(&snapshot))
+                .map_or(PureValue::Bool(*value), |identity| {
+                    PureValue::BooleanIdentity {
+                        identity: *identity,
+                        negated: false,
+                        known: *value,
+                    }
+                }),
             _ => PureValue::Unavailable,
         };
     }
@@ -438,14 +532,37 @@ fn snapshot_value(
 
 const fn bool_value(value: PureValue) -> AbstractBool {
     match value {
-        PureValue::Bool(value) => value,
+        PureValue::Bool(value) | PureValue::BooleanIdentity { known: value, .. } => value,
         PureValue::U64(_) | PureValue::Unavailable => AbstractBool::Unknown,
     }
 }
 
 fn equal(left: PureValue, right: PureValue) -> AbstractBool {
+    if let (
+        PureValue::BooleanIdentity {
+            identity: a,
+            negated: an,
+            ..
+        },
+        PureValue::BooleanIdentity {
+            identity: b,
+            negated: bn,
+            ..
+        },
+    ) = (left, right)
+        && a == b
+    {
+        return if an == bn {
+            AbstractBool::True
+        } else {
+            AbstractBool::False
+        };
+    }
     match (left, right) {
-        (PureValue::Bool(left), PureValue::Bool(right)) => match (left, right) {
+        (
+            PureValue::Bool(_) | PureValue::BooleanIdentity { .. },
+            PureValue::Bool(_) | PureValue::BooleanIdentity { .. },
+        ) => match (bool_value(left), bool_value(right)) {
             (AbstractBool::True, AbstractBool::True)
             | (AbstractBool::False, AbstractBool::False) => AbstractBool::True,
             (AbstractBool::True, AbstractBool::False)
@@ -572,6 +689,80 @@ mod tests {
             ),
             Some(AbstractBool::True)
         );
+    }
+
+    #[test]
+    fn unavailable_opened_names_cannot_hide_behind_short_circuit_or_reflexivity() {
+        let limits = VcLimits::default();
+        let mut arena = VcArena::default();
+        let function = function();
+        let opened = arena
+            .intern(
+                VcTerm::Snapshot(crate::VirSpecSnapshot::Opened {
+                    function: function.id,
+                    action: 7,
+                    holder: 3,
+                    binder: 0,
+                }),
+                limits.max_nodes,
+            )
+            .unwrap();
+        let same = arena
+            .intern(VcTerm::Equal(opened, opened), limits.max_nodes)
+            .unwrap();
+        let yes = arena.intern(VcTerm::Bool(true), limits.max_nodes).unwrap();
+        let hidden = arena
+            .intern(VcTerm::Or(vec![yes, same]), limits.max_nodes)
+            .unwrap();
+        let state = crate::ResourceState::new();
+        for root in [same, hidden] {
+            let mut budget = VcQueryBudget::new(limits);
+            assert_eq!(
+                evaluate_bool(
+                    &arena,
+                    root,
+                    &BTreeSet::new(),
+                    SnapshotValues::State(&state),
+                    &function,
+                    &mut budget
+                ),
+                Some(AbstractBool::Unknown)
+            );
+        }
+    }
+
+    #[test]
+    fn opened_observation_work_is_charged_to_the_vc_budget() {
+        let limits = VcLimits {
+            max_query_steps: 8,
+            ..VcLimits::default()
+        };
+        let mut arena = VcArena::default();
+        let function = function();
+        let root = arena
+            .intern(
+                VcTerm::Snapshot(crate::VirSpecSnapshot::Opened {
+                    function: function.id,
+                    action: 0,
+                    holder: 0,
+                    binder: 0,
+                }),
+                limits.max_nodes,
+            )
+            .unwrap();
+        let mut budget = VcQueryBudget::new(limits);
+        assert_ne!(
+            evaluate_bool(
+                &arena,
+                root,
+                &BTreeSet::new(),
+                SnapshotValues::State(&crate::ResourceState::new()),
+                &function,
+                &mut budget
+            ),
+            Some(AbstractBool::True)
+        );
+        assert!(budget.exhausted);
     }
 
     #[test]

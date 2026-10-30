@@ -629,6 +629,9 @@ pub struct AbstractAllocation {
     pub(super) valid_value_bytes: ByteSet,
     pub(super) object_state: ObjectState,
     pub(super) initialization_prefixes: InitializationPrefixes,
+    // Logical initialization certificates are valid only at this storage revision.
+    // Overflow and incompatible joins permanently disable existing certificates.
+    pub(super) initialization_revision: Option<u64>,
 }
 
 impl AbstractAllocation {
@@ -668,6 +671,7 @@ impl AbstractAllocation {
             valid_value_bytes: ByteSet::new(),
             object_state: ObjectState::new(),
             initialization_prefixes: InitializationPrefixes::default(),
+            initialization_revision: Some(0),
         })
     }
 
@@ -711,7 +715,12 @@ impl AbstractAllocation {
         &self.object_state
     }
 
+    pub(super) fn invalidate_logical_initialization(&mut self) {
+        self.initialization_revision = self.initialization_revision.and_then(|n| n.checked_add(1));
+    }
+
     pub fn mark_dead(&mut self) {
+        self.invalidate_logical_initialization();
         self.scalar_contents.clear();
         self.initialization_prefixes = InitializationPrefixes::default();
         self.liveness = LivenessState::Dead;
@@ -720,6 +729,7 @@ impl AbstractAllocation {
 
     pub fn set_liveness(&mut self, liveness: LivenessState) {
         if liveness != LivenessState::Live {
+            self.invalidate_logical_initialization();
             self.scalar_contents.clear();
             self.initialization_prefixes = InitializationPrefixes::default();
         }
@@ -734,6 +744,7 @@ impl AbstractAllocation {
         self.scalar_contents.forget(range);
         self.check_range(range)?;
         self.initialization_prefixes.invalidate(range);
+        self.invalidate_logical_initialization();
         self.initialization.mark_initialized(range);
         Ok(())
     }
@@ -748,6 +759,7 @@ impl AbstractAllocation {
         self.scalar_contents.forget(range);
         self.check_range(range)?;
         self.initialization_prefixes.invalidate(range);
+        self.invalidate_logical_initialization();
         self.initialization.mark_uninitialized(range);
         self.valid_value_bytes.remove(range);
         self.object_state.forget_range(range);
@@ -762,6 +774,7 @@ impl AbstractAllocation {
         self.check_range(range)?;
         self.scalar_contents.forget(range);
         self.initialization_prefixes.invalidate(range);
+        self.invalidate_logical_initialization();
         self.initialization.forget(range);
         self.valid_value_bytes.remove(range);
         self.object_state.forget_range(range);
@@ -772,6 +785,7 @@ impl AbstractAllocation {
         self.scalar_contents.forget(range);
         self.check_range(range)?;
         self.initialization_prefixes.invalidate(range);
+        self.invalidate_logical_initialization();
         self.valid_value_bytes.remove(range);
         Ok(())
     }
@@ -841,6 +855,21 @@ impl AbstractAllocation {
         self.check_range(range)?;
         self.scalar_contents.forget(range);
         self.initialization_prefixes.invalidate(range);
+        self.invalidate_logical_initialization();
+        self.initialization.forget_uninitialized(range);
+        Ok(())
+    }
+
+    /// A checked scalar-slice call restores initialized, valid elements. Forget
+    /// contents and may-uninitialized bytes without discarding caller SSA prefix
+    /// relations; no initialized or valid range is added by this operation.
+    pub(in crate::verifier) fn forget_preserved_slice_contents(
+        &mut self,
+        range: ByteRange,
+    ) -> Result<(), AbstractAllocationError> {
+        self.check_range(range)?;
+        self.scalar_contents.forget(range);
+        self.object_state.forget_range(range);
         self.initialization.forget_uninitialized(range);
         Ok(())
     }
@@ -871,6 +900,9 @@ impl AbstractAllocation {
         }
         Ok(Self {
             region: self.region,
+            initialization_revision: self
+                .initialization_revision
+                .filter(|r| Some(*r) == other.initialization_revision),
             scalar_contents: self.scalar_contents.join(&other.scalar_contents),
             size_bytes: self.size_bytes,
             alignment: self.alignment,

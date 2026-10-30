@@ -2,6 +2,7 @@
 
 use super::*;
 mod assertions;
+mod predicate;
 
 pub(super) fn validate_specs(unit: &VirUnit) -> Result<(), VirValidationError> {
     let functions = unit
@@ -398,6 +399,7 @@ fn validate_pure_specs(
     functions: &BTreeMap<VirFunctionId, &VirFunction>,
 ) -> Result<(), VirValidationError> {
     const MAX_SPEC_TERM_DEPTH: usize = 256;
+    predicate::validate(unit)?;
 
     let mut predicate_names = BTreeSet::new();
     for (index, predicate) in unit.specs.predicates().iter().enumerate() {
@@ -798,6 +800,15 @@ fn validate_pure_specs(
                                     .iter()
                                     .any(|binding| binding.head == value || binding.entry == value)
                         }
+                        // Opened witnesses are ghost snapshots, not runtime
+                        // loop parameters. Their action/holder/binder and type
+                        // were checked by validate_spec_snapshot. The verifier
+                        // must still establish the actual opening at entry and
+                        // every backedge; admission creates no scalar premise.
+                        crate::VirSpecTermKind::Snapshot(crate::VirSpecSnapshot::Opened {
+                            function,
+                            ..
+                        }) => function == invariant.function,
                         crate::VirSpecTermKind::Snapshot(_) => false,
                         _ => true,
                     })
@@ -984,6 +995,35 @@ fn validate_snapshot_type(
     matches_type: impl Fn(VirType) -> bool + Copy,
 ) -> bool {
     match snapshot {
+        crate::VirSpecSnapshot::Opened {
+            function,
+            action,
+            holder,
+            binder,
+        } => {
+            let Some(open) = unit.specs.predicate_actions().get(action as usize) else {
+                return false;
+            };
+            matches!(
+                clause.owner,
+                crate::VirSpecClauseOwner::Prove(_) | crate::VirSpecClauseOwner::LoopInvariant(_)
+            ) && matches!(clause.location, crate::VirSpecLocation::Runtime(location) if location.function() == function)
+                && open.id == action
+                && open.location.function() == function
+                && matches!(open.kind, crate::VirPredicateActionKind::Unfold { holder: h, .. } if h == holder)
+                && unit
+                    .specs
+                    .predicates()
+                    .get(open.predicate.get() as usize)
+                    .and_then(|p| p.representation.as_ref())
+                    .and_then(|r| r.logic.existentials.get(binder as usize))
+                    .is_some_and(|b| match b.ty {
+                        crate::predicate_logic::LogicType::U64
+                        | crate::predicate_logic::LogicType::Usize => matches_type(VirType::U64),
+                        crate::predicate_logic::LogicType::Bool => matches_type(VirType::Bool),
+                        crate::predicate_logic::LogicType::Resource(_) => false,
+                    })
+        }
         crate::VirSpecSnapshot::Memory {
             function,
             parameter,
@@ -1039,6 +1079,17 @@ fn validate_snapshot_type(
                     .field(id)
                     .filter(|f| f.owner == base.ty)
                     .map(|f| f.ty),
+                M::Fields(path) if !slice => {
+                    let mut ty = base.ty;
+                    for id in path.fields() {
+                        let Some(field) = unit.memory.field(*id).filter(|field| field.owner == ty)
+                        else {
+                            return false;
+                        };
+                        ty = field.ty;
+                    }
+                    Some(ty)
+                }
                 M::Index(index) => {
                     if let I::Parameter(i) = index
                         && !abi.signature.parameters().get(i as usize).is_some_and(|b| matches!(b.value(), crate::VirAbiValue::Scalar { access, ty: VirType::U64 } if matches!(unit.memory.kind(access.ty), Some(K::Integer(crate::VirIntegerType::Usize))))) { return false; }

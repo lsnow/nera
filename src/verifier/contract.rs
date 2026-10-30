@@ -21,6 +21,7 @@ mod abi;
 #[cfg(test)]
 mod domain_tests;
 pub(super) mod frame;
+pub(super) mod predicate;
 pub(super) mod pure;
 mod resources;
 
@@ -189,6 +190,7 @@ impl ContractState {
 /// Checked, signature-bound function contract.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct InstantiatedContract {
+    pub(super) predicates: Vec<predicate::Interface>,
     pub(super) pure: Option<pure::PureContract>,
     pub(super) resources: Option<resources::ResourceContract>,
     has_frame: bool,
@@ -201,7 +203,10 @@ pub(super) struct InstantiatedContract {
 
 impl InstantiatedContract {
     pub(super) fn has_explicit_contract(&self) -> bool {
-        self.pure.is_some() || self.resources.is_some() || self.has_frame
+        self.pure.is_some()
+            || self.resources.is_some()
+            || self.has_frame
+            || !self.predicates.is_empty()
     }
     pub(super) fn observes_memory(&self) -> bool {
         self.resources.is_some() || self.pure.as_ref().is_some_and(|p| p.observes_memory())
@@ -225,6 +230,7 @@ impl InstantiatedContract {
         validate_state(&requires, &signature.parameters, ContractPosition::Requires)?;
         validate_state(&ensures, &signature.results, ContractPosition::Ensures)?;
         Ok(Self {
+            predicates: Vec::new(),
             pure: None,
             resources: None,
             has_frame: false,
@@ -324,6 +330,76 @@ pub(super) fn instantiate_contracts(
         abi::install_value_ranges(program, contract, &mut requires, &mut ensures)?;
         let mut instantiated =
             InstantiatedContract::new(contract.id, contract.signature.clone(), requires, ensures)?;
+        instantiated.predicates = program
+            .as_unit()
+            .specs
+            .predicate_interfaces()
+            .iter()
+            .filter(|i| i.function == contract.function)
+            .map(|i| {
+                let declaration = &program.as_unit().specs.predicates()[i.predicate.get() as usize];
+                let module = program
+                    .as_unit()
+                    .source_map
+                    .source_span_for_origin(declaration.origin)
+                    .ok_or(ContractDefinitionError::MissingOrigin(declaration.origin))?
+                    .source
+                    .get();
+                let definition = super::PredicateDefinition::from_vir(
+                    program.runtime().memory,
+                    declaration,
+                    module,
+                )
+                .map_err(|_| ContractDefinitionError::MissingOrigin(declaration.origin))?;
+                let abi = &program
+                    .runtime()
+                    .abis
+                    .function(i.function)
+                    .ok_or(ContractDefinitionError::InvalidRange)?
+                    .signature;
+                let projections = i
+                    .bindings
+                    .iter()
+                    .zip(&i.fields)
+                    .map(|((pointer, permission), path)| {
+                        if path.is_empty() {
+                            return Ok(None);
+                        }
+                        let binding = (if i.ensures {
+                            abi.results()
+                        } else {
+                            abi.parameters()
+                        })
+                        .iter()
+                        .find(|b| {
+                            if i.ensures {
+                                b.parameter_slots().first() == Some(pointer)
+                                    && b.result_slots() == [*permission]
+                            } else {
+                                b.parameter_slots() == [*pointer, *permission]
+                            }
+                        })
+                        .ok_or(ContractDefinitionError::InvalidRange)?;
+                        let crate::VirAbiValue::IndirectAggregate { access } = binding.value()
+                        else {
+                            return Err(ContractDefinitionError::InvalidRange);
+                        };
+                        let (offset, access, _) = crate::vir::predicate_owner_field(
+                            program.runtime().memory,
+                            *access,
+                            path,
+                        )
+                        .ok_or(ContractDefinitionError::InvalidRange)?;
+                        Ok(Some((offset, access)))
+                    })
+                    .collect::<Result<_, ContractDefinitionError>>()?;
+                Ok(predicate::Interface {
+                    definition,
+                    projections,
+                    metadata: i.clone(),
+                })
+            })
+            .collect::<Result<_, ContractDefinitionError>>()?;
         instantiated.pure = pure::PureContract::new(program, contract)?;
         instantiated.resources = resources::ResourceContract::new(program, contract)?;
         instantiated.has_frame = contract.clauses.iter().any(|id| {

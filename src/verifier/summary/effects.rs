@@ -116,9 +116,14 @@ impl SummaryTransferContext<'_> {
             };
             let range = pointer
                 .and_then(|p| {
-                    let begin = p.offset_bytes().exact_value()?;
+                    // May-touch envelope only: never an initialization or
+                    // permission range. Every concrete offset is included.
                     let size = memory.layout(access?.layout)?.size_bytes;
-                    ByteRange::from_start_and_length(begin, size).ok()
+                    ByteRange::new(
+                        p.offset_bytes().lower(),
+                        p.offset_bytes().upper().checked_add(size)?,
+                    )
+                    .ok()
                 })
                 .map(AbstractByteRange::Exact)
                 .unwrap_or(AbstractByteRange::Unknown);

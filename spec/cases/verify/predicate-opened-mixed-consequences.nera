@@ -1,0 +1,43 @@
+// Boolean package guarantees expose typed numeric bounds after an ordinary call.
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>,limit:usize) {
+    exists used:usize = 0usize;
+    exists enabled:bool = false;
+    owns(p);
+    initialized(p.value,0..1);
+    enabled||(used<limit);
+    !enabled;
+}
+fn main()->u64 {
+    let p=alloc<Cell>(1);
+    p.value=42;
+    fold Ready(p,7usize) with (used=6usize);
+    return consume(p,7usize);
+}
+fn forward(p:&mut Cell,limit:usize)
+requires Ready(p,limit);
+ensures Ready(p,limit);
+{
+    unfold Ready(p,limit) as (saved,flag);
+    fold Ready(p,limit) with (used=saved,enabled=flag);
+    return;
+}
+fn consume(p:Own<Cell>,limit:usize)->u64
+requires Ready(p,limit);
+{
+    forward(&mut *p,limit);
+    unfold Ready(p,limit) as (saved,flag);
+    let mut i=0usize;
+    while i<limit {
+        invariant i<=limit;
+        invariant saved<limit;
+        invariant !flag;
+        i=i+1usize;
+    }
+    fold Ready(p,limit) with (used=saved,enabled=flag);
+    unfold Ready(p,limit);
+    let outcome=p.value;
+    free(p);
+    finish Ready(p,limit);
+    return outcome;
+}

@@ -1,0 +1,34 @@
+struct Storage { item:&mut u64, }
+predicate Pair(a:ptr<u64>,b:ptr<u64>) {
+    owns(a); owns(b); initialized(a,0usize..1usize);
+}
+fn main()->u64 { return paths(false); }
+fn paths(early:bool)->u64 {
+    let mut iteration=0;
+    while iteration<3 {
+        let a=alloc<u64>(1);
+        let b=alloc<u64>(1);
+        *a=42;
+        let total=*a;
+        let mut replacement=0;
+        fold Pair(a,b);
+        {
+            let va=&mut *a;
+            let vb=&mut *b;
+            let mut left=Storage {item:va};
+            let right=Storage {item:vb};
+            let moved=left.item;
+            left.item=moved;
+            if early { return total; }
+            left.item=&mut replacement;
+            iteration=iteration+1;
+            if iteration<2 { continue; }
+            if iteration==2 { break; }
+        }
+        unfold Pair(a,b);
+        free(a);
+        free(b);
+        finish Pair(a,b);
+    }
+    return 42;
+}

@@ -1,0 +1,30 @@
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>,n:usize) {
+    exists hidden:bool = true;
+    owns(p);
+    initialized(p.value,0..1);
+    n==n;
+}
+fn main()->u64 {
+    let p=alloc<Cell>(1);
+    p.value=42;
+    fold Ready(p,7usize);
+    let count=relay(&mut *p,7usize);
+    unfold Ready(p,count);
+    let value=p.value;
+    free(p);
+    finish Ready(p,count);
+    return value;
+}
+fn inspect(p:&mut Cell,n:usize)->usize
+requires Ready(p,n);
+ensures Ready(p,result);
+{
+    return n;
+}
+fn relay(p:&mut Cell,n:usize)->usize
+requires Ready(p,n);
+ensures Ready(p,result);
+{
+    return inspect(p,n);
+}

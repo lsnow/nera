@@ -29,17 +29,18 @@ pub use hir::{
     HirIntegerPredicate, HirIntegerType, HirLayout, HirLayoutId, HirLocal, HirLocalId, HirLoopId,
     HirMatchArm, HirModule, HirModuleId, HirModulePath, HirMutability, HirNodeId, HirPattern,
     HirPatternKind, HirPlace, HirPlaceAccess, HirPlaceBase, HirPlaceResolutionError,
-    HirPlaceResolutionErrorKind, HirPointerOffset, HirPredicate, HirPredicateId, HirProgram,
-    HirProgramTables, HirProgramValidationError, HirProjection, HirProjectionKind, HirRegion,
-    HirRegionConstraint, HirRegionConstraintId, HirRegionId, HirRegionOrigin, HirRegionOwner,
-    HirScopeId, HirSpecBinder, HirSpecBinderId, HirSpecBinderOwner, HirSpecClause, HirSpecClauseId,
-    HirSpecClauseOwner, HirSpecContractPosition, HirSpecEnvironment, HirSpecLocation,
-    HirSpecLoopInvariant, HirSpecLoopInvariantId, HirSpecProve, HirSpecProveId, HirSpecSnapshot,
-    HirSpecTerm, HirSpecTermId, HirSpecTermKind, HirStatement, HirStatementKind,
-    HirTargetDataLayout, HirTrustEntry, HirTrustEntryId, HirTrustPolicyKind, HirTrustScope,
-    HirTypeDefinition, HirTypeId, HirTypeKind, HirUseMode, HirVariant, HirVariantCaseLayout,
-    HirVariantId, HirVariantLayout, HirVersion, HirVisibility, ResolvedHirPlace,
-    ResolvedHirProjection, ResolvedHirProjectionKind,
+    HirPlaceResolutionErrorKind, HirPointerOffset, HirPredicate, HirPredicateAction,
+    HirPredicateActionKind, HirPredicateId, HirPredicateInterface, HirProgram, HirProgramTables,
+    HirProgramValidationError, HirProjection, HirProjectionKind, HirRegion, HirRegionConstraint,
+    HirRegionConstraintId, HirRegionId, HirRegionOrigin, HirRegionOwner, HirScopeId, HirSpecBinder,
+    HirSpecBinderId, HirSpecBinderOwner, HirSpecClause, HirSpecClauseId, HirSpecClauseOwner,
+    HirSpecContractPosition, HirSpecEnvironment, HirSpecLocation, HirSpecLoopInvariant,
+    HirSpecLoopInvariantId, HirSpecProve, HirSpecProveId, HirSpecSnapshot, HirSpecTerm,
+    HirSpecTermId, HirSpecTermKind, HirStatement, HirStatementKind, HirTargetDataLayout,
+    HirTrustEntry, HirTrustEntryId, HirTrustPolicyKind, HirTrustScope, HirTypeDefinition,
+    HirTypeId, HirTypeKind, HirUseMode, HirVariant, HirVariantCaseLayout, HirVariantId,
+    HirVariantLayout, HirVersion, HirVisibility, ResolvedHirPlace, ResolvedHirProjection,
+    ResolvedHirProjectionKind,
 };
 
 /// User-visible class of a frontend issue.
@@ -158,6 +159,7 @@ pub struct AstFile {
     module: Option<String>,
     imports: Vec<(String, ByteSpan)>,
     public: std::collections::BTreeSet<String>,
+    predicates: Vec<AstPredicate>,
     structs: Vec<AstStruct>,
     enums: Vec<AstEnum>,
     functions: Vec<AstFunction>,
@@ -203,9 +205,34 @@ impl AstFile {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AstPredicateOperation {
+    Fold,
+    Unfold,
+    Finish,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AstPredicateWitness {
+    pub name: String,
+    pub ty: AstType,
+    pub value: Option<AstLogicalExpression>,
+    pub span: ByteSpan,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AstPredicate {
+    pub name: String,
+    pub parameters: Vec<AstParameter>,
+    pub clauses: Vec<AstLogicalExpression>,
+    pub witnesses: Vec<AstPredicateWitness>,
+    pub span: ByteSpan,
+}
+
 /// A non-generic nominal struct admitted by the stage 6.5.8 surface slice.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AstStruct {
+    pub opaque: bool,
     pub name: String,
     pub generics: Vec<AstGenericParameter>,
     pub fields: Vec<AstStructField>,
@@ -282,7 +309,13 @@ pub enum AstType {
     U64,
     Usize,
     OwnU64,
+    OwnPointer {
+        pointee: Box<AstType>,
+    },
     RawU64,
+    RawPointer {
+        pointee: Box<AstType>,
+    },
     /// A reference with an elided, use-site inferred lifetime.
     Reference {
         pointee: Box<AstType>,
@@ -356,6 +389,13 @@ pub struct AstLoopInvariant {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AstStatementKind {
+    Predicate {
+        operation: AstPredicateOperation,
+        predicate: String,
+        locals: Vec<AstLogicalExpression>,
+        witnesses: Vec<(String, AstLogicalExpression)>,
+        opened: Option<Vec<String>>,
+    },
     Assert {
         expression: AstExpression,
     },
@@ -426,6 +466,11 @@ pub struct AstLogicalExpression {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AstLogicalExpressionKind {
+    /// Specification-only calls with pure logical actuals. Never runtime calls.
+    Call {
+        callee: String,
+        arguments: Vec<AstLogicalExpression>,
+    },
     ResourceRange {
         writable: bool,
         pointer: AstExpression,
@@ -516,6 +561,9 @@ pub enum AstExpressionKind {
         explicit_usize: bool,
     },
     Bool(bool),
+    NullPointer {
+        pointee: AstType,
+    },
     Name(String),
     Place(AstPlace),
     Unit,
@@ -1323,7 +1371,6 @@ mod tests {
     #[test]
     fn deferred_types_patterns_and_intrinsic_arguments_are_unsupported() {
         for text in [
-            "fn f() -> ptr<bool> { return; }",
             "fn f() { let (left, right) = pair; return; }",
             "fn f() { let Some(value) = option; return; }",
             "fn f() { free(memory + 8); return; }",
@@ -1337,7 +1384,11 @@ mod tests {
 
     #[test]
     fn return_shape_must_match_the_declared_surface_type() {
-        for text in ["fn bad() -> u64 { return; }", "fn bad() { return 1; }"] {
+        for text in [
+            "fn bad() -> u64 { return; }",
+            "fn bad() { return 1; }",
+            "fn bad() -> ptr<bool> { return; }",
+        ] {
             let output = analyze(text);
             assert_eq!(output.status(), FrontendStatus::Invalid);
             assert_eq!(output.issues()[0].kind(), FrontendIssueKind::Elaboration);

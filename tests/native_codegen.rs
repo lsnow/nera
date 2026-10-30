@@ -10,6 +10,44 @@ use nera::{
     VirValueId,
 };
 
+#[path = "support/opaque_arena.rs"]
+mod opaque_arena;
+
+#[test]
+fn opaque_arena_module_instances_reach_native_codegen() {
+    for capacity in [6, 8] {
+        let (library, forward, app) = opaque_arena::instance(capacity);
+        for entry in opaque_arena::ENTRIES {
+            let compiler = if entry == "app::main" {
+                opaque_arena::session(&library, &forward, &app)
+            } else {
+                opaque_arena::session_entry(&library, &forward, &app, entry)
+            };
+            let analysis = compiler.analyze("app").unwrap();
+            assert!(
+                analysis.frontend().vir().is_some(),
+                "{:?}",
+                analysis.frontend().issues()
+            );
+            let unit = analysis.frontend().vir().unwrap().resolve().unwrap();
+            assert!(
+                nera::verify_program(&unit, Default::default())
+                    .unwrap()
+                    .is_memory_checked_core0()
+            );
+            let machine = X86_64_UNKNOWN_LINUX_GNU
+                .codegen_program(unit.runtime())
+                .unwrap();
+            assert!(
+                !X86_64_UNKNOWN_LINUX_GNU
+                    .emit_assembly(&machine)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+}
+
 #[test]
 fn scalar_cfg_lowers_to_explicit_machine_blocks_and_main_wrapper() {
     let validated = scalar_cfg_program()

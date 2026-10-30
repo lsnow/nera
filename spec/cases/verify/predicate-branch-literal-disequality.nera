@@ -1,0 +1,30 @@
+// Both paths consume the actual truth of a comparison against a literal.
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>,equal:bool) {
+    owns(p);
+    initialized(p.value,0..1);
+}
+fn main()->u64 {
+    let p=alloc<Cell>(1);
+    p.value=42;
+    fold Ready(p,true);
+    let first=consume(p,4usize);
+    let q=alloc<Cell>(1);
+    q.value=42;
+    fold Ready(q,false);
+    let second=consume(q,5usize);
+    return first+second;
+}
+fn consume(p:Own<Cell>,n:usize)->u64 requires Ready(p,n==4usize); {
+    if n==4usize {
+        unfold Ready(p,true);
+        free(p);
+        finish Ready(p,true);
+        return 40;
+    } else {
+        unfold Ready(p,false);
+        free(p);
+        finish Ready(p,false);
+        return 2;
+    }
+}

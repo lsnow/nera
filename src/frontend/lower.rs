@@ -166,7 +166,18 @@ fn lower_raw_sources(
     // post-CFG pass sequence. Any failure drops the complete private draft.
     let lowered_functions = draft_functions
         .into_iter()
-        .map(|draft| post_cfg::canonicalize_function(memory.schema(), draft))
+        .map(|draft| {
+            let predicate_parameters = hir
+                .specs()
+                .predicate_interfaces
+                .iter()
+                .filter(|interface| {
+                    interface.function.get() == draft.id.get() && !interface.ensures
+                })
+                .flat_map(|interface| interface.parameters.iter().copied())
+                .collect::<Vec<_>>();
+            post_cfg::canonicalize_function(memory.schema(), draft, &predicate_parameters)
+        })
         .collect::<Result<Vec<_>, _>>()?;
     let mut functions = Vec::with_capacity(lowered_functions.len());
     let mut function_abis = Vec::with_capacity(lowered_functions.len());
@@ -233,7 +244,7 @@ fn lower_raw_sources(
         )
     };
     patch_lowered_loan_origins(&mut runtime, &source_map)?;
-    let borrows = lower_borrow_environment(hir, &runtime, &source_map)?;
+    let borrows = lower_borrow_environment(hir, &memory, &runtime, &source_map)?;
     let mut specs = infer_contracts(
         hir,
         &memory,
@@ -245,7 +256,7 @@ fn lower_raw_sources(
     )?;
     loop_spec::infer(&runtime, &source_map, &loop_specs, &mut specs);
     Ok(VirUnit {
-        version: VirUnitVersion::V28,
+        version: VirUnitVersion::V54,
         memory: memory.into_schema(),
         borrows,
         runtime,
@@ -307,11 +318,17 @@ fn patch_lowered_loan_origins(
 
 fn lower_borrow_environment(
     hir: &HirProgram,
+    memory: &LoweredMemorySchema,
     runtime: &RuntimeVirProgram,
     source_map: &VirSourceMap,
 ) -> Result<VirBorrowEnvironment, FrontendFailure> {
     let mut regions = Vec::with_capacity(hir.regions().len());
     for region in hir.regions() {
+        if matches!(region.origin, HirRegionOrigin::ParameterField { .. }) {
+            memory
+                .parameter_reference(region.id)
+                .ok_or_else(|| invalid_hir(region.span))?;
+        }
         let super::hir::HirRegionOwner::Function(hir_owner) = region.owner else {
             if matches!(region.origin, HirRegionOrigin::AggregateErased) {
                 continue;
@@ -332,7 +349,12 @@ fn lower_borrow_environment(
             for (ordinal, instruction) in block.instructions.iter().enumerate() {
                 if matches!(region.origin, HirRegionOrigin::Inferred { .. })
                     && instruction.source_span == region.span
-                    && matches!(instruction.instruction, VirInstruction::Call { .. })
+                    && matches!(
+                        instruction.instruction,
+                        VirInstruction::Call { .. }
+                            | VirInstruction::ResourceInitialize { .. }
+                            | VirInstruction::ObjectTransfer { .. }
+                    )
                 {
                     if blocks.last() != Some(&block.id) {
                         blocks.push(block.id);
@@ -380,7 +402,8 @@ fn lower_borrow_environment(
             }
         }
         let signature_index = match region.origin {
-            HirRegionOrigin::Parameter { index } => Some(index),
+            HirRegionOrigin::Parameter { index }
+            | HirRegionOrigin::ParameterField { index, .. } => Some(index),
             _ => None,
         };
         let signature_region =
@@ -398,6 +421,9 @@ fn lower_borrow_environment(
             owner,
             origin: match region.origin {
                 HirRegionOrigin::Parameter { index } => VirBorrowRegionOrigin::Parameter { index },
+                HirRegionOrigin::ParameterField { index, slot } => {
+                    VirBorrowRegionOrigin::ParameterField { index, slot }
+                }
                 HirRegionOrigin::Result => VirBorrowRegionOrigin::Result { index: 0 },
                 HirRegionOrigin::LexicalScope { .. } => VirBorrowRegionOrigin::Lexical,
                 HirRegionOrigin::Inferred { .. } => VirBorrowRegionOrigin::Inferred,
@@ -448,6 +474,7 @@ fn vir_borrow_region_id(
                     super::hir::HirRegionOwner::Function(_),
                     HirRegionOrigin::Inferred { .. }
                         | HirRegionOrigin::Parameter { .. }
+                        | HirRegionOrigin::ParameterField { .. }
                         | HirRegionOrigin::Result
                 )
             )
@@ -480,10 +507,12 @@ struct Lowerer<'hir> {
     environment: LocalEnvironment,
     flow_facts: Vec<VirValue>,
     active_scopes: Vec<HirScopeId>,
+    call_cleanup: Option<(crate::HirNodeId, Vec<HirLocalId>)>,
     active_loops: Vec<LoweredLoop>,
     local_types: Vec<VirType>,
     storage_locals: BTreeSet<HirLocalId>,
     object_temporaries: Vec<ObjectTemporaryStorage>,
+    shared_read_storage: BTreeMap<crate::VirMemoryAccess, HirLocalId>,
     abi_call_storage: Vec<AbiCallStorage>,
     abi: VirAbiSignature,
     abi_parameter_restores: Vec<(u32, HirLocalId)>,
@@ -559,12 +588,14 @@ impl<'hir> Lowerer<'hir> {
             .results()
             .first()
             .is_some_and(|binding| binding.value().is_indirect_aggregate());
+        let scratch_accesses = aggregate::shared_read_accesses(body, &memory, function.span);
         let total_locals = body
             .locals
             .len()
             .checked_add(constructors.len())
             .and_then(|count| count.checked_add(call_storage_specs.len()))
             .and_then(|count| count.checked_add(usize::from(has_indirect_result)))
+            .and_then(|count| count.checked_add(scratch_accesses.len()))
             .ok_or_else(|| invalid_hir(function.span))?;
         let mut local_types = vec![None; total_locals];
         let mut storage_locals = BTreeSet::new();
@@ -649,6 +680,15 @@ impl<'hir> Lowerer<'hir> {
         } else {
             None
         };
+        let mut shared_read_storage = BTreeMap::new();
+        let start = total_locals - scratch_accesses.len();
+        for (index, access) in scratch_accesses.into_iter().enumerate() {
+            let local = HirLocalId::new(
+                u32::try_from(start + index).map_err(|_| invalid_hir(function.span))?,
+            );
+            local_types[local.index()] = Some(VirType::Pointer { access });
+            shared_read_storage.insert(access, local);
+        }
         let local_types = local_types
             .into_iter()
             .collect::<Option<Vec<_>>>()
@@ -673,10 +713,12 @@ impl<'hir> Lowerer<'hir> {
             environment: entry_environment.entry_environment(),
             flow_facts: Vec::new(),
             active_scopes: vec![body.root.scope],
+            call_cleanup: None,
             active_loops: Vec::new(),
             local_types,
             storage_locals,
             object_temporaries,
+            shared_read_storage,
             abi_call_storage,
             abi,
             abi_parameter_restores: Vec::new(),
@@ -731,6 +773,11 @@ impl<'hir> Lowerer<'hir> {
             };
             let storage = self.emit_temporary_storage(access, call_storage.span)?;
             planned.push((call_storage.local, storage, None, call_storage.span));
+        }
+
+        for (access, local) in self.shared_read_storage.clone() {
+            let storage = self.emit_temporary_storage(access, self.function.span)?;
+            planned.push((local, storage, None, self.function.span));
         }
 
         // `LocalStorage` is a strict entry-block prefix. Drop-flag constants
@@ -844,7 +891,7 @@ impl<'hir> Lowerer<'hir> {
     fn lower_function(mut self) -> Result<DraftLoweredFunction, FrontendFailure> {
         let function = self.function;
         let body = function.body().ok_or_else(|| invalid_hir(function.span))?;
-        self.lower_block_statements(&body.root, &[])?;
+        self.lower_block_statements(&body.root, &[], None)?;
         if self.cfg.has_open_block() {
             return Err(invalid_hir(function.span));
         }
@@ -884,13 +931,41 @@ impl<'hir> Lowerer<'hir> {
         &mut self,
         block: &HirBlock,
         live_after_block: &[HirLocalId],
+        continuation: Option<&EnvironmentBlock>,
     ) -> Result<(), FrontendFailure> {
-        let live_outs = statement_live_outs(block, live_after_block, &self.active_loop_liveness())?;
+        // A preplanned continuation transports these exact authorities. Their
+        // lexical cleanup cannot run inside one predecessor just because the
+        // source no longer reads the binding. Retain them until the common
+        // continuation; runtime permission checks still govern all accesses.
+        let retained = live_after_block
+            .iter()
+            .copied()
+            .chain(
+                continuation
+                    .into_iter()
+                    .flat_map(EnvironmentBlock::loan_locals),
+            )
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let live_outs = statement_live_outs(block, &retained, &self.active_loop_liveness())?;
         for (statement, live_after) in block.statements.iter().zip(live_outs) {
             if !self.cfg.has_open_block() {
                 return Err(invalid_hir(statement.span));
             }
+            // Only a complete initializer call: another operand in the same
+            // expression must not lose a parent that it still needs.
+            let cleanup = match &statement.kind {
+                HirStatementKind::Let { value, .. }
+                    if matches!(value.kind, HirExpressionKind::Call(_)) =>
+                {
+                    Some((value.id, live_after.clone()))
+                }
+                _ => None,
+            };
+            let previous = std::mem::replace(&mut self.call_cleanup, cleanup);
             self.lower_statement(statement, block.span, &live_after)?;
+            self.call_cleanup = previous;
             if self.cfg.has_open_block() {
                 let parameters = &self
                     .function
@@ -932,6 +1007,9 @@ impl<'hir> Lowerer<'hir> {
                     },
                     statement.span,
                 )
+            }
+            HirStatementKind::Predicate { action, .. } => {
+                self.lower_predicate_action(*action, statement.span)
             }
             HirStatementKind::Prove { prove } => self.lower_local_prove(*prove, statement.span),
             HirStatementKind::Declare { local } => {
@@ -1120,7 +1198,7 @@ impl<'hir> Lowerer<'hir> {
             .copied()
             .ok_or_else(|| invalid_hir(block.span))?;
         self.enter_scope(block)?;
-        self.lower_block_statements(block, live_after)?;
+        self.lower_block_statements(block, live_after, None)?;
         if self.cfg.has_open_block() {
             self.emit_scope_exit_actions(Some(retained_scope), block.span)?;
         }
@@ -2171,21 +2249,10 @@ impl<'hir> Lowerer<'hir> {
         self.enter_scope(block)?;
         let object = self.lower_object_expression(scrutinee)?;
         self.lower_enum_pattern_bindings(object, pattern)?;
-        self.lower_block_statements(block, live_after)?;
+        self.lower_block_statements(block, live_after, join)?;
         if self.cfg.has_open_block() {
             let join = join.ok_or_else(|| invalid_hir(block.span))?;
-            self.emit_drops_not_in_environment(join, block.span)?;
-            let facts = self
-                .flow_facts
-                .get(..join.extra_parameters().len())
-                .ok_or_else(|| invalid_hir(block.span))?;
-            let target = join.target_from_with_extras(&self.environment, facts, block.span)?;
-            self.terminate_scope_exit(
-                Some(retained_scope),
-                VirTerminator::Jump { target },
-                block.span,
-                true,
-            )?;
+            self.terminate_environment_exit(join, retained_scope, block.span, true)?;
         }
         self.leave_scope(block)
     }
@@ -2348,21 +2415,11 @@ impl<'hir> Lowerer<'hir> {
                 .ok_or_else(|| invalid_hir(body.span))?;
             self.assign_local(local, runtime_value(value), body.span)?;
         }
-        self.lower_block_statements(body, &active.liveness.header)?;
+        self.lower_block_statements(body, &active.liveness.header, Some(&active.continue_target))?;
         if self.cfg.has_open_block() {
-            self.emit_drops_not_in_environment(&active.continue_target, body.span)?;
-            let facts = self
-                .flow_facts
-                .get(..active.continue_target.extra_parameters().len())
-                .ok_or_else(|| invalid_hir(body.span))?;
-            let target = active.continue_target.target_from_with_extras(
-                &self.environment,
-                facts,
-                body.span,
-            )?;
-            self.terminate_scope_exit(
-                Some(active.parent_scope),
-                VirTerminator::Jump { target },
+            self.terminate_environment_exit(
+                &active.continue_target,
+                active.parent_scope,
                 body.span,
                 true,
             )?;
@@ -2388,18 +2445,36 @@ impl<'hir> Lowerer<'hir> {
         } else {
             &active.continue_target
         };
+        self.terminate_environment_exit(destination, active.parent_scope, source_span, false)
+    }
+
+    /// Dispose leaving scopes before dropping other dead locals, then build
+    /// the edge from the updated environment. Storage retained for a later
+    /// iteration carries its cleared flag, never the pre-cleanup snapshot.
+    fn terminate_environment_exit(
+        &mut self,
+        destination: &EnvironmentBlock,
+        retained_scope: HirScopeId,
+        source_span: ByteSpan,
+        generated: bool,
+    ) -> Result<(), FrontendFailure> {
+        self.emit_scope_exit_actions(Some(retained_scope), source_span)?;
         self.emit_drops_not_in_environment(destination, source_span)?;
         let facts = self
             .flow_facts
             .get(..destination.extra_parameters().len())
             .ok_or_else(|| invalid_hir(source_span))?;
         let target = destination.target_from_with_extras(&self.environment, facts, source_span)?;
-        self.terminate_scope_exit(
-            Some(active.parent_scope),
-            VirTerminator::Jump { target },
-            source_span,
-            false,
-        )
+        if generated {
+            self.cfg.terminate_generated(
+                VirTerminator::Jump { target },
+                source_span,
+                VirGeneratedReason::ControlFlowEdge,
+            )
+        } else {
+            self.cfg
+                .terminate(VirTerminator::Jump { target }, source_span)
+        }
     }
 
     fn lower_loop_condition_exit(
@@ -2447,21 +2522,10 @@ impl<'hir> Lowerer<'hir> {
             .copied()
             .ok_or_else(|| invalid_hir(block.span))?;
         self.enter_scope(block)?;
-        self.lower_block_statements(block, live_after)?;
+        self.lower_block_statements(block, live_after, join)?;
         if self.cfg.has_open_block() {
             let join = join.ok_or_else(|| invalid_hir(block.span))?;
-            self.emit_drops_not_in_environment(join, block.span)?;
-            let facts = self
-                .flow_facts
-                .get(..join.extra_parameters().len())
-                .ok_or_else(|| invalid_hir(block.span))?;
-            let target = join.target_from_with_extras(&self.environment, facts, block.span)?;
-            self.terminate_scope_exit(
-                Some(retained_scope),
-                VirTerminator::Jump { target },
-                block.span,
-                true,
-            )?;
+            self.terminate_environment_exit(join, retained_scope, block.span, true)?;
         }
         self.leave_scope(block)
     }
@@ -2637,7 +2701,7 @@ impl<'hir> Lowerer<'hir> {
                                 permission,
                             } => self.emit_generated(
                                 VirInstruction::LoanEnd {
-                                    effect: loan_effect(loan, pointer, permission),
+                                    effect: loan_effect(loan, pointer.id, permission),
                                 },
                                 source_span,
                                 VirGeneratedReason::LoanEffect,
@@ -2648,7 +2712,9 @@ impl<'hir> Lowerer<'hir> {
                                 permission,
                             } => self.emit_generated(
                                 VirInstruction::LoanEndAuthority {
-                                    effect: loan_authority_effect(pointer, permission, reference),
+                                    effect: loan_authority_effect(
+                                        pointer.id, permission, reference,
+                                    ),
                                 },
                                 source_span,
                                 VirGeneratedReason::LoanEffect,
@@ -2778,6 +2844,7 @@ impl<'hir> Lowerer<'hir> {
             .map(|storage| storage.local)
             .chain(self.abi_call_storage.iter().map(|storage| storage.local))
             .chain(self.abi_indirect_result)
+            .chain(self.shared_read_storage.values().copied())
             .collect::<BTreeSet<_>>();
         let active_loans = body
             .locals
@@ -2824,6 +2891,23 @@ impl<'hir> Lowerer<'hir> {
                 self.types
                     .require_runtime_word(expression.ty, expression.span)?;
                 self.lower_integer(*word, expression.span)?
+            }
+            HirExpressionKind::NullPointer => {
+                let ty = self
+                    .types
+                    .value_type(&self.memory, expression.ty, expression.span)?;
+                let VirType::Pointer { access } = ty else {
+                    return Err(invalid_hir(expression.span));
+                };
+                let result = self.fresh_value(ty, expression.span)?;
+                self.emit(
+                    VirInstruction::Constant {
+                        result,
+                        value: VirConstant::NullPointer(access),
+                    },
+                    expression.span,
+                )?;
+                runtime_value(result)
             }
             HirExpressionKind::Bool(value) => {
                 self.types.require_bool(expression.ty, expression.span)?;
@@ -3147,6 +3231,7 @@ impl<'hir> Lowerer<'hir> {
             }
             HirExpressionKind::Unit
             | HirExpressionKind::Integer(_)
+            | HirExpressionKind::NullPointer
             | HirExpressionKind::Bool(_)
             | HirExpressionKind::Compare { .. }
             | HirExpressionKind::PointerDistance { .. }
@@ -4289,53 +4374,38 @@ impl<'hir> Lowerer<'hir> {
                 self.lower_resource_take(address, source_span)
             }
             Some(HirTypeKind::Reference { mutability, .. }) => {
-                let original = self.lower_resource_take(address, source_span)?;
                 if mode == HirUseMode::Move {
-                    return Ok(original);
+                    return self.lower_resource_take(address, source_span);
                 }
                 if *mutability != super::hir::HirMutability::Const {
                     return Err(invalid_hir(source_span));
                 }
-                let permission = original
-                    .permission
+                let local = *self
+                    .shared_read_storage
+                    .get(&self.memory.access(address.ty, source_span)?)
                     .ok_or_else(|| invalid_hir(source_span))?;
-                let reference = match original.loan.ok_or_else(|| invalid_hir(source_span))? {
-                    LoweredLoan::Authority { reference, .. }
-                    | LoweredLoan::ConditionalAuthority { reference, .. } => reference,
-                    LoweredLoan::Static(_) => return Err(invalid_hir(source_span)),
-                };
-                let reference_result = self.fresh_value(original.ty, source_span)?;
-                let permission_result = self.fresh_value(VirType::Permission, source_span)?;
-                self.emit_generated(
-                    VirInstruction::LoanAliasAuthority {
-                        effect: loan_authority_effect(original.value, permission, reference),
-                        reference_result,
-                        permission_result,
-                    },
-                    source_span,
-                    VirGeneratedReason::LoanEffect,
-                )?;
+                let storage = self.storage_object(local, source_span)?;
                 self.emit(
-                    VirInstruction::ResourceInitialize {
-                        destination: address.pointer,
-                        destination_permission: address.permission,
-                        value: original.value,
-                        value_permission: permission,
-                        access: self.memory.access(address.ty, source_span)?,
+                    VirInstruction::ObjectTransfer {
+                        destination: storage.pointer,
+                        destination_permission: storage.permission,
+                        source: address.pointer,
+                        source_permission: address.permission,
+                        access: storage.access,
+                        destination_mode: crate::VirObjectDestinationMode::Initialize,
+                        source_mode: crate::VirObjectSourceMode::Copy,
                     },
                     source_span,
                 )?;
-                Ok(LoweredValue {
-                    value: reference_result.id,
-                    ty: reference_result.ty,
-                    metadata: None,
-                    permission: Some(permission_result.id),
-                    drop_flag: None,
-                    loan: Some(LoweredLoan::Authority {
-                        kind: VirLoanKind::Shared,
-                        reference,
-                    }),
-                })
+                self.lower_resource_take(
+                    LoweredAddress {
+                        pointer: storage.pointer,
+                        permission: storage.permission,
+                        metadata: None,
+                        ty: address.ty,
+                    },
+                    source_span,
+                )
             }
             _ => self.lower_load(address, source_span),
         }
@@ -4523,12 +4593,6 @@ impl<'hir> Lowerer<'hir> {
             self.hir.type_kind(destination.ty),
             Some(HirTypeKind::RawPointer { .. })
         ) {
-            let LoweredPlace::Local(local) = lowered_destination else {
-                return Err(FrontendFailure::unsupported(
-                    source_span,
-                    "raw-pointer-bearing storage remains gated",
-                ));
-            };
             let replacement = self.lower_expression(value)?;
             if replacement.permission.is_some() || replacement.loan.is_some() {
                 return Err(FrontendFailure::unsupported(
@@ -4536,6 +4600,21 @@ impl<'hir> Lowerer<'hir> {
                     "mutable raw bindings require authority-free addresses",
                 ));
             }
+            if let LoweredPlace::Address(address) = lowered_destination {
+                return self.cfg.emit_assignment(
+                    address.pointer,
+                    address.permission,
+                    self.memory.access(address.ty, source_span)?,
+                    PendingAssignmentSource::Scalar {
+                        value: replacement.value,
+                    },
+                    DraftSourceIdentity::HirNode(destination.id),
+                    source_span,
+                );
+            }
+            let LoweredPlace::Local(local) = lowered_destination else {
+                return Err(invalid_hir(source_span));
+            };
             if self.local_types.get(local.index()) != Some(&replacement.ty) {
                 return Err(invalid_hir(source_span));
             }
@@ -4545,6 +4624,28 @@ impl<'hir> Lowerer<'hir> {
         if let Some(HirTypeKind::Own { .. } | HirTypeKind::Reference { .. }) =
             self.hir.type_kind(destination.ty)
         {
+            if let LoweredPlace::Local(local) = lowered_destination
+                && matches!(
+                    self.hir.type_kind(destination.ty),
+                    Some(HirTypeKind::Own { .. })
+                )
+            {
+                // Evaluate the RHS first. Moving the old owner into that
+                // expression disarms its cleanup flag, so p=step(p) and p=p
+                // cannot free the transferred allocation. Replacement by an
+                // independent owner still drops the old pointee and allocation.
+                let mut replacement = self.lower_expression(value)?;
+                if replacement.permission.is_none()
+                    || replacement.loan.is_some()
+                    || replacement.drop_flag.is_none()
+                    || self.local_types.get(local.index()) != Some(&replacement.ty)
+                {
+                    return Err(invalid_hir(source_span));
+                }
+                self.emit_local_drop(local, source_span)?;
+                replacement.drop_flag = Some(self.lower_generated_drop_flag(true, source_span)?);
+                return self.environment.reassign(local, replacement, source_span);
+            }
             let LoweredPlace::Address(address) = lowered_destination else {
                 return Err(invalid_hir(source_span));
             };
@@ -5082,7 +5183,10 @@ impl<'hir> Lowerer<'hir> {
         let scalar_type = self
             .types
             .value_type(&self.memory, address.ty, source_span)?;
-        if !matches!(scalar_type, VirType::U64 | VirType::Bool) {
+        if !matches!(
+            scalar_type,
+            VirType::U64 | VirType::Bool | VirType::Pointer { .. }
+        ) {
             return Err(invalid_hir(source_span));
         }
         let result = self.fresh_value(scalar_type, source_span)?;
@@ -5473,7 +5577,10 @@ impl<'hir> Lowerer<'hir> {
             .get(local.index())
             .copied()
             .ok_or_else(|| invalid_hir(source_span))?;
-        if expected != VirType::U64 || value.ty != expected || value.permission.is_some() {
+        if !matches!(expected, VirType::U64 | VirType::Bool)
+            || value.ty != expected
+            || value.permission.is_some()
+        {
             return Err(invalid_hir(source_span));
         }
         self.environment.reassign(local, value, source_span)
@@ -5802,6 +5909,7 @@ fn statement_falls_through(statement: &HirStatement) -> bool {
             ..
         } => block_falls_through(then_block) || block_falls_through(else_block),
         HirStatementKind::Assert { .. }
+        | HirStatementKind::Predicate { .. }
         | HirStatementKind::Prove { .. }
         | HirStatementKind::Declare { .. }
         | HirStatementKind::Let { .. }

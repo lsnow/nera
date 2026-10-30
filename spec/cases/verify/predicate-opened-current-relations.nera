@@ -1,0 +1,35 @@
+// Current scalar relations connect separate saved equalities and opened queries.
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>,count:usize,limit:usize) {
+    exists used:usize = 0usize;
+    exists end:usize = 0usize;
+    owns(p);
+    initialized(p.value,0..1);
+    used==count;
+    end==limit;
+}
+fn main()->u64 {
+    let p=alloc<Cell>(1);
+    p.value=42;
+    fold Ready(p,6usize,7usize) with (used=6usize,end=7usize);
+    return consume(p,6usize,7usize);
+}
+fn consume(p:Own<Cell>,count:usize,limit:usize)->u64
+requires count<limit;
+requires Ready(p,count,limit);
+{
+    unfold Ready(p,count,limit) as (saved,stop);
+    let mut i=0usize;
+    while i<3usize {
+        invariant i<=3usize;
+        invariant saved<stop;
+        invariant saved<limit;
+        i=i+1usize;
+    }
+    fold Ready(p,count,limit) with (used=saved,end=stop);
+    unfold Ready(p,count,limit);
+    let outcome=p.value;
+    free(p);
+    finish Ready(p,count,limit);
+    return outcome;
+}

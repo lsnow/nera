@@ -9,7 +9,9 @@ mod local_spec;
 pub(in crate::frontend) mod loop_spec;
 mod node_identity;
 mod place;
+mod predicate;
 mod program;
+pub use predicate::{HirPredicateAction, HirPredicateActionKind, HirPredicateInterface};
 mod regions;
 mod resolve;
 mod spec;
@@ -84,6 +86,10 @@ pub struct HirStatement {
 /// Statement operands use `HirLocalId`; lowering never resolves source names again.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HirStatementKind {
+    Predicate {
+        action: u32,
+        locals: Vec<HirLocalId>,
+    },
     /// Evaluates a boolean condition and aborts execution when it is false.
     Assert {
         expression: HirExpression,
@@ -253,6 +259,7 @@ pub enum HirExpressionKind {
     Unit,
     Integer(u64),
     Bool(bool),
+    NullPointer,
     /// Read array/slice metadata without copying or moving the referent.
     Length {
         place: Box<HirPlace>,
@@ -425,6 +432,13 @@ struct Binding {
 struct ScopeFrame {
     id: HirScopeId,
     bindings: BTreeMap<String, Binding>,
+    ghost_bindings: BTreeMap<
+        String,
+        (
+            crate::predicate_logic::LogicType<HirTypeId>,
+            crate::predicate_logic::WitnessInput<HirLocalId, HirTypeId>,
+        ),
+    >,
     locals: Vec<HirLocalId>,
 }
 
@@ -443,6 +457,8 @@ enum SurfaceVariantStyle {
 }
 
 struct Elaborator {
+    predicates: Vec<HirPredicate>,
+    predicate_names: BTreeMap<String, HirPredicateId>,
     contract_position: Option<HirSpecContractPosition>,
     loop_spec_context: Option<HirLoopId>,
     specs: HirSpecEnvironment,
@@ -462,6 +478,8 @@ struct Elaborator {
     variant_styles: BTreeMap<HirVariantId, SurfaceVariantStyle>,
     scopes: Vec<ScopeFrame>,
     locals: Vec<HirLocal>,
+    local_reference_regions: BTreeMap<HirLocalId, Vec<HirRegionId>>,
+    aggregate_result_sources: BTreeMap<HirFunctionId, Vec<crate::BoundarySource>>,
     next_allocation: u32,
     next_scope: u32,
     next_loop: u32,
@@ -590,10 +608,14 @@ impl Elaborator {
             variant_styles: BTreeMap::new(),
             scopes: Vec::new(),
             locals: Vec::new(),
+            local_reference_regions: BTreeMap::new(),
+            aggregate_result_sources: BTreeMap::new(),
             next_allocation: 0,
             next_scope: 1,
             next_loop: 0,
             next_node: 0,
+            predicates: Vec::new(),
+            predicate_names: BTreeMap::new(),
             specs: HirSpecEnvironment::empty(),
             contract_position: None,
             loop_spec_context: None,
@@ -634,6 +656,7 @@ impl Elaborator {
             }
         }
         self.validate_supported_fields()?;
+        self.declare_predicates(files)?;
         let ast_functions: Vec<_> = files
             .iter()
             .enumerate()
@@ -687,6 +710,7 @@ impl Elaborator {
                 borrow_result_alternatives,
             };
             self.types.push(HirTypeDefinition {
+                opaque: None,
                 id: signature_type,
                 name: None,
                 kind: HirTypeKind::Function(HirFunctionType {
@@ -740,6 +764,7 @@ impl Elaborator {
                 })?;
             self.scopes.clear();
             self.locals.clear();
+            self.local_reference_regions.clear();
             self.next_allocation = 0;
             self.next_scope = 1;
             self.next_loop = 0;
@@ -787,6 +812,24 @@ impl Elaborator {
                 .declarations
                 .push(HirDeclaration::Contract(declaration.contract));
         }
+        for predicate in &self.predicates {
+            modules[predicate.module.index()]
+                .declarations
+                .push(HirDeclaration::Predicate(predicate.id));
+        }
+        // Pointer layout is independent of its referent, allowing recursive
+        // nodes. Resolve referent layouts after all definitions and bodies exist.
+        let pointees = self
+            .types
+            .iter()
+            .filter_map(|ty| match ty.kind {
+                HirTypeKind::RawPointer { pointee, .. } => Some(pointee),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for pointee in pointees {
+            self.ensure_layout(pointee, &mut Vec::new(), files[self.current_module].span())?;
+        }
         let graph = &self.graph;
         let entry_module = HirModuleId::new(graph.entry_module as u32);
         let entry_function =
@@ -807,7 +850,7 @@ impl Elaborator {
             region_constraints: std::mem::take(&mut self.region_constraints),
             functions,
             contracts,
-            predicates: Vec::new(),
+            predicates: std::mem::take(&mut self.predicates),
             specs: std::mem::replace(&mut self.specs, HirSpecEnvironment::empty()),
         };
         tables.assign_canonical_type_capabilities().map_err(|_| {
@@ -816,6 +859,24 @@ impl Elaborator {
         HirProgram::from_tables(tables).map_err(|_| {
             FrontendFailure::elaboration(ast.span(), "typed HIR program tables are inconsistent")
         })
+    }
+
+    fn require_representation_access(
+        &self,
+        ty: HirTypeId,
+        span: ByteSpan,
+    ) -> Result<(), FrontendFailure> {
+        if self
+            .type_definition(ty)
+            .and_then(|d| d.opaque)
+            .is_some_and(|module| module.get() as usize != self.current_module)
+        {
+            return Err(FrontendFailure::elaboration(
+                span,
+                "opaque representation is private to its defining module",
+            ));
+        }
+        Ok(())
     }
 
     fn declare_structs(
@@ -846,6 +907,9 @@ impl Elaborator {
                 },
             );
             self.types.push(HirTypeDefinition {
+                opaque: item
+                    .opaque
+                    .then_some(HirModuleId::new(self.current_module as u32)),
                 id,
                 name: Some(item.name.clone()),
                 kind: HirTypeKind::Struct { fields: Vec::new() },
@@ -922,6 +986,7 @@ impl Elaborator {
                 },
             );
             self.types.push(HirTypeDefinition {
+                opaque: None,
                 id,
                 name: Some(item.name.clone()),
                 kind: HirTypeKind::Enum {
@@ -1066,7 +1131,7 @@ impl Elaborator {
         if self.is_aggregate(resolved) {
             self.require_surface_aggregate(resolved, source_span)?;
             if !self.is_surface_copy_type(resolved)
-                && !self.is_variant_free_owning_aggregate(resolved)
+                && !self.is_variant_free_resource_aggregate(resolved)
             {
                 return Err(FrontendFailure::unsupported(
                     source_span,
@@ -1106,32 +1171,52 @@ impl Elaborator {
         index: usize,
         span: ByteSpan,
     ) -> Result<HirTypeId, FrontendFailure> {
-        let AstType::Reference { pointee, mutable } = ty else {
-            return self.signature_type(ty, span);
+        let resolved = if let AstType::Reference { pointee, mutable } = ty {
+            let pointee = self.reference_pointee(pointee, *mutable, span)?;
+            let region = HirRegionId::new(
+                u32::try_from(self.regions.len())
+                    .map_err(|_| FrontendFailure::elaboration(span, "too many regions"))?,
+            );
+            self.regions.push(HirRegion {
+                id: region,
+                owner: HirRegionOwner::Function(owner),
+                origin: HirRegionOrigin::Parameter {
+                    index: index as u32,
+                },
+                span,
+            });
+            self.intern_reference_type(
+                pointee,
+                if *mutable {
+                    HirMutability::Mutable
+                } else {
+                    HirMutability::Const
+                },
+                region,
+                span,
+            )?
+        } else {
+            self.signature_type(ty, span)?
         };
-        let pointee = self.reference_pointee(pointee, *mutable, span)?;
-        let region = HirRegionId::new(
-            u32::try_from(self.regions.len())
-                .map_err(|_| FrontendFailure::elaboration(span, "too many regions"))?,
-        );
-        self.regions.push(HirRegion {
-            id: region,
-            owner: HirRegionOwner::Function(owner),
-            origin: HirRegionOrigin::Parameter {
-                index: index as u32,
-            },
-            span,
-        });
-        self.intern_reference_type(
-            pointee,
-            if *mutable {
-                HirMutability::Mutable
-            } else {
-                HirMutability::Const
-            },
-            region,
-            span,
-        )
+        if let Some(slots) = regions::parameter_reference_types(&self.types, &self.fields, resolved)
+        {
+            for slot in 0..slots.len() {
+                let id = HirRegionId::new(
+                    u32::try_from(self.regions.len())
+                        .map_err(|_| FrontendFailure::elaboration(span, "too many regions"))?,
+                );
+                self.regions.push(HirRegion {
+                    id,
+                    owner: HirRegionOwner::Function(owner),
+                    origin: HirRegionOrigin::ParameterField {
+                        index: index as u32,
+                        slot: slot as u32,
+                    },
+                    span,
+                });
+            }
+        }
+        Ok(resolved)
     }
 
     fn reference_compatible(&self, actual: HirTypeId, expected: HirTypeId) -> bool {
@@ -1151,7 +1236,26 @@ impl Elaborator {
             AstType::U64 => Ok(self.core_types.u64_),
             AstType::Usize => Ok(self.core_types.usize_),
             AstType::OwnU64 => Ok(self.core_types.own_u64),
+            AstType::OwnPointer { pointee } => {
+                let pointee = self.resolve_ast_type(pointee, source_span)?;
+                let owner =
+                    self.intern_aggregate_type(HirTypeKind::Own { pointee }, source_span)?;
+                self.ensure_layout(owner, &mut Vec::new(), source_span)?;
+                Ok(owner)
+            }
             AstType::RawU64 => Ok(self.core_types.raw_mut_u64),
+            AstType::RawPointer { pointee } => {
+                let pointee = self.resolve_ast_type(pointee, source_span)?;
+                let pointer = self.intern_aggregate_type(
+                    HirTypeKind::RawPointer {
+                        pointee,
+                        mutability: HirMutability::Mutable,
+                    },
+                    source_span,
+                )?;
+                self.ensure_layout(pointer, &mut Vec::new(), source_span)?;
+                Ok(pointer)
+            }
             AstType::Applied { .. } | AstType::ConstArray { .. } | AstType::Reference { .. } => {
                 Err(FrontendFailure::unsupported(
                     source_span,
@@ -1173,12 +1277,12 @@ impl Elaborator {
             AstType::Tuple(elements) => {
                 let elements = elements
                     .iter()
-                    .map(|element| self.resolve_ast_type(element, source_span))
+                    .map(|element| self.resolve_inline_storage_type(element, source_span))
                     .collect::<Result<Vec<_>, _>>()?;
                 self.intern_aggregate_type(HirTypeKind::Tuple(elements), source_span)
             }
             AstType::Array { element, length } => {
-                let element = self.resolve_ast_type(element, source_span)?;
+                let element = self.resolve_inline_storage_type(element, source_span)?;
                 self.intern_aggregate_type(
                     HirTypeKind::Array {
                         element,
@@ -1188,6 +1292,50 @@ impl Elaborator {
                 )
             }
         }
+    }
+
+    /// Anonymous tuple/array reference leaves use canonical erased storage
+    /// types. Concrete values retain their own regions and authority carriers.
+    fn resolve_inline_storage_type(
+        &mut self,
+        ty: &AstType,
+        span: ByteSpan,
+    ) -> Result<HirTypeId, FrontendFailure> {
+        let AstType::Reference { pointee, mutable } = ty else {
+            return self.resolve_ast_type(ty, span);
+        };
+        if matches!(pointee.as_ref(), AstType::Slice { .. }) {
+            return Err(FrontendFailure::unsupported(
+                span,
+                "slice views in aggregate storage require stored view metadata support",
+            ));
+        }
+        let pointee = self.resolve_ast_type(pointee, span)?;
+        let mutability = if *mutable {
+            HirMutability::Mutable
+        } else {
+            HirMutability::Const
+        };
+        if let Some(existing) = self.types.iter().find(|ty| matches!(ty.kind,
+            HirTypeKind::Reference { pointee: p, mutability: m, region } if p == pointee && m == mutability
+                && self.regions.get(region.index()).is_some_and(|r| r.owner == HirRegionOwner::Type(ty.id) && r.origin == HirRegionOrigin::AggregateErased))) {
+            return Ok(existing.id);
+        }
+        let owner = HirTypeId::new(
+            u32::try_from(self.types.len())
+                .map_err(|_| FrontendFailure::elaboration(span, "too many storage types"))?,
+        );
+        let region = HirRegionId::new(
+            u32::try_from(self.regions.len())
+                .map_err(|_| FrontendFailure::elaboration(span, "too many storage regions"))?,
+        );
+        self.regions.push(HirRegion {
+            id: region,
+            owner: HirRegionOwner::Type(owner),
+            origin: HirRegionOrigin::AggregateErased,
+            span,
+        });
+        self.intern_reference_type(pointee, mutability, region, span)
     }
 
     fn resolve_aggregate_field_type(
@@ -1283,6 +1431,7 @@ impl Elaborator {
             .checked_add(self.data_layout.usize_size_bytes)
             .ok_or_else(|| FrontendFailure::elaboration(source_span, "slice layout overflows"))?;
         self.types.push(HirTypeDefinition {
+            opaque: None,
             id,
             name: None,
             kind,
@@ -1321,6 +1470,7 @@ impl Elaborator {
             FrontendFailure::elaboration(source_span, "too many HIR type definitions")
         })?);
         self.types.push(HirTypeDefinition {
+            opaque: None,
             id,
             name: None,
             kind,
@@ -1351,6 +1501,7 @@ impl Elaborator {
                 .map_err(|_| FrontendFailure::elaboration(source_span, "too many HIR layouts"))?,
         );
         self.types.push(HirTypeDefinition {
+            opaque: None,
             id,
             name: None,
             kind: HirTypeKind::Reference {
@@ -1587,7 +1738,7 @@ impl Elaborator {
                     }),
                 )
             }
-            HirTypeKind::Own { .. } => (
+            HirTypeKind::Own { .. } | HirTypeKind::RawPointer { .. } => (
                 self.data_layout.pointer_size_bytes,
                 self.data_layout.pointer_alignment,
                 Vec::new(),
@@ -1612,7 +1763,7 @@ impl Elaborator {
             alignment,
             abi: if matches!(
                 self.type_definition(ty).map(|definition| &definition.kind),
-                Some(HirTypeKind::Own { .. })
+                Some(HirTypeKind::Own { .. } | HirTypeKind::RawPointer { .. })
             ) {
                 HirAbiClass::Scalar
             } else if size_bytes == 0 {
@@ -1652,6 +1803,7 @@ impl Elaborator {
         self.scopes.push(ScopeFrame {
             id: ROOT_SCOPE,
             bindings: BTreeMap::new(),
+            ghost_bindings: BTreeMap::new(),
             locals: Vec::new(),
         });
         let mut parameter_ids = Vec::with_capacity(parameters.len());
@@ -1670,7 +1822,11 @@ impl Elaborator {
                 [self.current_function.expect("function body").index()]
             .signature
             .parameters[index];
-            let allocation = if self.is_pointer(ty) {
+            let allocation = if self.is_pointer(ty)
+                && !matches!(
+                    self.type_definition(ty).map(|t| &t.kind),
+                    Some(HirTypeKind::RawPointer { .. })
+                ) {
                 let identity = self.next_allocation;
                 self.next_allocation = self.next_allocation.checked_add(1).ok_or_else(|| {
                     FrontendFailure::elaboration(parameter.span, "too many pointer parameters")
@@ -1685,6 +1841,31 @@ impl Elaborator {
                 SemanticValue { ty, allocation },
                 parameter.span,
             )?);
+        }
+        let owner = self.current_function.expect("function body");
+        for (index, local) in parameter_ids.iter().enumerate() {
+            let ty = self.locals[local.index()].ty;
+            if let Some(fields) = regions::parameter_reference_types(&self.types, &self.fields, ty)
+            {
+                let fields = fields
+                    .into_iter()
+                    .enumerate()
+                    .map(|(slot, (_, erased))| {
+                        self.regions
+                            .iter()
+                            .find(|r| {
+                                r.owner == HirRegionOwner::Function(owner)
+                                    && r.origin
+                                        == HirRegionOrigin::ParameterField {
+                                            index: index as u32,
+                                            slot: slot as u32,
+                                        }
+                            })
+                            .map_or(erased, |r| r.id)
+                    })
+                    .collect();
+                self.local_reference_regions.insert(*local, fields);
+            }
         }
         self.elaborate_function_clauses(clauses)?;
         let result = self.elaborate_statements(&block.statements);
@@ -1719,6 +1900,7 @@ impl Elaborator {
         self.scopes.push(ScopeFrame {
             id: scope,
             bindings: BTreeMap::new(),
+            ghost_bindings: BTreeMap::new(),
             locals: Vec::new(),
         });
 
@@ -1756,7 +1938,39 @@ impl Elaborator {
         &mut self,
         statement: &AstStatement,
     ) -> Result<HirStatement, FrontendFailure> {
+        // Lexical nesting must not reserve the temporaries for every other
+        // statement kind at each level (notably match/return/let elaboration).
+        if let AstStatementKind::Block { block } = &statement.kind {
+            return Ok(HirStatement {
+                id: node_identity::UNASSIGNED_NODE_ID,
+                kind: HirStatementKind::Block {
+                    block: self.elaborate_block(block, None)?,
+                },
+                span: statement.span,
+            });
+        }
+        self.elaborate_non_block_statement(statement)
+    }
+
+    fn elaborate_non_block_statement(
+        &mut self,
+        statement: &AstStatement,
+    ) -> Result<HirStatement, FrontendFailure> {
         let kind = match &statement.kind {
+            AstStatementKind::Predicate {
+                operation,
+                predicate,
+                locals,
+                witnesses,
+                opened,
+            } => self.elaborate_predicate_action(
+                *operation,
+                predicate,
+                locals,
+                witnesses,
+                opened.as_deref(),
+                statement.span,
+            )?,
             AstStatementKind::Assert { expression } => {
                 let (expression, semantic) = self.elaborate_expression(expression)?;
                 if semantic.ty != self.core_types.bool_ || semantic.allocation.is_some() {
@@ -1829,6 +2043,11 @@ impl Elaborator {
                             matches!(self.type_definition(semantic_value.ty).map(|ty| &ty.kind),
                             Some(HirTypeKind::RawPointer { pointee, .. }) if *pointee == self.core_types.u64_)
                         }
+                        AstType::RawPointer { pointee } => {
+                            let pointee = self.resolve_ast_type(pointee, statement.span)?;
+                            matches!(self.type_definition(semantic_value.ty).map(|ty| &ty.kind),
+                                Some(HirTypeKind::RawPointer { pointee: actual, .. }) if *actual == pointee)
+                        }
                         AstType::Reference { pointee, mutable } => {
                             let mutability = if *mutable {
                                 HirMutability::Mutable
@@ -1884,27 +2103,39 @@ impl Elaborator {
                 if *mutable && !self.is_surface_assignable(semantic_value.ty) {
                     return Err(FrontendFailure::elaboration(
                         statement.span,
-                        "mutable surface bindings require a trivial assignable value",
+                        "mutable surface bindings require an assignable value",
                     ));
                 }
+                let regions = if matches!(
+                    self.types[value.ty.index()].kind,
+                    HirTypeKind::Own { .. } | HirTypeKind::Reference { .. }
+                ) {
+                    self.designated_reference_regions_at(&value, 0).or_else(|| {
+                        regions::parameter_reference_types(&self.types, &self.fields, value.ty)
+                            .map(|v| v.into_iter().map(|(_, r)| r).collect())
+                    })
+                } else {
+                    self.expression_reference_regions(&value)
+                };
                 let local = self.declare_local(name, *mutable, semantic_value, statement.span)?;
+                if let Some(regions) = regions {
+                    self.local_reference_regions.insert(local, regions);
+                }
                 HirStatementKind::Let { local, value }
             }
             AstStatementKind::Assign { destination, value } => {
                 let (destination, destination_value) =
                     self.elaborate_place(destination, true, false)?;
                 let (value, semantic) = self.elaborate_expression(value)?;
-                // Owning SSA bindings remain immutable. Only addressed
-                // resource leaves participate in refill/replacement; the
-                // canonical resource effects independently consume authority.
-                let owning_leaf = !destination.projections.is_empty()
-                    && matches!(
-                        self.type_definition(destination_value.ty)
-                            .map(|ty| &ty.kind),
-                        Some(HirTypeKind::Own { .. })
-                    );
+                // Owner assignment moves the RHS capability and retires any
+                // still-present destination through ordinary cleanup effects.
+                let owning_destination = matches!(
+                    self.type_definition(destination_value.ty)
+                        .map(|ty| &ty.kind),
+                    Some(HirTypeKind::Own { .. })
+                );
                 if !self.types_compatible(semantic.ty, destination_value.ty)
-                    || (!owning_leaf
+                    || (!owning_destination
                         && (semantic.allocation.is_some()
                             || !self.is_surface_assignable(semantic.ty)))
                 {
@@ -1912,6 +2143,36 @@ impl Elaborator {
                         statement.span,
                         "assignment value does not match the mutable destination",
                     ));
+                }
+                let HirPlaceBase::Local(local) = destination.base;
+                if matches!(
+                    self.types[self.locals[local.index()].ty.index()].kind,
+                    HirTypeKind::Own { .. } | HirTypeKind::Reference { .. }
+                ) && let Some((start, count)) = regions::reference_leaf_range(
+                    &self.types,
+                    &self.fields,
+                    self.locals[local.index()].ty,
+                    &destination.projections,
+                ) && count > 0
+                    && let Some(source) = self.expression_reference_regions(&value)
+                    && source.len() == count
+                    && let Some(previous) = self
+                        .local_reference_regions
+                        .get(&local)
+                        .and_then(|r| r.get(start..start + count))
+                        .map(<[_]>::to_vec)
+                {
+                    let mut combined = Vec::with_capacity(count);
+                    for (first, second) in previous.into_iter().zip(source) {
+                        combined.push(self.intersect_stored_regions(
+                            first,
+                            second,
+                            self.locals[local.index()].scope,
+                            statement.span,
+                        )?);
+                    }
+                    self.local_reference_regions.get_mut(&local).unwrap()[start..start + count]
+                        .copy_from_slice(&combined);
                 }
                 HirStatementKind::Assign { destination, value }
             }
@@ -2036,9 +2297,7 @@ impl Elaborator {
                 };
                 HirStatementKind::Return { value }
             }
-            AstStatementKind::Block { block } => HirStatementKind::Block {
-                block: self.elaborate_block(block, None)?,
-            },
+            AstStatementKind::Block { .. } => unreachable!("block dispatched before elaboration"),
             AstStatementKind::If {
                 condition,
                 then_block,
@@ -2198,6 +2457,7 @@ impl Elaborator {
                     self.scopes.push(ScopeFrame {
                         id: scope,
                         bindings: BTreeMap::new(),
+                        ghost_bindings: BTreeMap::new(),
                         locals: Vec::new(),
                     });
                     let result = (|| {
@@ -2319,6 +2579,7 @@ impl Elaborator {
         self.scopes.push(ScopeFrame {
             id: scope,
             bindings: BTreeMap::new(),
+            ghost_bindings: BTreeMap::new(),
             locals: Vec::new(),
         });
         let local = self.declare_local(
@@ -2607,6 +2868,27 @@ impl Elaborator {
                     semantic,
                 ))
             }
+            AstExpressionKind::NullPointer { pointee } => {
+                let ty = self.resolve_ast_type(
+                    &AstType::RawPointer {
+                        pointee: Box::new(pointee.clone()),
+                    },
+                    expression.span,
+                )?;
+                self.ensure_layout(ty, &mut Vec::new(), expression.span)?;
+                Ok((
+                    HirExpression {
+                        id: node_identity::UNASSIGNED_NODE_ID,
+                        kind: HirExpressionKind::NullPointer,
+                        ty,
+                        span: expression.span,
+                    },
+                    SemanticValue {
+                        ty,
+                        allocation: None,
+                    },
+                ))
+            }
             AstExpressionKind::Bool(value) => {
                 let semantic = SemanticValue {
                     ty: self.core_types.bool_,
@@ -2657,7 +2939,33 @@ impl Elaborator {
                 ))
             }
             AstExpressionKind::Place(place) => {
-                let (place, semantic) = self.elaborate_place(place, false, false)?;
+                let (place, mut semantic) = self.elaborate_place(place, false, false)?;
+                if let HirTypeKind::Reference {
+                    pointee,
+                    mutability,
+                    ..
+                } = self.types[semantic.ty.index()].kind
+                {
+                    let HirPlaceBase::Local(local) = place.base;
+                    if let Some((start, 1)) = regions::reference_leaf_range(
+                        &self.types,
+                        &self.fields,
+                        self.locals[local.index()].ty,
+                        &place.projections,
+                    ) && let Some(region) = self
+                        .local_reference_regions
+                        .get(&local)
+                        .and_then(|r| r.get(start))
+                        .copied()
+                    {
+                        semantic.ty = self.intern_reference_type(
+                            pointee,
+                            mutability,
+                            region,
+                            expression.span,
+                        )?;
+                    }
+                }
                 Ok((
                     HirExpression {
                         id: node_identity::UNASSIGNED_NODE_ID,
@@ -2794,6 +3102,7 @@ impl Elaborator {
                     .ok_or_else(|| {
                         FrontendFailure::elaboration(expression.span, "struct type is not defined")
                     })?;
+                self.require_representation_access(ty, expression.span)?;
                 let HirTypeKind::Struct {
                     fields: expected_fields,
                 } = self
@@ -3034,6 +3343,161 @@ impl Elaborator {
         }
     }
 
+    fn intersect_stored_regions(
+        &mut self,
+        first: HirRegionId,
+        second: HirRegionId,
+        scope: HirScopeId,
+        span: ByteSpan,
+    ) -> Result<HirRegionId, FrontendFailure> {
+        let owner = self
+            .current_function
+            .ok_or_else(|| FrontendFailure::elaboration(span, "field source outside a function"))?;
+        if let Some(region) = regions::intersection_region(
+            &self.regions,
+            &self.region_constraints,
+            owner,
+            scope,
+            first,
+            second,
+        ) {
+            return Ok(region);
+        }
+        // Keep the producer bounded; the ordinary region/loan consumers retain
+        // their independent budgets and cannot turn exhaustion into a proof.
+        if self
+            .region_constraints
+            .iter()
+            .filter(|c| c.owner == owner)
+            .count()
+            > regions::MAX_STORED_FIELD_REGION_CONSTRAINTS - 2
+        {
+            return Err(FrontendFailure::unsupported(
+                span,
+                "stored field region constraint budget exceeded",
+            ));
+        }
+        let id = HirRegionId::new(
+            u32::try_from(self.regions.len())
+                .map_err(|_| FrontendFailure::elaboration(span, "too many regions"))?,
+        );
+        self.regions.push(HirRegion {
+            id,
+            owner: HirRegionOwner::Function(owner),
+            origin: HirRegionOrigin::Inferred { scope },
+            span,
+        });
+        for superregion in [first, second] {
+            let constraint = HirRegionConstraintId::new(self.region_constraints.len() as u32);
+            self.region_constraints.push(HirRegionConstraint {
+                id: constraint,
+                owner,
+                subregion: id,
+                superregion,
+                span,
+            });
+        }
+        Ok(id)
+    }
+
+    fn expression_reference_regions(&self, expression: &HirExpression) -> Option<Vec<HirRegionId>> {
+        self.expression_reference_regions_at(expression, 0)
+    }
+
+    fn expression_reference_regions_at(
+        &self,
+        expression: &HirExpression,
+        depth: usize,
+    ) -> Option<Vec<HirRegionId>> {
+        regions::expression_reference_regions(
+            &self.types,
+            &self.fields,
+            expression,
+            &|id| {
+                let ty = self.locals.get(id.index())?.ty;
+                let regions = self.local_reference_regions.get(&id).cloned().or_else(|| {
+                    regions::aggregate_reference_slots(&self.types, &self.fields, ty)
+                })?;
+                Some((ty, regions))
+            },
+            &|call, depth| {
+                if depth > 16 {
+                    return None;
+                }
+                self.aggregate_result_sources
+                    .get(&call.callee)?
+                    .iter()
+                    .map(|source| {
+                        let (parameter, field) = match *source {
+                            crate::BoundarySource::Parameter { index } => (index, 0),
+                            crate::BoundarySource::ParameterField { index, field } => {
+                                (index, field)
+                            }
+                        };
+                        let argument = call.arguments.get(parameter as usize)?;
+                        let regions = match source {
+                            crate::BoundarySource::Parameter { .. } => {
+                                self.expression_reference_regions_at(argument, depth)
+                            }
+                            crate::BoundarySource::ParameterField { .. } => {
+                                self.designated_reference_regions_at(argument, depth)
+                            }
+                        }?;
+                        regions.get(field as usize).copied()
+                    })
+                    .collect()
+            },
+            depth,
+        )
+    }
+
+    fn designated_reference_regions_at(
+        &self,
+        expression: &HirExpression,
+        depth: usize,
+    ) -> Option<Vec<HirRegionId>> {
+        regions::designated_reference_regions(
+            &self.types,
+            &self.fields,
+            expression,
+            &|id| {
+                let ty = self.locals.get(id.index())?.ty;
+                let regions = self.local_reference_regions.get(&id).cloned().or_else(|| {
+                    regions::aggregate_reference_slots(&self.types, &self.fields, ty)
+                })?;
+                Some((ty, regions))
+            },
+            &|call, depth| {
+                if depth > 16 {
+                    return None;
+                }
+                self.aggregate_result_sources
+                    .get(&call.callee)?
+                    .iter()
+                    .map(|source| {
+                        let (parameter, field) = match *source {
+                            crate::BoundarySource::Parameter { index } => (index, 0),
+                            crate::BoundarySource::ParameterField { index, field } => {
+                                (index, field)
+                            }
+                        };
+                        let argument = call.arguments.get(parameter as usize)?;
+                        let regions = match source {
+                            crate::BoundarySource::Parameter { .. } => {
+                                self.expression_reference_regions_at(argument, depth)
+                            }
+                            crate::BoundarySource::ParameterField { .. } => {
+                                self.designated_reference_regions_at(argument, depth)
+                            }
+                        }?;
+                        regions.get(field as usize).copied()
+                    })
+                    .collect()
+            },
+            depth,
+        )
+    }
+
     fn elaborate_call(
         &mut self,
         callee: &str,
@@ -3163,7 +3627,7 @@ impl Elaborator {
         let mut hir_arguments = Vec::with_capacity(arguments.len());
         for (argument, expected) in arguments.iter().zip(&declaration.signature.parameters) {
             let (argument, semantic) = self.elaborate_expression(argument)?;
-            if !self.reference_compatible(semantic.ty, *expected) {
+            if !self.types_compatible(semantic.ty, *expected) {
                 return Err(FrontendFailure::elaboration(
                     argument.span,
                     "direct call argument type does not match the callee signature",
@@ -3173,7 +3637,29 @@ impl Elaborator {
         }
         self.check_call_region_constraints(&declaration, &hir_arguments, source_span)?;
         let ty = if let Some(relation) = declaration.signature.borrow_result {
-            if relation.projection == crate::BorrowProjection::Whole {
+            if let Some(field) = relation.parameter_field {
+                let region = self
+                    .designated_reference_regions_at(&hir_arguments[relation.parameter as usize], 0)
+                    .and_then(|r| r.get(field as usize).copied())
+                    .ok_or_else(|| {
+                        FrontendFailure::unsupported(
+                            source_span,
+                            "borrow result field has no actual argument region",
+                        )
+                    })?;
+                let HirTypeKind::Reference {
+                    pointee,
+                    mutability,
+                    ..
+                } = self.types[declaration.signature.return_type.index()].kind
+                else {
+                    return Err(FrontendFailure::elaboration(
+                        source_span,
+                        "field borrow result is not a reference",
+                    ));
+                };
+                self.intern_reference_type(pointee, mutability, region, source_span)?
+            } else if relation.projection == crate::BorrowProjection::Whole {
                 hir_arguments[relation.parameter as usize].ty
             } else {
                 let HirTypeKind::Reference {
@@ -3225,21 +3711,27 @@ impl Elaborator {
                 origin: HirRegionOrigin::Inferred { scope },
                 span: source_span,
             });
-            for source in declaration
+            for relation in declaration
                 .signature
                 .borrow_result_alternatives
                 .iter()
-                .map(|alternative| alternative.relation.parameter)
-                .collect::<BTreeSet<_>>()
+                .map(|a| a.relation)
             {
-                let source_region = self
-                    .reference_region(hir_arguments[source as usize].ty)
-                    .ok_or_else(|| {
-                        FrontendFailure::elaboration(
-                            source_span,
-                            "conditional borrow argument has no region",
-                        )
-                    })?;
+                let source_region = if let Some(field) = relation.parameter_field {
+                    self.designated_reference_regions_at(
+                        &hir_arguments[relation.parameter as usize],
+                        0,
+                    )
+                    .and_then(|r| r.get(field as usize).copied())
+                } else {
+                    self.reference_region(hir_arguments[relation.parameter as usize].ty)
+                }
+                .ok_or_else(|| {
+                    FrontendFailure::unsupported(
+                        source_span,
+                        "conditional borrow argument has no actual source region",
+                    )
+                })?;
                 self.region_constraints.push(HirRegionConstraint {
                     id: HirRegionConstraintId::new(self.region_constraints.len() as u32),
                     owner,
@@ -3252,7 +3744,11 @@ impl Elaborator {
         } else {
             declaration.signature.return_type
         };
-        let allocation = if self.is_pointer(ty) {
+        let allocation = if self.is_pointer(ty)
+            && !matches!(
+                self.type_definition(ty).map(|t| &t.kind),
+                Some(HirTypeKind::RawPointer { .. })
+            ) {
             let identity = self.next_allocation;
             self.next_allocation = self.next_allocation.checked_add(1).ok_or_else(|| {
                 FrontendFailure::elaboration(source_span, "too many pointer-producing expressions")
@@ -3767,7 +4263,7 @@ impl Elaborator {
             Some(AstPlaceProjection::Field { .. } | AstPlaceProjection::TupleElement { .. })
         ) || (matches!(
             place.projections.first(),
-            Some(AstPlaceProjection::Index { .. })
+            Some(AstPlaceProjection::Index { .. } | AstPlaceProjection::Slice { .. })
         ) && self.pointee_type(current).is_some_and(|pointee| {
             matches!(
                 self.type_definition(pointee).map(|ty| &ty.kind),
@@ -3843,6 +4339,7 @@ impl Elaborator {
                     (HirProjectionKind::Dereference, pointee, *span)
                 }
                 AstPlaceProjection::Field { name, span } => {
+                    self.require_representation_access(current, *span)?;
                     let HirTypeKind::Struct { fields } = self
                         .type_definition(current)
                         .map(|definition| definition.kind.clone())
@@ -4092,7 +4589,11 @@ impl Elaborator {
             && (self.is_surface_copy_type(ty)
                 || matches!(
                     self.type_definition(ty).map(|definition| &definition.kind),
-                    Some(HirTypeKind::Reference { .. } | HirTypeKind::RawPointer { .. })
+                    Some(
+                        HirTypeKind::Own { .. }
+                            | HirTypeKind::Reference { .. }
+                            | HirTypeKind::RawPointer { .. }
+                    )
                 )
                 || (self.is_aggregate(ty) && self.is_surface_value_type(ty)))
     }
@@ -4106,11 +4607,13 @@ impl Elaborator {
             )
     }
 
-    fn is_variant_free_owning_aggregate(&self, ty: HirTypeId) -> bool {
+    fn is_variant_free_resource_aggregate(&self, ty: HirTypeId) -> bool {
         let capabilities = self.current_type_capabilities(ty);
         if !capabilities.is_some_and(|capabilities| {
-            capabilities.value == crate::ValueCapability::MoveOnly
-                && capabilities.drop == crate::DropCapability::BuiltinDrop
+            matches!(
+                capabilities.value,
+                crate::ValueCapability::MoveOnly | crate::ValueCapability::Copy
+            ) && capabilities.drop != crate::DropCapability::UserDropGated
                 && capabilities.contains_resource
                 && capabilities.size == crate::SizeCapability::Sized
         }) {
@@ -4125,7 +4628,9 @@ impl Elaborator {
                 HirTypeKind::Unit
                 | HirTypeKind::Bool
                 | HirTypeKind::Integer(_)
-                | HirTypeKind::Own { .. },
+                | HirTypeKind::Own { .. }
+                | HirTypeKind::RawPointer { .. }
+                | HirTypeKind::Reference { .. },
             ) => true,
             Some(HirTypeKind::Array { element, .. }) => self.is_variant_free_abi_type(*element),
             Some(HirTypeKind::Tuple(elements)) => elements
@@ -4138,8 +4643,6 @@ impl Elaborator {
             }),
             Some(
                 HirTypeKind::Enum { .. }
-                | HirTypeKind::RawPointer { .. }
-                | HirTypeKind::Reference { .. }
                 | HirTypeKind::Slice { .. }
                 | HirTypeKind::Function(_)
                 | HirTypeKind::GenericParameter(_)
@@ -4162,14 +4665,14 @@ impl Elaborator {
                     | HirTypeKind::Integer(_)
                     | HirTypeKind::Own { .. }
                     | HirTypeKind::Reference { .. }
+                    | HirTypeKind::RawPointer { .. }
                     | HirTypeKind::Array { .. }
                     | HirTypeKind::Tuple(_)
                     | HirTypeKind::Struct { .. }
                     | HirTypeKind::Enum { .. },
                 ) => true,
                 Some(
-                    HirTypeKind::RawPointer { .. }
-                    | HirTypeKind::Slice { .. }
+                    HirTypeKind::Slice { .. }
                     | HirTypeKind::Function(_)
                     | HirTypeKind::GenericParameter(_)
                     | HirTypeKind::Never,
@@ -4272,6 +4775,16 @@ impl Elaborator {
         value: SemanticValue,
         declaration_span: ByteSpan,
     ) -> Result<HirLocalId, FrontendFailure> {
+        if self
+            .scopes
+            .iter()
+            .any(|s| s.ghost_bindings.contains_key(name))
+        {
+            return Err(FrontendFailure::elaboration(
+                declaration_span,
+                "runtime binding cannot shadow an opened predicate name",
+            ));
+        }
         let scope = self.scopes.last().map(|scope| scope.id).ok_or_else(|| {
             FrontendFailure::elaboration(declaration_span, "local has no lexical scope")
         })?;
@@ -4379,6 +4892,7 @@ fn type_definition(
     layout: Option<HirLayoutId>,
 ) -> HirTypeDefinition {
     HirTypeDefinition {
+        opaque: None,
         id,
         name: Some(name.to_owned()),
         kind,

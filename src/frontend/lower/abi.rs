@@ -35,13 +35,22 @@ pub(super) fn classify_hir_signature(
                 .schema()
                 .object_shape(pointee)
                 .map_err(|_| invalid_hir(source_span))?;
-            if !shape.resource_leaves().is_empty()
+            let field_storage =
+                matches!(
+                    memory.schema().kind(access.ty),
+                    Some(crate::VirMemoryTypeKind::Pointer { .. })
+                ) && crate::vir::predicate_resource_fields(memory.schema(), pointee).is_some();
+            if (!field_storage
+                && shape
+                    .resource_leaves()
+                    .iter()
+                    .any(|leaf| leaf.kind() != crate::VirPointerKind::Raw))
                 || !shape.variants().is_empty()
                 || shape.size_bytes() > concrete::HIR_AGGREGATE_MAX_BYTES
             {
                 return Err(FrontendFailure::unsupported(
                     source_span,
-                    "borrowed interface referents require a bounded pointer-free layout without active variants",
+                    "borrowed interface referents require a bounded layout with only raw links and no active variants",
                 ));
             }
         }
@@ -60,7 +69,13 @@ pub(super) fn classify_hir_signature(
         signature.borrow_result,
         signature.borrow_result_alternatives.clone(),
     )
-    .map_err(|_| invalid_hir(source_span))
+    .map_err(|error| match error.kind() {
+        crate::VirAbiErrorKind::OwnershipBearingAggregate(_) => FrontendFailure::unsupported(
+            source_span,
+            "aggregate resource ABI requires supported payloads and complete loan import/export",
+        ),
+        _ => invalid_hir(source_span),
+    })
 }
 
 pub(super) fn hir_parameter_abi_slot(
@@ -422,7 +437,7 @@ impl Lowerer<'_> {
             VirAbiValue::Scalar { .. } => {
                 let value =
                     self.lower_expression(value.ok_or_else(|| invalid_hir(source_span))?)?;
-                require_pointer_abi_authority(value, source_span)?;
+
                 assign_abi_slots(
                     &mut results,
                     binding.result_slots(),
@@ -582,6 +597,28 @@ impl Lowerer<'_> {
         if self.abi.borrow_result_alternatives().is_empty() {
             return Ok(parent);
         }
+        if self
+            .abi
+            .borrow_result_alternatives()
+            .iter()
+            .any(|a| a.relation.parameter_field.is_some())
+        {
+            // Field alternatives move their original authority. A mixed
+            // direct/field alternative still needs the direct-source child
+            // path, so only skip it when this value is not a direct parameter.
+            let direct =
+                self.function
+                    .signature
+                    .parameters
+                    .iter()
+                    .enumerate()
+                    .any(|(index, ty)| {
+                        *ty == expression.ty && self.abi.borrow_result_parameters().contains(&index)
+                    });
+            if !direct {
+                return Ok(parent);
+            }
+        }
         let parameter_index = self
             .function
             .signature
@@ -663,7 +700,7 @@ pub(super) fn require_pointer_abi_authority(
     if matches!(value.ty, VirType::Pointer { .. }) && value.permission.is_none() {
         return Err(FrontendFailure::unsupported(
             source_span,
-            "authority-free raw address call/return ABI remains gated: legacy pointer ABI requires authority; stage 7.5.7 covers supported carriers only",
+            "owning and borrowed pointer ABI requires access authority; raw addresses use the scalar ABI",
         ));
     }
     Ok(())

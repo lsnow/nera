@@ -72,7 +72,7 @@ fn inspect(
 
 const OWNER: &str = "fn main()->u64 { return run(true); }
 fn run(flag:bool)->u64 { let p=alloc<u64>(1); *p=42; let old=&raw *p;
-    let returned=outer(p,flag); if flag { if old!=&raw *returned { return 0; } } return *returned; }
+    let returned=outer(p,flag); if flag { if old>&raw *returned { return 0; } } return *returned; }
 fn outer(p:Own<u64>,flag:bool)->Own<u64> { return choose(p,flag); }
 fn choose(p:Own<u64>,flag:bool)->Own<u64> { if flag { return p; }
     free(p); let q=alloc<u64>(1); *q=42; return q; }";
@@ -245,9 +245,9 @@ fn overlapping_existential_guards_keep_all_results_and_discarding_results_loses_
 #[test]
 fn wrong_branch_and_discarded_guard_never_hide_freed_input_or_bad_results() {
     for source in [
-        OWNER.replace("if flag { if old!=&raw *returned { return 0; } }", "if flag { return *returned; } if old!=&raw *returned { return 0; }"),
-        OWNER.replace("if flag { if old!=&raw *returned { return 0; } }", "if old!=&raw *returned { return 0; }"),
-        OWNER.replace("if flag { if old!=&raw *returned { return 0; } }", "{ let flag=true; if flag { if old!=&raw *returned { return 0; } } }"),
+        OWNER.replace("if flag { if old>&raw *returned { return 0; } }", "if flag { return *returned; } if old>&raw *returned { return 0; }"),
+        OWNER.replace("if flag { if old>&raw *returned { return 0; } }", "if old>&raw *returned { return 0; }"),
+        OWNER.replace("if flag { if old>&raw *returned { return 0; } }", "{ let flag=true; if flag { if old>&raw *returned { return 0; } } }"),
         "fn main()->u64 { return run(true); } fn run(flag:bool)->u64 { let a=[42]; return a[index(flag)]; }
          fn index(flag:bool)->usize { if flag { return 0usize; } return 1usize; }".into(),
     ] {

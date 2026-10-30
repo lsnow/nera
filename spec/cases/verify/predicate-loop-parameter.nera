@@ -1,0 +1,37 @@
+// A captured public parameter tracks the actual changing loop-header scalar.
+// Every iteration must re-establish the package with the updated argument.
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>,count:usize) {
+    exists used:usize = 0usize;
+    owns(p);
+    initialized(p.value,0..1);
+    p.value<=42;
+    count<=7usize;
+    used<=7usize;
+}
+fn main()->u64 {
+    return run(true);
+}
+fn initial(seed:bool)->usize
+ensures result<=3usize;
+{
+    if seed { return 1usize; }
+    return 3usize;
+}
+fn run(seed:bool)->u64 {
+    let p=alloc<Cell>(1);
+    p.value=42;
+    let mut count=initial(seed);
+    fold Ready(p,count) with (used=count);
+    while count<7usize {
+        invariant count<=7usize;
+        unfold Ready(p,count);
+        count=count+1usize;
+        fold Ready(p,count) with (used=count);
+    }
+    unfold Ready(p,count);
+    let outcome=p.value;
+    free(p);
+    finish Ready(p,count);
+    return outcome;
+}

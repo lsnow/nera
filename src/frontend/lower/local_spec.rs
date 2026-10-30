@@ -4,7 +4,8 @@ use crate::VirBlockId;
 
 #[derive(Clone)]
 pub(super) struct LocalSpec {
-    pub prove: crate::HirSpecProveId,
+    pub prove: Option<crate::HirSpecProveId>,
+    pub predicate_action: Option<u32>,
     pub function: VirFunctionId,
     pub block: VirBlockId,
     pub boundary: usize,
@@ -131,7 +132,54 @@ impl Lowerer<'_> {
             .filter_map(|local| self.environment.optional(local).map(|value| (local, value)))
             .collect();
         self.local_specs.push(LocalSpec {
-            prove,
+            prove: Some(prove),
+            predicate_action: None,
+            function: VirFunctionId::new(self.function.id.get()),
+            block,
+            boundary,
+            values,
+        });
+        Ok(())
+    }
+}
+
+impl Lowerer<'_> {
+    pub(super) fn lower_predicate_action(
+        &mut self,
+        id: u32,
+        span: ByteSpan,
+    ) -> Result<(), FrontendFailure> {
+        let action = self
+            .hir
+            .specs()
+            .predicate_actions
+            .get(id as usize)
+            .ok_or_else(|| invalid_hir(span))?;
+        let used = match &action.kind {
+            crate::HirPredicateActionKind::Fold { locals, .. }
+            | crate::HirPredicateActionKind::Unfold { locals, .. } => locals.as_slice(),
+            _ => &[],
+        };
+        let values = used
+            .iter()
+            .chain(
+                action
+                    .witnesses
+                    .inputs
+                    .iter()
+                    .filter_map(|(_, input)| input.runtime_value()),
+            )
+            .map(|id| {
+                self.environment
+                    .optional(*id)
+                    .map(|v| (*id, v))
+                    .ok_or_else(|| invalid_hir(span))
+            })
+            .collect::<Result<_, _>>()?;
+        let (block, boundary) = self.cfg.spec_boundary(span)?;
+        self.local_specs.push(LocalSpec {
+            prove: None,
+            predicate_action: Some(id),
             function: VirFunctionId::new(self.function.id.get()),
             block,
             boundary,

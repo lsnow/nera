@@ -26,6 +26,9 @@ the verifier, and the direct x86_64 Linux backend, but it is not production-read
   enums.
 - Fixed arrays, slices, structs, enums, pattern matching, and bounded
   type/const generics.
+- Finite resource predicates, scoped logical witnesses, and opaque module
+  representations, including a checked arena interface.
+- Typed raw-pointer node links and null values without implicit ownership.
 - Closed multi-file programs with explicit module mappings.
 - An interpreter and a direct x86_64 Linux backend using the system assembler
   and linker.
@@ -77,8 +80,21 @@ not as independently importable proofs.
 
 See `spec/cases/verify/contract-arena.nera` for two disjoint reservations from
 one backing array, capacity failure, and borrow restoration on function return.
-It uses separate scalar reservation checks and slice transfers, not a general
-heap-cursor allocator abstraction.
+It uses separate scalar reservation checks and slice transfers.
+
+The newer [`opaque arena example`](spec/cases/modules/arena/arena.nera) hides its
+representation behind a finite `Ready` predicate. Its
+[`client`](spec/cases/modules/arena/app.nera) uses a forwarding module to reserve
+slices, reset the arena, and release it. Verify or execute the complete program:
+
+```sh
+cargo run --bin nera -- verify --module arena=spec/cases/modules/arena/arena.nera --module forward=spec/cases/modules/arena/forward.nera --module app=spec/cases/modules/arena/app.nera --entry app::main
+cargo run --bin nera -- run --module arena=spec/cases/modules/arena/arena.nera --module forward=spec/cases/modules/arena/forward.nera --module app=spec/cases/modules/arena/app.nera --entry app::main
+```
+
+The interpreter returns 49. The arena initializes all slots during construction;
+its cursor tracks the allocated prefix. This example does not provide recursive
+list/tree/graph predicates or prove arbitrary allocator contracts.
 
 ### Ownership and explicit allocation
 
@@ -274,14 +290,16 @@ the program. `run` uses the interpreter, and `build` emits native artifacts.
 ## Current limitations
 
 - Only `u64`, `usize`, and `bool` are available as scalar source types.
-- Raw and owning pointer allocation is currently limited to `u64` elements.
+- Pointer and aggregate layouts remain bounded; raw links do not confer access
+  permission or recursively own their targets.
 - Runtime arithmetic is intentionally small: addition and comparisons are
   supported. Runtime assertions use this same profile; `!`, `&&`, and `||` are
   not yet supported in runtime expressions. Contract and invariant expressions
   retain their bounded logical and checked arithmetic rules.
 - Function contracts support a bounded scalar/resource/frame profile. General
-  heap relations, arbitrary recursive relations, loop invariants, opaque
-  predicates, proof blocks, ghost code, and source quantifiers are unavailable.
+  heap relations, recursive predicates, proof blocks, ghost code, and arbitrary
+  source quantifiers are unavailable. Finite opaque predicates and bounded loop
+  invariants are supported.
 - Modules form one closed source set; package discovery and separate linking are
   not implemented.
 - Generic code is checked through concrete instances; traits are not available.

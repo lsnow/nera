@@ -1,0 +1,35 @@
+// Fixed base has a complete two-root origin. Loop capture reads the actual
+// preserved base value; no live slots for its historical roots are required.
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>,limit:usize,base:usize) {
+    exists used:usize = 0usize;
+    owns(p);
+    initialized(p.value,0..1);
+    p.value<=42;
+    limit<=10usize;
+    base<=3usize;
+    used<=7usize;
+}
+fn main()->u64 { return run(1usize,1usize,1usize); }
+fn run(start:usize,left:usize,right:usize)->u64
+requires start<=2usize;
+requires left<=1usize;
+requires right<=1usize;
+{
+    let p=alloc<Cell>(1);
+    p.value=42;
+    let base=left+right+1usize;
+    let mut count=start;
+    fold Ready(p,base+count,base) with (used=count);
+    while count<7usize {
+        invariant count<=7usize;
+        unfold Ready(p,base+count,base);
+        count=count+1usize;
+        fold Ready(p,base+count,base) with (used=count);
+    }
+    unfold Ready(p,base+count,base);
+    let outcome=p.value;
+    free(p);
+    finish Ready(p,base+count,base);
+    return outcome;
+}

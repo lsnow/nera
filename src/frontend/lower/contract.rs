@@ -14,6 +14,8 @@ use super::{
     VirTrustEntryId, VirTrustPolicyKind, VirTrustScope, hir_parameter_abi_slot, invalid_hir,
 };
 
+mod predicate_inputs;
+
 pub(super) fn infer_contracts(
     hir: &HirProgram,
     memory: &LoweredMemorySchema,
@@ -48,7 +50,7 @@ pub(super) fn infer_contracts(
             .abis
             .function(runtime_function.id)
             .ok_or_else(|| invalid_hir(function.span))?;
-        for binding in function_abi.signature.parameters() {
+        for (parameter_index, binding) in function_abi.signature.parameters().iter().enumerate() {
             if binding.interface().transfer == crate::VirInterfaceTransfer::Move
                 && let VirAbiValue::Pointer { access, pointee } = binding.value()
                 && matches!(
@@ -67,6 +69,11 @@ pub(super) fn infer_contracts(
                     InferredOwnClause {
                         contract: runtime_function.contract,
                         position: VirContractPosition::Requires,
+                        predicate: hir.specs().predicate_interfaces.iter().any(|i| {
+                            i.function == function.id
+                                && !i.ensures
+                                && i.parameters.contains(&(parameter_index as u32))
+                        }),
                         pointer_slot: *pointer_slot as usize,
                         pointee: *pointee,
                         origin,
@@ -78,12 +85,11 @@ pub(super) fn infer_contracts(
             if binding.interface().storage == crate::VirInterfaceStorage::Indirect
                 && let VirAbiValue::IndirectAggregate { access } = binding.value()
             {
-                let result_initialization =
-                    if binding.interface().transfer == crate::VirInterfaceTransfer::Move {
-                        VirContractInitialization::Uninitialized
-                    } else {
-                        VirContractInitialization::Initialized
-                    };
+                let result_initialization = if binding.consumes_indirect_contents(memory.schema()) {
+                    VirContractInitialization::Uninitialized
+                } else {
+                    VirContractInitialization::Initialized
+                };
                 add_inferred_indirect_abi_clauses(
                     &mut specs,
                     InferredIndirectAbiClauses {
@@ -119,6 +125,11 @@ pub(super) fn infer_contracts(
                 InferredOwnClause {
                     contract: runtime_function.contract,
                     position: VirContractPosition::Ensures,
+                    predicate: hir
+                        .specs()
+                        .predicate_interfaces
+                        .iter()
+                        .any(|i| i.function == function.id && i.ensures),
                     pointer_slot: *pointer_slot as usize,
                     pointee: *pointee,
                     origin,
@@ -148,6 +159,7 @@ pub(super) fn infer_contracts(
         }
     }
     lower_hir_specs(
+        runtime,
         hir,
         memory,
         source_map,
@@ -198,6 +210,7 @@ pub(super) fn infer_contracts(
 
 #[derive(Clone, Copy)]
 struct InferredOwnClause {
+    predicate: bool,
     contract: VirContractId,
     position: VirContractPosition,
     pointer_slot: usize,
@@ -247,7 +260,11 @@ fn add_inferred_own_clause(
                 alignment: layout.alignment,
                 liveness: VirContractLiveness::Live,
                 ownership: VirContractOwnership::Owned,
-                initialization: VirContractInitialization::Initialized,
+                initialization: if clause.predicate {
+                    VirContractInitialization::Unknown
+                } else {
+                    VirContractInitialization::Initialized
+                },
                 pointers: vec![VirContractPointer {
                     binder: pointer,
                     offset_lower: 0,
@@ -377,7 +394,9 @@ fn add_inferred_indirect_abi_clauses(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lower_hir_specs(
+    runtime: &RuntimeVirProgram,
     hir: &HirProgram,
     memory: &LoweredMemorySchema,
     source_map: &VirSourceMap,
@@ -395,6 +414,63 @@ fn lower_hir_specs(
         let origin = spec_source_origin(predicate.module, predicate.span)
             .ok_or_else(|| invalid_hir(predicate.span))?;
         specs.predicates_mut().push(VirPredicate {
+            representation: predicate
+                .representation
+                .as_ref()
+                .map(|body| {
+                    Ok(crate::PredicateRepresentation {
+                        logic: body
+                            .logic
+                            .map_access(&mut |ty| {
+                                memory
+                                    .access(ty, predicate.span)
+                                    .map_err(|_| crate::predicate_logic::LogicError::TypeMismatch)
+                            })
+                            .map_err(|_| invalid_hir(predicate.span))?,
+                        resources: body
+                            .resources
+                            .iter()
+                            .map(|r| {
+                                Ok(crate::PredicateStorage {
+                                    name: r.name.clone(),
+                                    pointee: memory.access(r.pointee, predicate.span)?,
+                                    initialized: r.initialized.clone(),
+                                })
+                            })
+                            .collect::<Result<Vec<_>, FrontendFailure>>()?,
+                        witnesses: body
+                            .witnesses
+                            .iter()
+                            .map(|w| {
+                                Ok(crate::PredicateWitness {
+                                    name: w.name.clone(),
+                                    ty: memory.access(w.ty, predicate.span)?,
+                                    resource: w.resource,
+                                    offset: w.offset,
+                                })
+                            })
+                            .collect::<Result<Vec<_>, FrontendFailure>>()?,
+                        bounds: body.bounds.clone(),
+                        prefixes: body
+                            .prefixes
+                            .iter()
+                            .map(|p| {
+                                Ok(crate::PredicateInitializedPrefix {
+                                    resource: p.resource,
+                                    array_offset: p.array_offset,
+                                    element: memory.access(p.element, predicate.span)?,
+                                    length: p.length,
+                                    stride: p.stride,
+                                    count: match &p.count {
+                                        crate::PredicatePrefixCount::Stored { offset } => crate::PredicatePrefixCount::Stored { offset: *offset },
+                                        crate::PredicatePrefixCount::Logical(expression) => crate::PredicatePrefixCount::Logical(expression.map_access(&mut |ty| memory.access(ty, predicate.span).map_err(|_| crate::predicate_logic::LogicError::TypeMismatch)).map_err(|_| invalid_hir(predicate.span))?),
+                                    },
+                                })
+                            })
+                            .collect::<Result<Vec<_>, FrontendFailure>>()?,
+                    })
+                })
+                .transpose()?,
             id: VirPredicateId::new(predicate.id.get()),
             name: predicate.name.clone(),
             binders: predicate
@@ -447,7 +523,7 @@ fn lower_hir_specs(
             {
                 let binding = local_specs
                     .iter()
-                    .find(|s| s.prove == prove)
+                    .find(|s| s.prove == Some(prove))
                     .ok_or_else(|| invalid_hir(term.span))?;
                 VirSpecTermKind::Snapshot(binding.scalar(
                     local,
@@ -524,7 +600,7 @@ fn lower_hir_specs(
                     Some(
                         local_specs
                             .iter()
-                            .find(|s| s.prove == prove)
+                            .find(|s| s.prove == Some(prove))
                             .ok_or_else(|| invalid_hir(assertion.span))?,
                     )
                 } else {
@@ -600,6 +676,256 @@ fn lower_hir_specs(
         }
     }
 
+    for (interface_index, interface) in hir.specs().predicate_interfaces.iter().enumerate() {
+        let function = hir
+            .function_by_id(interface.function)
+            .ok_or_else(|| invalid_hir(interface.span))?;
+        let abi = &runtime
+            .abis
+            .function(VirFunctionId::new(function.id.get()))
+            .ok_or_else(|| invalid_hir(interface.span))?
+            .signature;
+        let mut bindings = Vec::new();
+        for parameter in &interface.parameters {
+            let binding = if interface.ensures && !interface.in_place {
+                abi.results().get(*parameter as usize)
+            } else {
+                abi.parameters().get(*parameter as usize)
+            }
+            .ok_or_else(|| invalid_hir(interface.span))?;
+            if interface.in_place
+                || (interface.ensures
+                    && matches!(
+                        binding.value(),
+                        crate::VirAbiValue::IndirectAggregate { .. }
+                    ))
+            {
+                let [pointer, _] = binding.parameter_slots() else {
+                    return Err(invalid_hir(interface.span));
+                };
+                let [permission] = binding.result_slots() else {
+                    return Err(invalid_hir(interface.span));
+                };
+                bindings.push((*pointer, *permission));
+                continue;
+            }
+            let slots = if interface.ensures {
+                binding.result_slots()
+            } else {
+                binding.parameter_slots()
+            };
+            let [pointer, permission] = slots else {
+                return Err(invalid_hir(interface.span));
+            };
+            bindings.push((*pointer, *permission));
+        }
+        specs
+            .predicate_interfaces_mut()
+            .push(crate::VirPredicateInterface {
+                predicate: crate::VirPredicateId::new(interface.predicate.get()),
+                function: VirFunctionId::new(interface.function.get()),
+                ensures: interface.ensures,
+                in_place: interface.in_place,
+                holder: if interface.fields.iter().any(|p| !p.is_empty()) {
+                    0x8000_0000 + interface_index as u32
+                } else if interface.ensures {
+                    0
+                } else {
+                    function
+                        .body()
+                        .ok_or_else(|| invalid_hir(interface.span))?
+                        .parameters[interface.parameters[0] as usize]
+                        .get()
+                },
+                bindings,
+                fields: interface
+                    .fields
+                    .iter()
+                    .map(|path| {
+                        path.iter()
+                            .map(|id| memory.field(*id, interface.span))
+                            .collect()
+                    })
+                    .collect::<Result<_, _>>()?,
+                arguments: crate::predicate_logic::WitnessArguments {
+                    values: vec![],
+                    inputs: interface
+                        .arguments
+                        .inputs
+                        .iter()
+                        .map(|(ty, input)| {
+                            predicate_inputs::lower(
+                                *ty,
+                                *input,
+                                abi,
+                                memory,
+                                interface.ensures,
+                                interface.span,
+                            )
+                        })
+                        .collect::<Result<_, FrontendFailure>>()?,
+                    arguments: interface
+                        .arguments
+                        .arguments
+                        .iter()
+                        .map(|expr| {
+                            expr.map_access(&mut |ty| {
+                                memory
+                                    .access(ty, interface.span)
+                                    .map_err(|_| crate::predicate_logic::LogicError::TypeMismatch)
+                            })
+                            .map_err(|_| invalid_hir(interface.span))
+                        })
+                        .collect::<Result<_, _>>()?,
+                },
+                origin: spec_source_origin(function.module, interface.span)
+                    .ok_or_else(|| invalid_hir(interface.span))?,
+            });
+    }
+    for action in &hir.specs().predicate_actions {
+        let span = action.span;
+        let local = local_specs
+            .iter()
+            .find(|s| s.predicate_action == Some(action.id))
+            .ok_or_else(|| invalid_hir(span))?;
+        let crate::VirSpecLocation::Runtime(location) = local.location() else {
+            return Err(invalid_hir(span));
+        };
+        let origin = spec_source_origin(
+            hir.function_by_id(action.function)
+                .ok_or_else(|| invalid_hir(span))?
+                .module,
+            span,
+        )
+        .ok_or_else(|| invalid_hir(span))?;
+        let bindings = |locals: &[crate::HirLocalId]| {
+            locals
+                .iter()
+                .map(|id| {
+                    let v = local.values.get(id).ok_or_else(|| invalid_hir(span))?;
+                    Ok(crate::VirPredicateBinding {
+                        pointer: v.value,
+                        permission: v.permission.ok_or_else(|| invalid_hir(span))?,
+                    })
+                })
+                .collect::<Result<Vec<_>, FrontendFailure>>()
+        };
+        use crate::{HirPredicateActionKind as H, VirPredicateActionKind as V};
+        let kind = match &action.kind {
+            H::Fold { holder, locals } => V::Fold {
+                holder: *holder,
+                bindings: bindings(locals)?,
+            },
+            H::Unfold { holder, locals } => V::Unfold {
+                holder: *holder,
+                bindings: bindings(locals)?,
+            },
+            H::Move {
+                source,
+                destination,
+            } => V::Move {
+                source: *source,
+                destination: *destination,
+            },
+            H::Finish { holder } => V::Finish { holder: *holder },
+        };
+        let map_type = |ty| match ty {
+            crate::predicate_logic::LogicType::U64 => Ok(crate::predicate_logic::LogicType::U64),
+            crate::predicate_logic::LogicType::Usize => {
+                Ok(crate::predicate_logic::LogicType::Usize)
+            }
+            crate::predicate_logic::LogicType::Bool => Ok(crate::predicate_logic::LogicType::Bool),
+            crate::predicate_logic::LogicType::Resource(ty) => Ok(
+                crate::predicate_logic::LogicType::Resource(memory.access(ty, span)?),
+            ),
+        };
+        let witnesses = crate::predicate_logic::WitnessArguments {
+            arguments: action
+                .witnesses
+                .arguments
+                .iter()
+                .map(|expr| {
+                    expr.map_access(&mut |ty| {
+                        memory
+                            .access(ty, span)
+                            .map_err(|_| crate::predicate_logic::LogicError::TypeMismatch)
+                    })
+                    .map_err(|_| invalid_hir(span))
+                })
+                .collect::<Result<_, _>>()?,
+            inputs: action
+                .witnesses
+                .inputs
+                .iter()
+                .map(|(ty, id)| {
+                    Ok((
+                        map_type(*ty)?,
+                        match id {
+                            crate::predicate_logic::WitnessInput::Result(_)
+                            | crate::predicate_logic::WitnessInput::ResultField { .. } => {
+                                return Err(invalid_hir(span));
+                            }
+                            crate::predicate_logic::WitnessInput::Memory {
+                                base,
+                                offset,
+                                access,
+                                time,
+                            } => crate::predicate_logic::WitnessInput::Memory {
+                                base: local
+                                    .values
+                                    .get(base)
+                                    .ok_or_else(|| invalid_hir(span))?
+                                    .value,
+                                offset: *offset,
+                                access: memory.access(*access, span)?,
+                                time: *time,
+                            },
+                            crate::predicate_logic::WitnessInput::Scalar(id) => {
+                                crate::predicate_logic::WitnessInput::Scalar(
+                                    local.values.get(id).ok_or_else(|| invalid_hir(span))?.value,
+                                )
+                            }
+                            crate::predicate_logic::WitnessInput::Opened {
+                                action,
+                                holder,
+                                binder,
+                            } => crate::predicate_logic::WitnessInput::Opened {
+                                action: *action,
+                                holder: *holder,
+                                binder: *binder,
+                            },
+                        },
+                    ))
+                })
+                .collect::<Result<_, FrontendFailure>>()?,
+            values: action
+                .witnesses
+                .values
+                .iter()
+                .map(|(id, expr)| {
+                    Ok((
+                        *id,
+                        expr.map_access(&mut |ty| {
+                            memory
+                                .access(ty, span)
+                                .map_err(|_| crate::predicate_logic::LogicError::TypeMismatch)
+                        })
+                        .map_err(|_| invalid_hir(span))?,
+                    ))
+                })
+                .collect::<Result<_, FrontendFailure>>()?,
+        };
+        specs
+            .predicate_actions_mut()
+            .push(crate::VirPredicateAction {
+                id: action.id,
+                predicate: crate::VirPredicateId::new(action.predicate.get()),
+                location,
+                origin,
+                kind,
+                witnesses,
+            });
+    }
     for prove in &hir.specs().proves {
         let origin = spec_source_origin(clause_module(hir, prove.clause), prove.span)
             .ok_or_else(|| invalid_hir(prove.span))?;
@@ -659,6 +985,26 @@ pub(super) fn spec_source_spans(hir: &HirProgram, module: crate::HirModuleId) ->
         .iter()
         .filter(|predicate| predicate.module == module)
         .map(|predicate| predicate.span)
+        .chain(
+            hir.specs()
+                .predicate_interfaces
+                .iter()
+                .filter(|i| {
+                    hir.function_by_id(i.function)
+                        .is_some_and(|f| f.module == module)
+                })
+                .map(|i| i.span),
+        )
+        .chain(
+            hir.specs()
+                .predicate_actions
+                .iter()
+                .filter(|a| {
+                    hir.function_by_id(a.function)
+                        .is_some_and(|f| f.module == module)
+                })
+                .map(|a| a.span),
+        )
         .chain(
             hir.specs()
                 .binders
@@ -883,6 +1229,7 @@ fn lower_authority_snapshot(
         },
         VirSpecSnapshot::Value { .. }
         | VirSpecSnapshot::EntryParameter { .. }
+        | VirSpecSnapshot::Opened { .. }
         | VirSpecSnapshot::Memory { .. } => {
             return Err(invalid_hir(span));
         }
@@ -896,6 +1243,17 @@ fn lower_snapshot(
     span: ByteSpan,
 ) -> Result<VirSpecSnapshot, FrontendFailure> {
     Ok(match snapshot {
+        HirSpecSnapshot::Opened {
+            function,
+            action,
+            holder,
+            binder,
+        } => VirSpecSnapshot::Opened {
+            function: VirFunctionId::new(function.get()),
+            action,
+            holder,
+            binder,
+        },
         HirSpecSnapshot::Length {
             function,
             parameter,
@@ -936,6 +1294,17 @@ fn lower_snapshot(
                 crate::SpecMemoryProjection::Field(field) => {
                     crate::SpecMemoryProjection::Field(memory.field(field, span)?)
                 }
+                crate::SpecMemoryProjection::Fields(path) => {
+                    let fields = path
+                        .fields()
+                        .iter()
+                        .map(|field| memory.field(*field, span))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    crate::SpecMemoryProjection::Fields(
+                        crate::SpecMemoryFieldPath::new(&fields)
+                            .ok_or_else(|| invalid_hir(span))?,
+                    )
+                }
                 crate::SpecMemoryProjection::Index(index) => {
                     crate::SpecMemoryProjection::Index(index)
                 }
@@ -975,7 +1344,7 @@ fn lower_spec_location(
     match location {
         HirSpecLocation::Statement { function, prove } => local_specs
             .iter()
-            .find(|s| s.prove == prove && s.function.get() == function.get())
+            .find(|s| s.prove == Some(prove) && s.function.get() == function.get())
             .map(super::local_spec::LocalSpec::location),
         HirSpecLocation::FunctionEntry { function } => Some(VirSpecLocation::FunctionEntry {
             function: VirFunctionId::new(function.get()),

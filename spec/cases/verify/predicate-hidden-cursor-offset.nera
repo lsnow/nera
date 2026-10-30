@@ -1,0 +1,39 @@
+// A hidden count has a proved offset from a real runtime input.
+struct Buffer { slots:[u64;3], }
+predicate Ready(p:ptr<Buffer>,n:usize) {
+    exists used:usize = 0usize;
+    owns(p);
+    initialized(p.slots,0usize..used);
+    used==n+2usize;
+    used<=3usize;
+}
+fn main()->u64 {
+    let p=alloc<Buffer>(1);
+    p.slots[0]=7;
+    p.slots[1]=42;
+    p.slots[2]=9;
+    fold Ready(p,1usize) with (used=3usize);
+    return consume(p,1usize);
+}
+fn relay(p:Own<Buffer>,n:usize)->Own<Buffer>
+requires Ready(p,n);
+ensures Ready(result,n);
+{
+    return p;
+}
+fn consume(p:Own<Buffer>,n:usize)->u64
+requires Ready(p,n);
+{
+    let q=relay(p,n);
+    unfold Ready(q,n) as (saved);
+    let mut i=0usize;
+    while i<n {
+        invariant i<=n;
+        invariant saved==n+2usize;
+        i=i+1usize;
+    }
+    let value=q.slots[1];
+    free(q);
+    finish Ready(q,n);
+    return value;
+}

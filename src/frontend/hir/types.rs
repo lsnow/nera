@@ -182,6 +182,7 @@ pub(crate) fn supports_builtin_allocation(
                 | HirTypeKind::Bool
                 | HirTypeKind::Integer(HirIntegerType::U64 | HirIntegerType::Usize),
             ) => continue,
+            Some(HirTypeKind::RawPointer { .. }) => continue,
             Some(HirTypeKind::Own { pointee })
                 if matches!(
                     kind(*pointee),
@@ -227,6 +228,8 @@ pub(crate) fn supports_builtin_allocation(
 /// One source-type definition in the deterministic type table.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HirTypeDefinition {
+    /// Only this module may construct or project the nominal representation.
+    pub opaque: Option<super::HirModuleId>,
     pub id: HirTypeId,
     pub name: Option<String>,
     pub kind: HirTypeKind,

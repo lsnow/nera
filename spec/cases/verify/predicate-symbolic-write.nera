@@ -1,0 +1,75 @@
+// A parameter-selected write preserves the actual prefix, not its envelope.
+opaque struct Arena { cursor:usize, slots:[u64;8], }
+predicate Ready(p:ptr<Arena>) {
+    owns(p);
+    initialized(p.cursor,0usize..1usize);
+    initialized(p.slots,0usize..p.cursor);
+    p.cursor <= 8usize;
+}
+fn main()->u64 {
+    let a=make();
+    let b=append(a,20);
+    let c=append(b,22);
+    let d=edit(c);
+    return destroy(d);
+}
+fn make()->Own<Arena>
+ensures Ready(result);
+{
+    let p=alloc<Arena>(1);
+    p.cursor=0usize;
+    fold Ready(p);
+    return p;
+}
+fn append(p:Own<Arena>,value:u64)->Own<Arena>
+requires Ready(p);
+ensures Ready(result);
+{
+    unfold Ready(p);
+    let n=p.cursor;
+    if n<8usize {
+        p.slots[n]=value;
+        p.cursor=n+1usize;
+        fold Ready(p);
+        return p;
+    }
+    fold Ready(p);
+    return p;
+}
+fn destroy(p:Own<Arena>)->u64
+requires Ready(p);
+{
+    unfold Ready(p);
+    let n=p.cursor;
+    if n>=2usize {
+        let total=p.slots[0]+p.slots[1];
+        free(p);
+        finish Ready(p);
+        return total;
+    }
+    free(p);
+    finish Ready(p);
+    return 0;
+}
+
+fn edit(p:Own<Arena>)->Own<Arena>
+requires Ready(p);
+ensures Ready(result);
+{
+    unfold Ready(p);
+    // Writing outside the initialized prefix does not enlarge its endpoint.
+    p.slots[7]=7;
+    let n=p.cursor;
+    if n>=2usize {
+        let view=&mut p.slots[0usize..n];
+        fold Ready(p);
+        paint(view,1usize);
+        return p;
+    }
+    fold Ready(p);
+    return p;
+}
+fn paint(view:&mut [u64],index:usize) {
+    if index<len(view) { view[0]=21; view[index]=21; }
+    return;
+}

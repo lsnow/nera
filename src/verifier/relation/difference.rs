@@ -3,6 +3,7 @@
 //! Inputs are premises, NOT trusted compiler facts. Only the local adapter may
 //! obtain them from a ResourceState. This module cannot mutate resource state.
 use std::collections::BTreeMap;
+mod splits;
 
 use super::{RelationComparison, RelationTerm};
 use crate::{ObligationStatus, U64Interval, VirType, VirValueId};
@@ -459,17 +460,11 @@ pub fn solve_difference(
         for (i, premise) in premises.iter().enumerate() {
             query.premise(premise, i)?;
         }
-        let count = 1usize
-            .checked_shl(
-                u32::try_from(query.disequalities.len()).map_err(|_| DifferenceStop::Budget)?,
-            )
-            .ok_or(DifferenceStop::Budget)?;
-        if count > limits.max_branches {
-            return Err(DifferenceStop::Budget);
-        }
+        let (choices, count) = splits::plan(&mut query)?;
         for branch in 0..count {
-            let choices = (0..query.disequalities.len())
-                .map(|i| branch & (1 << i) != 0)
+            let choices = choices
+                .iter()
+                .map(|choice| choice.in_branch(branch))
                 .collect();
             evidence.branches.push(query.branch(choices, goal)?);
         }

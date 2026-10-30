@@ -58,7 +58,7 @@ impl Lowerer<'_> {
             .zip(abi.parameters())
             .enumerate()
         {
-            if !self.hir.reference_compatible(argument.ty, *expected) {
+            if !self.hir.types_compatible(argument.ty, *expected) {
                 return Err(invalid_hir(argument.span));
             }
             if matches!(
@@ -104,7 +104,9 @@ impl Lowerer<'_> {
                 }
                 VirAbiValue::Scalar { .. } | VirAbiValue::Pointer { .. } => {
                     let value = self.lower_expression(argument)?;
-                    require_pointer_abi_authority(value, argument.span)?;
+                    if matches!(binding.value(), VirAbiValue::Pointer { .. }) {
+                        require_pointer_abi_authority(value, argument.span)?;
+                    }
                     assign_abi_slots(
                         &mut arguments,
                         binding.parameter_slots(),
@@ -193,7 +195,7 @@ impl Lowerer<'_> {
                         *result_slot,
                         local,
                         destination,
-                        binding.interface().transfer,
+                        binding.consumes_indirect_contents(self.memory.schema()),
                     ));
                 }
                 VirAbiValue::Opaque(_) => {
@@ -263,7 +265,12 @@ impl Lowerer<'_> {
             })
             .flatten()
             .or_else(|| {
-                (!abi.borrow_result_alternatives().is_empty() || projected_result).then(|| {
+                (!abi.borrow_result_alternatives().is_empty()
+                    || projected_result
+                    || abi
+                        .borrow_result()
+                        .is_some_and(|r| r.parameter_field.is_some()))
+                .then(|| {
                     let binding = &abi.results()[0];
                     LoweredLoan::Authority {
                         kind: if binding.interface().transfer
@@ -282,7 +289,28 @@ impl Lowerer<'_> {
         let candidate_parameters = abi.borrow_result_parameters();
         let mut deferred = [None; 4];
         let mut deferred_len = 0;
-        for (index, slot, local, mut value) in borrowed_arguments {
+        for (index, slot, mut local, mut value) in borrowed_arguments {
+            // A dead named reference has the same lifetime as a temporary
+            // argument. End it at this call, or defer its end until the returned
+            // child ends. Function parameters still belong to the return ABI.
+            if slot.is_some()
+                && matches!(
+                    value.loan,
+                    Some(LoweredLoan::Static(_) | LoweredLoan::Authority { .. })
+                )
+                && let Some(parent) = local
+                && self
+                    .call_cleanup
+                    .as_ref()
+                    .is_some_and(|(id, live)| *id == expression.id && !live.contains(&parent))
+                && !self
+                    .function
+                    .body()
+                    .is_some_and(|body| body.parameters.contains(&parent))
+            {
+                self.environment.forget(&[parent], source_span)?;
+                local = None;
+            }
             if let Some(slot) = slot {
                 value.permission =
                     Some(abi_result(&results, slot, VirType::Permission, source_span)?.id);
@@ -295,14 +323,20 @@ impl Lowerer<'_> {
                     let loan = match value.loan.ok_or_else(|| invalid_hir(source_span))? {
                         LoweredLoan::Static(loan) => DeferredLoanEnd::Static {
                             loan,
-                            pointer: value.value,
+                            pointer: VirValue {
+                                id: value.value,
+                                ty: value.ty,
+                            },
                             permission,
                         },
                         LoweredLoan::Authority { reference, .. }
                         | LoweredLoan::ConditionalAuthority { reference, .. } => {
                             DeferredLoanEnd::Authority {
                                 reference,
-                                pointer: value.value,
+                                pointer: VirValue {
+                                    id: value.value,
+                                    ty: value.ty,
+                                },
                                 permission,
                             }
                         }
@@ -344,7 +378,7 @@ impl Lowerer<'_> {
                                         pointer,
                                         permission,
                                     } => self.cfg.emit_loan_end(
-                                        loan_effect(loan, pointer, permission),
+                                        loan_effect(loan, pointer.id, permission),
                                         DraftSourceIdentity::HirNode(expression.id),
                                         source_span,
                                     )?,
@@ -353,7 +387,7 @@ impl Lowerer<'_> {
                                         pointer,
                                         permission,
                                     } => self.cfg.emit_loan_authority_end(
-                                        loan_authority_effect(pointer, permission, reference),
+                                        loan_authority_effect(pointer.id, permission, reference),
                                         DraftSourceIdentity::HirNode(expression.id),
                                         source_span,
                                     )?,
@@ -387,9 +421,9 @@ impl Lowerer<'_> {
             });
         }
 
-        for (slot, local, storage, transfer) in restored_arguments {
+        for (slot, local, storage, consumed) in restored_arguments {
             let permission = abi_result(&results, slot, VirType::Permission, source_span)?;
-            let drop_flag = if transfer == crate::VirInterfaceTransfer::Move {
+            let drop_flag = if consumed {
                 self.initial_access_drop_flag(storage.access, false, source_span)?
             } else {
                 storage.drop_flag

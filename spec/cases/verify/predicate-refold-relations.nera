@@ -1,0 +1,35 @@
+// Hidden guarantees compose across a loop and a same-instance refold.
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>,limit:usize) {
+    exists low:usize = 0usize;
+    exists high:usize = 0usize;
+    owns(p);
+    initialized(p.value,0..1);
+    low<=high;
+    high<limit;
+}
+fn main()->u64 {
+    let p=alloc<Cell>(1);
+    p.value=42;
+    fold Ready(p,7usize) with (low=3usize,high=6usize);
+    let q=compact(p,7usize);
+    unfold Ready(q,7usize);
+    let outcome=q.value;
+    free(q);
+    finish Ready(q,7usize);
+    return outcome;
+}
+fn compact(p:Own<Cell>,limit:usize)->Own<Cell>
+requires Ready(p,limit);
+ensures Ready(result,limit);
+{
+    unfold Ready(p,limit) as (lo,hi);
+    let mut i=0usize;
+    while i<limit {
+        invariant i<=limit;
+        invariant lo<limit;
+        i=i+1usize;
+    }
+    fold Ready(p,limit) with (low=0usize,high=lo);
+    return p;
+}

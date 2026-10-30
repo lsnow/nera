@@ -129,6 +129,30 @@ impl<'environment> TransferBuilder<'environment> {
         source_id: VirValueId,
     ) -> Result<(), TransferError> {
         let source = permission_fact(&self.state, source_id)?;
+        match self.state.move_predicate_carrier(source_id, result.id) {
+            Ok(false) => {}
+            moved => {
+                self.require(
+                    ResourceObligationKind::PredicateCarrierMovable {
+                        permission: source_id,
+                    },
+                    if moved.is_ok() {
+                        ObligationStatus::Proven
+                    } else {
+                        ObligationStatus::Unknown
+                    },
+                );
+                if moved.is_ok() {
+                    self.move_loan_authority(source.authority(), source_id, result.id);
+                }
+                return self.define(
+                    result,
+                    AbstractValue::Permission(
+                        source.with_availability(PermissionAvailability::Consumed),
+                    ),
+                );
+            }
+        }
         self.require(
             ResourceObligationKind::PermissionAvailable {
                 permission: source_id,

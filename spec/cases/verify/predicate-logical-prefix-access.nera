@@ -1,0 +1,26 @@
+// The runtime index is below a ghost endpoint, but is not equal to it.
+struct Buffer { slots:[u64;4], }
+predicate Ready(p:ptr<Buffer>,index:usize) {
+    exists used:usize;
+    owns(p);
+    initialized(p.slots,0usize..used);
+    index<used;
+    used<=3usize;
+}
+fn main()->u64 {
+    let p=alloc<Buffer>(1);
+    p.slots[0]=0;
+    p.slots[1]=42;
+    fold Ready(p,1usize) with (used=2usize);
+    return consume(p,1usize);
+}
+fn consume(p:Own<Buffer>,index:usize)->u64
+requires Ready(p,index);
+requires index<3usize;
+{
+    unfold Ready(p,index);
+    let value=p.slots[index];
+    free(p);
+    finish Ready(p,index);
+    return value;
+}

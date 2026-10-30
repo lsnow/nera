@@ -84,7 +84,7 @@ pub struct Case {
     /// These call sites must actually apply a Closed summary, not just use a skeleton.
     pub applied: &'static [(&'static str, &'static str)],
     pub recursive: Option<&'static str>,
-    /// Checked body, but this edge still uses the conservative call skeleton.
+    /// Closed callee, but its effect envelope cannot map to this symbolic slice.
     pub skeleton: Option<(&'static str, &'static str)>,
     pub mutations: &'static [Mutation],
 }
@@ -123,7 +123,7 @@ pub fn cases() -> Vec<Case> {
             value: if branch == 0 { 42 } else { 0 },
             allocations: 0,
             applied: &[],
-            recursive: None,
+            recursive: Some("edit"),
             skeleton: Some(("build", "edit")),
             mutations: &[Mutation {
                 name: "missing-prefix-initialization",

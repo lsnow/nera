@@ -812,6 +812,7 @@ impl FunctionSelector<'_> {
             ),
             (VirInstruction::Constant { result, value }, X86_64InstructionPlan::Runtime) => {
                 let value = match value {
+                    VirConstant::NullPointer(_) => 0,
                     VirConstant::U64(value) => *value,
                     VirConstant::Bool(value) => u64::from(*value),
                 };
@@ -1550,28 +1551,6 @@ impl FunctionSelector<'_> {
         condition: VirValueId,
         output: &mut Vec<X86_64MachineInstruction>,
     ) -> Result<(), X86_64CodegenError> {
-        let shape = self.memory.object_shape(access).map_err(|_| {
-            instruction_error(
-                self.function,
-                block,
-                instruction_index,
-                source_span,
-                X86_64CodegenErrorKind::InconsistentPlanning("object drop shape is invalid"),
-            )
-        })?;
-        if shape
-            .resource_leaves()
-            .iter()
-            .any(|leaf| leaf.kind() == crate::VirPointerKind::Raw)
-        {
-            return Err(instruction_error(
-                self.function,
-                block,
-                instruction_index,
-                source_span,
-                X86_64CodegenErrorKind::InconsistentPlanning("object drop shape is unsupported"),
-            ));
-        }
         let inline_label = |ordinal| X86_64MachineLabel::Inline {
             function: self.function.id,
             block: block.id,
@@ -1592,74 +1571,130 @@ impl FunctionSelector<'_> {
             target: end,
         });
 
-        if shape.variants().is_empty() {
-            for leaf in shape
-                .resource_leaves()
-                .iter()
-                .filter(|leaf| leaf.kind() == crate::VirPointerKind::Own)
-            {
-                self.lower_object_drop_leaf(
-                    block,
-                    instruction_index,
-                    source_span,
-                    pointer,
-                    leaf.bytes().start_bytes(),
-                    output,
-                )?;
-            }
-            output.push(X86_64MachineInstruction::Label { label: end });
-            return Ok(());
-        }
-
-        let tag = shape
-            .variants()
-            .first()
-            .ok_or_else(|| {
-                instruction_error(
-                    self.function,
-                    block,
-                    instruction_index,
-                    source_span,
-                    X86_64CodegenErrorKind::InconsistentPlanning(
-                        "object drop enum has no variants",
-                    ),
-                )
-            })?
-            .tag();
-        let tag_displacement = object_displacement(
-            tag.start_bytes(),
-            self.function,
+        let plan = self.memory.object_drop_plan(access).ok_or_else(|| {
+            instruction_error(
+                self.function,
+                block,
+                instruction_index,
+                source_span,
+                X86_64CodegenErrorKind::InconsistentPlanning("finite drop plan is unavailable"),
+            )
+        })?;
+        self.lower_drop_tree(
             block,
             instruction_index,
             source_span,
+            pointer,
+            &[],
+            &plan,
+            &mut 1,
+            output,
         )?;
+        output.push(X86_64MachineInstruction::Label { label: end });
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn load_drop_storage(
+        &self,
+        block: &VirBasicBlock,
+        index: usize,
+        span: ByteSpan,
+        root: VirValueId,
+        path: &[u64],
+        output: &mut Vec<X86_64MachineInstruction>,
+    ) -> Result<(), X86_64CodegenError> {
         output.push(move_from_frame(
             ADDRESS_SCRATCH,
-            self.value_slot(block, instruction_index, source_span, pointer)?,
+            self.value_slot(block, index, span, root)?,
         ));
+        for offset in path {
+            let displacement = object_displacement(*offset, self.function, block, index, span)?;
+            output.push(move_from_memory(
+                ADDRESS_SCRATCH,
+                memory(ADDRESS_SCRATCH, displacement),
+            ));
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn lower_drop_tree(
+        &self,
+        block: &VirBasicBlock,
+        index: usize,
+        span: ByteSpan,
+        root: VirValueId,
+        path: &[u64],
+        plan: &crate::vir::ObjectDropPlan,
+        next: &mut usize,
+        output: &mut Vec<X86_64MachineInstruction>,
+    ) -> Result<(), X86_64CodegenError> {
+        let label = |n| X86_64MachineLabel::Inline {
+            function: self.function.id,
+            block: block.id,
+            instruction: index,
+            ordinal: n,
+        };
+        if plan.shape.variants().is_empty() {
+            for leaf in plan
+                .shape
+                .resource_leaves()
+                .iter()
+                .filter(|l| l.kind() == crate::VirPointerKind::Own)
+            {
+                self.lower_drop_tree_leaf(
+                    block,
+                    index,
+                    span,
+                    root,
+                    path,
+                    plan,
+                    leaf.bytes().start_bytes(),
+                    leaf.access(),
+                    next,
+                    output,
+                )?;
+            }
+            return Ok(());
+        }
+        let end = label(*next);
+        *next += 1;
+        let cases = plan
+            .shape
+            .variants()
+            .iter()
+            .map(|_| {
+                let l = label(*next);
+                *next += 1;
+                l
+            })
+            .collect::<Vec<_>>();
+        let tag = plan.shape.variants()[0].tag();
+        let displacement =
+            object_displacement(tag.start_bytes(), self.function, block, index, span)?;
+        self.load_drop_storage(block, index, span, root, path, output)?;
         output.push(X86_64MachineInstruction::Move8 {
             destination: X86_64MachineByteWrite::Register(X86_64ByteRegister::R10b),
-            source: X86_64MachineByteRead::Memory(memory(ADDRESS_SCRATCH, tag_displacement)),
+            source: X86_64MachineByteRead::Memory(memory(ADDRESS_SCRATCH, displacement)),
         });
         output.push(X86_64MachineInstruction::MoveZeroExtend8To64 {
             destination: VALUE_SCRATCH,
             source: X86_64ByteRegister::R10b,
         });
-        for (index, case) in shape.variants().iter().enumerate() {
+        for (case, target) in plan.shape.variants().iter().zip(&cases) {
             output.push(X86_64MachineInstruction::Compare64 {
                 left: VALUE_SCRATCH,
                 right: X86_64MachineRead::Immediate(case.discriminant()),
             });
             output.push(X86_64MachineInstruction::JumpIf {
                 condition: X86_64ConditionCode::Equal,
-                target: inline_label(index + 1),
+                target: *target,
             });
         }
         output.push(X86_64MachineInstruction::Trap);
-        for (index, case) in shape.variants().iter().enumerate() {
-            output.push(X86_64MachineInstruction::Label {
-                label: inline_label(index + 1),
-            });
+        for (case, target) in plan.shape.variants().iter().zip(cases) {
+            output.push(X86_64MachineInstruction::Label { label: target });
             for leaf in case.leaves().iter().filter(|leaf| {
                 matches!(
                     self.memory.kind(leaf.access().ty),
@@ -1669,12 +1704,16 @@ impl FunctionSelector<'_> {
                     })
                 )
             }) {
-                self.lower_object_drop_leaf(
+                self.lower_drop_tree_leaf(
                     block,
-                    instruction_index,
-                    source_span,
-                    pointer,
+                    index,
+                    span,
+                    root,
+                    path,
+                    plan,
                     leaf.bytes().start_bytes(),
+                    leaf.access(),
+                    next,
                     output,
                 )?;
             }
@@ -1685,26 +1724,46 @@ impl FunctionSelector<'_> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn lower_object_drop_leaf(
+    fn lower_drop_tree_leaf(
         &self,
         block: &VirBasicBlock,
-        instruction_index: usize,
-        source_span: ByteSpan,
-        pointer: VirValueId,
-        offset_bytes: u64,
+        index: usize,
+        span: ByteSpan,
+        root: VirValueId,
+        path: &[u64],
+        plan: &crate::vir::ObjectDropPlan,
+        offset: u64,
+        access: crate::VirMemoryAccess,
+        next: &mut usize,
         output: &mut Vec<X86_64MachineInstruction>,
     ) -> Result<(), X86_64CodegenError> {
-        let displacement = object_displacement(
-            offset_bytes,
-            self.function,
-            block,
-            instruction_index,
-            source_span,
-        )?;
-        output.push(move_from_frame(
-            ADDRESS_SCRATCH,
-            self.value_slot(block, instruction_index, source_span, pointer)?,
+        let end = X86_64MachineLabel::Inline {
+            function: self.function.id,
+            block: block.id,
+            instruction: index,
+            ordinal: *next,
+        };
+        *next += 1;
+        let displacement = object_displacement(offset, self.function, block, index, span)?;
+        self.load_drop_storage(block, index, span, root, path, output)?;
+        output.push(move_from_memory(
+            VALUE_SCRATCH,
+            memory(ADDRESS_SCRATCH, displacement),
         ));
+        output.push(X86_64MachineInstruction::Compare64 {
+            left: VALUE_SCRATCH,
+            right: X86_64MachineRead::Immediate(0),
+        });
+        output.push(X86_64MachineInstruction::JumpIf {
+            condition: X86_64ConditionCode::Equal,
+            target: end,
+        });
+        if let Some(child) = plan.child(offset, access) {
+            let mut child_path = path.to_vec();
+            child_path.push(offset);
+            self.lower_drop_tree(block, index, span, root, &child_path, child, next, output)?;
+        }
+        self.load_drop_storage(block, index, span, root, path, output)?;
         output.push(move_from_memory(
             X86_64IntegerRegister::Rdi,
             memory(ADDRESS_SCRATCH, displacement),
@@ -1712,10 +1771,7 @@ impl FunctionSelector<'_> {
         output.push(X86_64MachineInstruction::CallExternal {
             symbol: X86_64ExternalSymbol::Free,
         });
-        output.push(move_from_frame(
-            ADDRESS_SCRATCH,
-            self.value_slot(block, instruction_index, source_span, pointer)?,
-        ));
+        self.load_drop_storage(block, index, span, root, path, output)?;
         output.push(X86_64MachineInstruction::Move64 {
             destination: X86_64MachineWrite::Register(VALUE_SCRATCH),
             source: X86_64MachineRead::Immediate(0),
@@ -1724,6 +1780,7 @@ impl FunctionSelector<'_> {
             destination: X86_64MachineWrite::Memory(memory(ADDRESS_SCRATCH, displacement)),
             source: X86_64MachineRead::Register(VALUE_SCRATCH),
         });
+        output.push(X86_64MachineInstruction::Label { label: end });
         Ok(())
     }
 

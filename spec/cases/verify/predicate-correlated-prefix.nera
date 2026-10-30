@@ -1,0 +1,28 @@
+// Hidden operands have wide ranges; their relation bounds the actual count.
+struct Buffer { slots:[u64;4], }
+predicate Ready(p:ptr<Buffer>) {
+    exists low:usize = 0usize;
+    exists high:usize = 0usize;
+    owns(p);
+    initialized(p.slots,0usize..1usize);
+    initialized(p.slots,0usize..high-low);
+    low<=high;
+    high<=low+1usize;
+}
+fn main()->u64 {
+    let p=alloc<Buffer>(1);
+    p.slots[0]=42;
+    fold Ready(p) with (low=3usize,high=4usize);
+    let q=relay(p);
+    unfold Ready(q);
+    let outcome=q.slots[0];
+    free(q);
+    finish Ready(q);
+    return outcome;
+}
+fn relay(p:Own<Buffer>)->Own<Buffer>
+requires Ready(p);
+ensures Ready(result);
+{
+    return p;
+}

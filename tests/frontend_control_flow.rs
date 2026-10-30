@@ -132,6 +132,7 @@ fn branch_edges_retain_boolean_and_comparison_path_facts() {
             .block(target.block)
             .expect("target is analyzed")
             .entry_state()
+            .unwrap()
             .path_condition();
         assert!(path.implies(PathFact::boolean(condition, expected)));
         assert!(path.implies(if expected {

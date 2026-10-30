@@ -687,6 +687,22 @@ fn borrow_projection(relation: BorrowResultRelation) -> String {
             "projection=fixed bytes {offset_bytes}..{} (alignment {alignment})",
             offset_bytes.saturating_add(size_bytes)
         ),
+        BorrowProjection::ArraySlice {
+            offset_bytes,
+            length,
+            start,
+            end,
+            stride_bytes,
+        } => {
+            let selection = if end == BorrowSliceBound::ReturnedLength {
+                format!("start {}, length returned length", borrow_bound(start))
+            } else {
+                format!("{}..{}", borrow_bound(start), borrow_bound(end))
+            };
+            format!(
+                "projection=array slice {selection} (base {offset_bytes}, capacity {length}, stride {stride_bytes})"
+            )
+        }
         BorrowProjection::Slice {
             start,
             end,
@@ -702,6 +718,8 @@ fn borrow_projection(relation: BorrowResultRelation) -> String {
 
 fn borrow_bound(bound: BorrowSliceBound) -> String {
     match bound {
+        BorrowSliceBound::ReturnedLength => "returned length".to_owned(),
+        BorrowSliceBound::ReturnedOffset => "returned pointer offset".to_owned(),
         BorrowSliceBound::Constant(value) => value.to_string(),
         BorrowSliceBound::Parameter(parameter) => format!("parameter #{parameter}"),
         BorrowSliceBound::SourceLength => "source length".to_owned(),

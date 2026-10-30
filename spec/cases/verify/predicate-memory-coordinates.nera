@@ -1,0 +1,30 @@
+struct Cell { cursor:usize, value:u64, }
+predicate Ready(p:ptr<Cell>,saved:usize) {
+    owns(p);
+    initialized(p.cursor,0..1);
+    initialized(p.value,0..1);
+    saved==saved;
+}
+fn main()->u64 {
+    let p=alloc<Cell>(1);
+    p.cursor=0usize;
+    p.value=42;
+    fold Ready(p,p.cursor);
+    let old=advance(&mut *p);
+    unfold Ready(p,old);
+    let value=p.value;
+    free(p);
+    finish Ready(p,old);
+    return value;
+}
+fn advance(p:&mut Cell)->usize
+requires Ready(p,p.cursor);
+ensures Ready(p,old(p.cursor));
+ensures result==old(p.cursor);
+{
+    unfold Ready(p,p.cursor);
+    let old=p.cursor;
+    if old<4usize { p.cursor=old+1usize; }
+    fold Ready(p,old);
+    return old;
+}

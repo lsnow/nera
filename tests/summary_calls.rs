@@ -82,7 +82,7 @@ fn wrappers_constants_owner_identity_and_fresh_instances_close_in_one_product_pa
                 .cfg()
                 .blocks()
                 .values()
-                .flat_map(|b| b.instruction_states())
+                .flat_map(|b| b.instruction_states().unwrap())
                 .flat_map(|s| s.allocations().keys())
                 .filter(|id| matches!(id, nera::AbstractAllocationId::SummaryInstance { .. }))
                 .collect::<std::collections::BTreeSet<_>>();

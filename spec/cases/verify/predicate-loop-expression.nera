@@ -1,0 +1,37 @@
+// The public parameter is an expression of a changing header scalar.
+// Its domain is reconstructed from the scalar invariant, not entry bounds.
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>,limit:usize) {
+    exists used:usize = 0usize;
+    owns(p);
+    initialized(p.value,0..1);
+    p.value<=42;
+    limit<=8usize;
+    used<=7usize;
+}
+fn main()->u64 {
+    return run(true);
+}
+fn initial(seed:bool)->usize
+ensures result<=3usize;
+{
+    if seed { return 1usize; }
+    return 3usize;
+}
+fn run(seed:bool)->u64 {
+    let p=alloc<Cell>(1);
+    p.value=42;
+    let mut count=initial(seed);
+    fold Ready(p,count+1usize) with (used=count);
+    while count<7usize {
+        invariant count<=7usize;
+        unfold Ready(p,count+1usize);
+        count=count+1usize;
+        fold Ready(p,count+1usize) with (used=count);
+    }
+    unfold Ready(p,count+1usize);
+    let outcome=p.value;
+    free(p);
+    finish Ready(p,count+1usize);
+    return outcome;
+}

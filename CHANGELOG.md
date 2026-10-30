@@ -4,6 +4,14 @@ All notable changes to the public Nera preview are documented here.
 
 ## Unreleased
 
+- Added typed raw-pointer links and null values, node storage and call support.
+- Added finite, nonrecursive resource predicates with typed logical parameters,
+  scoped existential witnesses, and opaque module representations.
+- Added aggregate reference-field transfers, checked resource handoffs, and
+  lifecycle cleanup across calls, branches, and loops.
+- Added a three-module opaque arena example and regression coverage for static
+  verification, interpreter execution, and native allocation/release behavior.
+
 - Changed `assert` to evaluate ordinary boolean expressions at runtime. A false
   condition reports an interpreter error or aborts a native executable.
 - Removed the source-level static assertion entrypoint without adding a `prove`

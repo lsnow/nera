@@ -50,9 +50,32 @@ fn deferred_declaration_validation_rejects_immutable_and_duplicate_storage() {
     assert!(HirProgram::from_tables(duplicate).is_err());
 }
 
+#[test]
+fn untrusted_parameter_bindings_cannot_be_made_mutable() {
+    for source in [
+        "fn identity(value:u64)->u64 { return value; } fn main()->u64 { return identity(42); }",
+        "struct Meta { count:usize, valid:bool, } fn inspect(meta:Meta)->usize { return meta.count; } fn main()->usize { return inspect(Meta { count:7usize, valid:true }); }",
+    ] {
+        let program = accepted_program(source);
+        let mut changed = tables(&program);
+        let body = changed
+            .functions
+            .iter_mut()
+            .find_map(|f| f.body.as_mut().filter(|body| !body.parameters.is_empty()))
+            .unwrap();
+        body.locals[body.parameters[0].get() as usize].mutable = true;
+        assert!(HirProgram::from_tables(changed).is_err());
+    }
+    // Binding immutability does not forbid writes through a mutable reference.
+    accepted_program(
+        "fn set(value:&mut u64) { *value=42; return; } fn main()->u64 { let mut value=0; set(&mut value); return value; }",
+    );
+}
+
 fn push_type(types: &mut Vec<HirTypeDefinition>, name: &str, kind: HirTypeKind) -> HirTypeId {
     let id = HirTypeId::new(u32::try_from(types.len()).expect("small test type table"));
     types.push(HirTypeDefinition {
+        opaque: None,
         id,
         name: Some(name.to_owned()),
         kind,
@@ -268,6 +291,7 @@ fn program_covering_the_hir_type_model() -> HirProgram {
         u32::try_from(tables.predicates.len()).expect("small test predicate table"),
     );
     tables.predicates.push(HirPredicate {
+        representation: None,
         id: predicate,
         module: HirModuleId::new(0),
         name: "is_word".to_owned(),

@@ -45,11 +45,13 @@ fn two_live_dynamic_element_loans_can_both_be_used() {
     let analysis = analyze_function_cfg(&resolved, VirFunctionId::new(1)).unwrap();
     let mut simultaneous_write = false;
     for block in &unit.runtime().functions[1].blocks {
-        for (instruction, state) in block
-            .instructions
-            .iter()
-            .zip(analysis.block(block.id).unwrap().instruction_states())
-        {
+        for (instruction, state) in block.instructions.iter().zip(
+            analysis
+                .block(block.id)
+                .unwrap()
+                .instruction_states()
+                .unwrap(),
+        ) {
             if matches!(
                 instruction.instruction,
                 VirInstruction::Write { .. } | VirInstruction::Store { .. }
@@ -184,6 +186,7 @@ fn exhausted_relation_budgets_never_create_two_active_authorities() {
                 .block(b.id)
                 .unwrap()
                 .instruction_states()
+                .unwrap()
                 .iter()
                 .all(|s| {
                     s.loans()

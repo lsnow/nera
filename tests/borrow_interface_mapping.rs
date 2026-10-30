@@ -124,3 +124,62 @@ fn explicit_mapping_selects_mutable_restoration_without_type_position_guessing()
     assert!(abi.parameters()[1].result_slots().is_empty());
     assert_eq!(abi.results()[0].result_slots(), [0, 1]);
 }
+
+#[test]
+fn duplicate_parameter_regions_cannot_import_the_same_interface_loan_twice() {
+    let output = analyze(&SourceFile::from_text(
+        "duplicate-interface-region.nera",
+        SOURCE,
+    ));
+    let mut unit = output.vir().unwrap().as_unit().clone();
+    let mut regions = unit.borrows.regions().to_vec();
+    let mut duplicate = regions
+        .iter()
+        .find(|r| matches!(r.origin, nera::VirBorrowRegionOrigin::Parameter { .. }))
+        .unwrap()
+        .clone();
+    duplicate.id = nera::VirBorrowRegionId::new(regions.len() as u32);
+    let id = duplicate.id;
+    regions.push(duplicate);
+    unit.borrows =
+        nera::VirBorrowEnvironment::from_tables(regions, unit.borrows.constraints().to_vec());
+    let error = unit
+        .into_validated()
+        .expect_err("duplicate logical parameter region must fail validation");
+    assert!(
+        matches!(error.kind(), nera::VirValidationErrorKind::InvalidBorrowRegion(found) if *found == id)
+    );
+}
+
+#[test]
+fn parameter_field_regions_cannot_claim_scalar_or_direct_reference_parameters() {
+    let output = analyze(&SourceFile::from_text("field-region-boundary.nera", SOURCE));
+    for (index, slot) in [(0, 0), (1, 0), (1, u32::MAX), (99, 0)] {
+        let mut unit = output.vir().unwrap().as_unit().clone();
+        let mut regions = unit.borrows.regions().to_vec();
+        let mut field = regions
+            .iter()
+            .find(|r| {
+                r.owner == nera::VirFunctionId::new(1)
+                    && matches!(r.origin, nera::VirBorrowRegionOrigin::Parameter { .. })
+            })
+            .unwrap()
+            .clone();
+        field.id = nera::VirBorrowRegionId::new(regions.len() as u32);
+        field.origin = nera::VirBorrowRegionOrigin::ParameterField { index, slot };
+        let id = field.id;
+        regions.push(field);
+        unit.borrows =
+            nera::VirBorrowEnvironment::from_tables(regions, unit.borrows.constraints().to_vec());
+        assert!(
+            unit.stable_dump()
+                .contains(&format!("parameter-field({index},{slot})"))
+        );
+        let error = unit
+            .into_validated()
+            .expect_err("a field binder requires a real indirect reference leaf");
+        assert!(
+            matches!(error.kind(), nera::VirValidationErrorKind::InvalidBorrowRegion(found) if *found == id)
+        );
+    }
+}

@@ -1,0 +1,42 @@
+struct Buffer { slots:[u64;3], }
+predicate Ready(p:ptr<Buffer>,n:usize,m:usize) {
+    exists used:usize = 0usize;
+    owns(p);
+    initialized(p.slots,0usize..used);
+    used==n+m+1usize;
+    used<=3usize;
+}
+fn main()->u64 {
+    let p=alloc<Buffer>(1);
+    p.slots[0]=7;
+    p.slots[1]=42;
+    p.slots[2]=9;
+    fold Ready(p,1usize,1usize) with (used=3usize);
+    return consume(p,1usize,1usize);
+}
+fn relay(p:Own<Buffer>,n:usize,m:usize)->Own<Buffer>
+requires n<=3usize;
+requires m==1usize;
+requires Ready(p,n,m);
+ensures Ready(result,n,m);
+{
+    return p;
+}
+fn consume(p:Own<Buffer>,n:usize,m:usize)->u64
+requires n<=3usize;
+requires m==1usize;
+requires Ready(p,n,m);
+{
+    let q=relay(p,n,m);
+    unfold Ready(q,n,m) as (saved);
+    let mut i=0usize;
+    while i<n {
+        invariant i<=n;
+        invariant saved==n+m+1usize;
+        i=i+1usize;
+    }
+    let value=q.slots[1];
+    free(q);
+    finish Ready(q,n,m);
+    return value;
+}

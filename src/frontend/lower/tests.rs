@@ -90,6 +90,7 @@ fn append_concrete_type(
     let ty = HirTypeId::new(u32::try_from(tables.types.len()).expect("small type table"));
     let layout = HirLayoutId::new(u32::try_from(tables.layouts.len()).expect("small layout table"));
     tables.types.push(HirTypeDefinition {
+        opaque: None,
         id: ty,
         name: Some(name.to_owned()),
         kind,
@@ -270,6 +271,7 @@ fn add_generic_parameter_type(
     };
     let ty = HirTypeId::new(u32::try_from(types.len()).expect("small test table"));
     types.push(HirTypeDefinition {
+        opaque: None,
         id: ty,
         name: Some("T".to_owned()),
         kind: HirTypeKind::GenericParameter(parameter.id),
@@ -974,6 +976,8 @@ fn typed_spec_hir_lowers_into_the_shared_spec_vir_arenas() {
     let mut contracts = base.contracts().to_vec();
     contracts[contract_id.index()].clauses = vec![HirSpecClauseId::new(1)];
     let specs = HirSpecEnvironment {
+        predicate_actions: vec![],
+        predicate_interfaces: vec![],
         assertions: vec![],
         binders: Vec::new(),
         terms: vec![
@@ -1130,6 +1134,7 @@ fn unresolved_runtime_layout_fails_closed() {
     let mut types = base.types().to_vec();
     let unresolved_type = HirTypeId::new(u32::try_from(types.len()).expect("small test table"));
     types.push(HirTypeDefinition {
+        opaque: None,
         id: unresolved_type,
         name: Some("unresolved-u64".to_owned()),
         kind: HirTypeKind::Integer(crate::HirIntegerType::U64),
@@ -1327,7 +1332,7 @@ fn inferred_own_contracts_are_rederived_from_the_hir_type() {
 }
 
 #[test]
-fn raw_address_return_cannot_invent_authority_for_the_legacy_pointer_abi() {
+fn raw_address_return_uses_an_authority_free_result_slot() {
     let base = accepted_program("fn f() -> u64 { let word = 1; return word; }");
     let mut types = base.types().to_vec();
     let mut functions = base.functions().to_vec();
@@ -1369,7 +1374,13 @@ fn raw_address_return_cannot_invent_authority_for_the_legacy_pointer_abi() {
     value.ty = raw_type;
     let place_hir = rebuild(&base, types, base.generic_parameters().to_vec(), functions);
 
-    assert!(lower_test(&place_hir).is_err());
+    let unit = lower_test(&place_hir).unwrap();
+    let signature = &unit.runtime().functions[0].signature;
+    assert_eq!(signature.results.len(), 1);
+    assert!(matches!(
+        signature.results[0],
+        crate::VirType::Pointer { .. }
+    ));
 }
 
 #[test]

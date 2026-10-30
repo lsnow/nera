@@ -1,0 +1,41 @@
+struct Holder { value: Own<u64>, marker: u64, }
+predicate Held(p: ptr<Holder>) {
+    exists item: ptr<u64> = p.value;
+    owns(p);
+    item == p.value;
+}
+fn main() -> u64 {
+    let p = make();
+    let q = relay(p);
+    return destroy(q);
+}
+fn make() -> Own<Holder>
+ensures Held(result);
+{
+    let item = alloc<u64>(1);
+    *item = 42;
+    let p = alloc<Holder>(1);
+    p.value = item;
+    p.marker = 0;
+    fold Held(p);
+    return p;
+}
+fn relay(p: Own<Holder>) -> Own<Holder>
+requires Held(p);
+ensures Held(result);
+{
+    unfold Held(p) as (item);
+    fold Held(p) with (item = item);
+    return p;
+}
+fn destroy(p: Own<Holder>) -> u64
+requires Held(p);
+{
+    unfold Held(p);
+    let item = p.value;
+    let value = *item;
+    free(item);
+    free(p);
+    finish Held(p);
+    return value;
+}

@@ -1,0 +1,50 @@
+// Calls on two independent packages may exchange ghost holder/scope numbers.
+// The actual owners and their sealed representations must still match.
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>) {
+    exists used:usize = 0usize;
+    owns(p);
+    initialized(p.value,0..1);
+    p.value<=21;
+    used<=7usize;
+}
+fn main()->u64 {
+    let p=alloc<Cell>(1);
+    p.value=0;
+    fold Ready(p);
+    let q=alloc<Cell>(1);
+    q.value=0;
+    fold Ready(q);
+    return choose(p,q,true);
+}
+fn refresh(p:Own<Cell>)->Own<Cell>
+requires Ready(p);
+ensures Ready(result);
+{
+    unfold Ready(p);
+    p.value=21;
+    fold Ready(p) with (used=3usize);
+    return p;
+}
+fn choose(p:Own<Cell>,q:Own<Cell>,which:bool)->u64
+requires Ready(p);
+requires Ready(q);
+{
+    let mut left=p;
+    let mut right=q;
+    if which {
+        left=refresh(left);
+        right=refresh(right);
+    } else {
+        right=refresh(right);
+        left=refresh(left);
+    }
+    unfold Ready(left);
+    unfold Ready(right);
+    let outcome=left.value+right.value;
+    free(left);
+    finish Ready(left);
+    free(right);
+    finish Ready(right);
+    return outcome;
+}

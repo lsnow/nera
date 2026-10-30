@@ -3,11 +3,13 @@ use super::{
     VirRegionId, VirSignature, VirType,
 };
 mod loops;
+mod predicate;
 pub(crate) use loops::{
     ResourceLoopAtom, ScalarLoopAtom, ScalarOperand, conditional_resource_atom, resource_atom,
     scalar_atoms,
 };
 pub use loops::{VirLoopBinding, VirLoopBoundary, VirLoopEdge};
+pub use predicate::*;
 
 /// Dense identifier of one signature binder within a contract.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -136,6 +138,14 @@ pub struct VirSpecBinder {
 /// A one-way snapshot of a runtime signature slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum VirSpecSnapshot {
+    /// Immutable existential selected by a particular live opening. No runtime
+    /// slot or memory authority is created by this observation.
+    Opened {
+        function: VirFunctionId,
+        action: u32,
+        holder: u32,
+        binder: u32,
+    },
     /// A scalar pointee of one typed ABI pointer binding. None selects result.
     Memory {
         function: VirFunctionId,
@@ -404,6 +414,7 @@ pub struct VirSpecClause {
 /// Predicate declaration without a body. Bodies/fold/unfold remain gated.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VirPredicate {
+    pub representation: Option<VirPredicateRepresentation>,
     pub id: VirPredicateId,
     pub name: String,
     pub binders: Vec<VirSpecBinderId>,
@@ -554,6 +565,8 @@ pub struct VirSpecEnvironment {
     assertions: Vec<VirSpecAssertion>,
     contracts: Vec<VirContract>,
     predicates: Vec<VirPredicate>,
+    predicate_actions: Vec<VirPredicateAction>,
+    predicate_interfaces: Vec<VirPredicateInterface>,
     binders: Vec<VirSpecBinder>,
     terms: Vec<VirSpecTerm>,
     clauses: Vec<VirSpecClause>,
@@ -569,6 +582,8 @@ pub struct VirSpecTables {
     pub assertions: Vec<VirSpecAssertion>,
     pub contracts: Vec<VirContract>,
     pub predicates: Vec<VirPredicate>,
+    pub predicate_actions: Vec<VirPredicateAction>,
+    pub predicate_interfaces: Vec<VirPredicateInterface>,
     pub binders: Vec<VirSpecBinder>,
     pub terms: Vec<VirSpecTerm>,
     pub clauses: Vec<VirSpecClause>,
@@ -584,6 +599,8 @@ impl VirSpecEnvironment {
             assertions: Vec::new(),
             contracts: Vec::new(),
             predicates: Vec::new(),
+            predicate_actions: Vec::new(),
+            predicate_interfaces: Vec::new(),
             binders: Vec::new(),
             terms: Vec::new(),
             clauses: Vec::new(),
@@ -611,6 +628,8 @@ impl VirSpecEnvironment {
             assertions: tables.assertions,
             contracts: tables.contracts,
             predicates: tables.predicates,
+            predicate_actions: tables.predicate_actions,
+            predicate_interfaces: tables.predicate_interfaces,
             binders: tables.binders,
             terms: tables.terms,
             clauses: tables.clauses,
@@ -652,6 +671,18 @@ impl VirSpecEnvironment {
     }
 
     #[must_use]
+    pub fn predicate_interfaces(&self) -> &[VirPredicateInterface] {
+        &self.predicate_interfaces
+    }
+    pub fn predicate_interfaces_mut(&mut self) -> &mut Vec<VirPredicateInterface> {
+        &mut self.predicate_interfaces
+    }
+    pub fn predicate_actions(&self) -> &[VirPredicateAction] {
+        &self.predicate_actions
+    }
+    pub fn predicate_actions_mut(&mut self) -> &mut Vec<VirPredicateAction> {
+        &mut self.predicate_actions
+    }
     pub fn predicates(&self) -> &[VirPredicate] {
         &self.predicates
     }
@@ -766,6 +797,8 @@ impl VirSpecEnvironment {
     pub fn is_empty(&self) -> bool {
         self.contracts.is_empty()
             && self.predicates.is_empty()
+            && self.predicate_actions.is_empty()
+            && self.predicate_interfaces.is_empty()
             && self.binders.is_empty()
             && self.terms.is_empty()
             && self.clauses.is_empty()

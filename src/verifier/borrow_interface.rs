@@ -1,4 +1,8 @@
-//! Signature-derived borrowed entry resources and unconditional export checks.
+//! Signature-derived loan authority and borrowed value guarantees.
+//! Predicate parameters import only their declared representation; ordinary
+//! references still require complete referents on entry and export.
+
+pub(super) mod stored;
 
 use super::relation::difference::{DifferenceLimits, DifferencePremise, word};
 use super::relation::{RelationComparison, RelationTerm};
@@ -12,7 +16,10 @@ pub(super) fn install_entry(
     abi: &VirAbiSignature,
     borrows: &VirBorrowEnvironment,
     memory: &VirMemorySchema,
+    contract: &super::contract::InstantiatedContract,
 ) -> Option<()> {
+    // Aggregate field loans are installed with their typed payloads by CFG
+    // entry construction, after direct parameter bindings are established.
     let entry = function
         .blocks
         .iter()
@@ -59,9 +66,33 @@ pub(super) fn install_entry(
         let mut allocation = AbstractAllocation::new_local(size.max(1), alignment).ok()?;
         let range = ByteRange::new(0, size).ok()?;
         let slice = matches!(binding.value(), VirAbiValue::Slice { .. });
+        // A predicate parameter exposes its declared representation, not an
+        // additional implicit guarantee that every byte of T is initialized.
+        // The checked predicate entry import below installs that minimum.
+        let predicate_value = !slice
+            && binding.interface().transfer == VirInterfaceTransfer::BorrowMutable
+            && contract.predicates.iter().any(|interface| {
+                !interface.metadata.ensures
+                    && interface.metadata.bindings.iter().any(|(p, q)| {
+                        binding.parameter_slots().first() == Some(p)
+                            && binding.parameter_slots().last() == Some(q)
+                    })
+            });
+        if predicate_value && size != 0 {
+            // Undeclared bytes are unknown, not definitely uninitialized.
+            // Otherwise the summary would reject a caller with extra contents
+            // and contradict a symbolic initialized-prefix guarantee.
+            allocation.forget_initialization(range).ok()?;
+        }
         if size != 0 {
             let shape = memory.object_shape(pointee).ok()?;
-            if !shape.resource_leaves().is_empty() || !shape.variants().is_empty() {
+            if ((slice || crate::vir::predicate_resource_fields(memory, pointee).is_none())
+                && shape
+                    .resource_leaves()
+                    .iter()
+                    .any(|leaf| leaf.kind() != VirPointerKind::Raw))
+                || !shape.variants().is_empty()
+            {
                 return None;
             }
             if slice {
@@ -70,7 +101,7 @@ pub(super) fn install_entry(
                 // bounded by the symbolic permission tied to the length SSA.
                 allocation.mark_initialized(range).ok()?;
                 allocation.mark_valid(range).ok()?;
-            } else {
+            } else if !predicate_value {
                 for bytes in shape.value_bytes() {
                     let bytes = ByteRange::new(bytes.start_bytes(), bytes.end_bytes()).ok()?;
                     allocation.mark_initialized(bytes).ok()?;
@@ -91,7 +122,7 @@ pub(super) fn install_entry(
                 AbstractValue::U64(current) => current.intersection(interval)?,
                 _ => return None,
             };
-            *state.value_mut(length)? = AbstractValue::U64(interval);
+            state.narrow_word_interval(length, interval);
             AbstractByteRange::from_bounds(
                 SymbolicRangeBound::constant(0),
                 SymbolicRangeBound::new(
@@ -172,20 +203,25 @@ fn install_projection_preconditions(
     let Some(relation) = abi.borrow_result() else {
         return Some(());
     };
-    let crate::BorrowProjection::Slice { start, end, .. } = relation.projection else {
+    let Some((start, end)) = relation.projection.slice_bounds() else {
         return Some(());
     };
     let source = abi.parameters().get(relation.parameter as usize)?;
-    let length_slot = *source.parameter_slots().get(1)? as usize;
-    let length = entry.parameters.get(length_slot)?.id;
+    let length = if let Some(length) = relation.projection.array_length() {
+        RelationTerm::Constant(length)
+    } else {
+        let length_slot = *source.parameter_slots().get(1)? as usize;
+        word(entry.parameters.get(length_slot)?.id)
+    };
     let term = |bound| match bound {
+        crate::BorrowSliceBound::ReturnedLength | crate::BorrowSliceBound::ReturnedOffset => None,
         crate::BorrowSliceBound::Constant(value) => Some(RelationTerm::Constant(value)),
         crate::BorrowSliceBound::Parameter(parameter) => {
             let binding = abi.parameters().get(parameter as usize)?;
             let slot = *binding.parameter_slots().first()? as usize;
             Some(word(entry.parameters.get(slot)?.id))
         }
-        crate::BorrowSliceBound::SourceLength => Some(word(length)),
+        crate::BorrowSliceBound::SourceLength => Some(length),
     };
     state.learn_relations(
         &[
@@ -197,7 +233,7 @@ fn install_projection_preconditions(
             DifferencePremise::Compare {
                 comparison: RelationComparison::LessOrEqual,
                 left: term(end)?,
-                right: word(length),
+                right: length,
             },
         ],
         DifferenceLimits::default(),
@@ -368,6 +404,24 @@ pub(super) fn export_value_obligations(
             });
         let allocation = id.and_then(|id| state.allocation(id));
         let shape = memory.object_shape(*pointee).ok();
+        if let Some(fields) = crate::vir::predicate_resource_fields(memory, *pointee) {
+            for field in fields {
+                let valid = id.is_some_and(|id| state.bounded_field_payload(id, &field).is_ok());
+                obligations.push(ResourceObligation::new(
+                    ResourceObligationKind::AggregateAbiPayloadValid {
+                        allocation: id,
+                        offset_bytes: Some(field.offset),
+                        access: field.access,
+                    },
+                    if valid {
+                        ObligationStatus::Proven
+                    } else {
+                        ObligationStatus::Unknown
+                    },
+                    span,
+                ));
+            }
+        }
         let range = shape
             .as_ref()
             .and_then(|shape| ByteRange::new(0, shape.size_bytes()).ok());
@@ -425,4 +479,146 @@ pub(super) fn export_value_obligations(
         ));
     }
     obligations
+}
+
+/// The independently validated SSA view pairs the returned pointer and length.
+/// Resource transfer still has to establish its actual footprint and authority.
+pub(super) fn returned_slice_obligation(
+    state: &ResourceState,
+    values: &[VirValueId],
+    abi: &VirAbiSignature,
+    span: crate::ByteSpan,
+) -> Option<ResourceObligation> {
+    let relation = abi.borrow_result()?;
+    if !matches!(
+        relation.projection,
+        crate::BorrowProjection::ArraySlice {
+            end: crate::BorrowSliceBound::ReturnedLength,
+            ..
+        }
+    ) {
+        return None;
+    }
+    let facts = values
+        .iter()
+        .map(|id| state.value(*id).copied())
+        .collect::<Option<Vec<_>>>();
+    let valid =
+        facts.is_some_and(|facts| normalize_returned_slice(state, values, &facts, abi).is_some());
+    Some(ResourceObligation::new(
+        ResourceObligationKind::BorrowProjectionRangeWithinSource {
+            source_parameter: relation.parameter,
+        },
+        if valid {
+            ObligationStatus::Proven
+        } else {
+            ObligationStatus::Unknown
+        },
+        span,
+    ))
+}
+
+/// Normalize only a checked return view. SSA validation establishes len=end-start;
+/// this adapter conserves the observed start/end intervals and original authority.
+/// It neither modifies the executable state nor imports a declared range as fact.
+pub(super) fn normalize_returned_slice(
+    state: &ResourceState,
+    ids: &[VirValueId],
+    facts: &[AbstractValue],
+    abi: &VirAbiSignature,
+) -> Option<Vec<AbstractValue>> {
+    let Some(relation) = abi.borrow_result() else {
+        return Some(facts.to_vec());
+    };
+    let crate::BorrowProjection::ArraySlice {
+        offset_bytes,
+        length,
+        stride_bytes,
+        start: start_coordinate,
+        end: crate::BorrowSliceBound::ReturnedLength,
+    } = relation.projection
+    else {
+        return Some(facts.to_vec());
+    };
+    let slots = abi.results().get(relation.result as usize)?.result_slots();
+    let pointer_slot = *slots.first()? as usize;
+    let length_slot = *slots.get(1)? as usize;
+    let permission_slot = *slots.get(2)? as usize;
+    let AbstractValue::Pointer(pointer) = *facts.get(pointer_slot)? else {
+        return None;
+    };
+    let AbstractValue::U64(actual_length) = *facts.get(length_slot)? else {
+        return None;
+    };
+    let AbstractValue::Permission(permission) = *facts.get(permission_slot)? else {
+        return None;
+    };
+    let footprint = pointer.slice_footprint()?;
+    let (start, end) = footprint.range.bounds()?;
+    let stride = u64::from(stride_bytes);
+    let extent = ByteRange::from_start_and_length(
+        u64::from(offset_bytes),
+        u64::from(length).checked_mul(stride)?,
+    )
+    .ok()?;
+    let pointer_expression = pointer
+        .offset_bytes()
+        .exact_value()
+        .map(AffineExpression::constant)
+        .or(pointer.offset_expression())?;
+    if footprint.provenance != pointer.provenance()
+        || permission.provenance() != pointer.provenance()
+        || footprint.range != permission.range()
+        || !extent.contains(footprint.envelope)
+        || actual_length.upper() > u64::from(length)
+        || start.interval() != pointer.offset_bytes()
+        || start.expression() != pointer_expression
+    {
+        return None;
+    }
+    let length_expression = actual_length
+        .exact_value()
+        .map(AffineExpression::constant)
+        .or_else(|| state.word_expression(*ids.get(length_slot)?))?;
+    // This fresh offset is scoped to the actual returned pointer, not to a
+    // later load of the heap cursor. The independent SSA check certifies the
+    // paired length; the checks above retain the actual storage/permission.
+    let start = if start_coordinate == crate::BorrowSliceBound::ReturnedOffset {
+        SymbolicRangeBound::new(
+            AffineExpression::identity(*ids.get(pointer_slot)?),
+            start.interval(),
+        )
+    } else {
+        start
+    };
+    let normalized_end = start
+        .expression()
+        .checked_add(length_expression.checked_scale(stride)?)?;
+    let range = AbstractByteRange::from_bounds(
+        start,
+        SymbolicRangeBound::new(normalized_end, end.interval()),
+    );
+    let mut values = facts.to_vec();
+    values[pointer_slot] = AbstractValue::Pointer(
+        pointer
+            .with_offset_expression(Some(start.expression()))
+            .with_slice_footprint(Some(MemoryFootprint { range, ..footprint }))
+            .with_domain(match pointer.domain() {
+                crate::VirPointerDomain::Restricted(old) if old == footprint.range => {
+                    crate::VirPointerDomain::Restricted(range)
+                }
+                domain => domain,
+            }),
+    );
+    values[permission_slot] = AbstractValue::Permission(
+        AbstractPermission::new(
+            permission.provenance(),
+            range,
+            permission.access(),
+            permission.free_capability(),
+        )
+        .with_authority(permission.authority())
+        .with_availability(permission.availability()),
+    );
+    Some(values)
 }

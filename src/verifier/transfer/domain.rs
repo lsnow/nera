@@ -100,10 +100,39 @@ impl TransferBuilder<'_> {
         left: VirValueId,
         right: VirValueId,
     ) -> Result<(), TransferError> {
-        let (a, b, checked) = self.pointer_pair(left, right)?;
-        if !checked {
-            return self.define(result, AbstractValue::Bool(AbstractBool::Unknown));
-        }
+        // Equality observes addresses without requiring a shared live domain.
+        // Only a known common provenance can prove offset-based equality;
+        // two unknown pointers must never be treated as the same origin.
+        let equality = matches!(
+            predicate,
+            VirIntegerPredicate::Equal | VirIntegerPredicate::NotEqual
+        );
+        let (a, b) = if equality {
+            let a = pointer_fact(&self.state, left)?;
+            let b = pointer_fact(&self.state, right)?;
+            if left == right {
+                return self.define(
+                    result,
+                    AbstractValue::Bool(if predicate == VirIntegerPredicate::Equal {
+                        AbstractBool::True
+                    } else {
+                        AbstractBool::False
+                    }),
+                );
+            }
+            if !matches!((a.provenance(), b.provenance()),
+                (AbstractProvenance::Known(a), AbstractProvenance::Known(b)) if a == b)
+            {
+                return self.define(result, AbstractValue::Bool(AbstractBool::Unknown));
+            }
+            (a, b)
+        } else {
+            let (a, b, checked) = self.pointer_pair(left, right)?;
+            if !checked {
+                return self.define(result, AbstractValue::Bool(AbstractBool::Unknown));
+            }
+            (a, b)
+        };
         let le = self.pointer_order(a, b);
         let ge = self.pointer_order(b, a);
         let eq = combine_statuses([le, ge]);

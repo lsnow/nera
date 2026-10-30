@@ -39,11 +39,48 @@ fn clone_tables(program: &HirProgram) -> HirProgramTables {
 }
 
 #[test]
+fn mutable_owners_transfer_rhs_before_retiring_the_previous_value() {
+    let positive = [
+        include_str!("../spec/cases/verify/mutable-owner.nera"),
+        "fn main()->u64 {let mut p=alloc<u64>(1); *p=1; free(p); p=make(); return *p;} fn make()->Own<u64> {let q=alloc<u64>(1); *q=42; return q;}",
+        "fn main()->u64 {let mut p=alloc<u64>(1); *p=42; p=identity(p); p=p; return *p;} fn identity(p:Own<u64>)->Own<u64> {return p;}",
+    ];
+    for source in positive {
+        let output = accepted("mutable-owner", source);
+        let resolved = output.vir().unwrap().resolve().unwrap();
+        let report = verify_program(&resolved, Default::default()).unwrap();
+        assert!(
+            report.is_memory_checked_core0(),
+            "{:?}",
+            report.diagnostics()
+        );
+        assert_eq!(
+            interpret(resolved.runtime()).unwrap().values(),
+            [VirRuntimeValue::U64(42)]
+        );
+    }
+    for source in [
+        "fn main()->u64 {let mut p=alloc<u64>(1); *p=1; let q=alloc<u64>(1); *q=42; p=q; return *q;}",
+        "fn main()->u64 {let mut p=alloc<u64>(1); *p=1; let view=&*p; let q=alloc<u64>(1); *q=42; p=q; return *view;}",
+        "fn main()->u64 {let mut p=alloc<u64>(1); *p=42; free(p); p=p; return *p;}",
+    ] {
+        let output = accepted("invalid-mutable-owner", source);
+        let resolved = output.vir().unwrap().resolve().unwrap();
+        let report = verify_program(&resolved, Default::default()).unwrap();
+        assert!(!report.is_memory_checked_core0(), "{source}");
+        assert!(report.diagnostics().iter().any(|d| matches!(
+            d.kind(),
+            VerifierDiagnosticKind::MissingFact | VerifierDiagnosticKind::RefutedObligation
+        )));
+    }
+}
+
+#[test]
 fn source_copy_move_is_explicit_and_reaches_all_runtime_consumers() {
     let source = include_str!("../spec/cases/aggregate/copy-move.nera");
     let output = accepted("copy-move.nera", source);
     let hir = output.hir().expect("copy/move source has HIR");
-    assert_eq!(hir.version(), nera::HirVersion::V23);
+    assert_eq!(hir.version(), nera::HirVersion::CURRENT);
     let body = hir.entry_function().body().expect("entry body");
 
     let HirStatementKind::Let { value, .. } = &body.root.statements[2].kind else {

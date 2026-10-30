@@ -41,6 +41,47 @@ fn domain(n: u32, lo: u64, hi: u64) -> DifferencePremise {
 }
 
 #[test]
+fn established_bounds_select_disequality_sides_without_spending_branch_budget() {
+    let limits = DifferenceLimits {
+        max_branches: 1,
+        ..Default::default()
+    };
+    let mut premises = vec![domain(0, 0, 1), domain(1, 7, 9)];
+    for (left, right) in [
+        (word(0), T::Constant(3)),
+        (T::Constant(4), word(0)),
+        (word(1), T::Constant(5)),
+        (T::Constant(6), word(1)),
+    ] {
+        premises.push(cmp(C::NotEqual, left, right));
+    }
+    let query = goal(C::LessThan, word(0), word(1));
+    let proof = solve_difference(&premises, query, limits);
+    assert_eq!(
+        (proof.status, proof.stop),
+        (S::Proven, DifferenceStop::Complete)
+    );
+    assert_eq!(proof.branches.len(), 1);
+    assert_eq!(proof.branches[0].choices, [true, false, false, true]);
+    assert!(replay_difference(&premises, query, limits, &proof));
+    let mut forged = proof.clone();
+    forged.branches[0].choices[0] = false;
+    assert!(!replay_difference(&premises, query, limits, &forged));
+    // Without the establishing bounds, these remain real alternatives.
+    assert_eq!(
+        solve_difference(&premises[2..], query, limits).stop,
+        DifferenceStop::Budget
+    );
+    // A selected side never makes contradictory premises vacuously proven.
+    premises.push(cmp(C::Equal, word(0), T::Constant(3)));
+    let impossible = solve_difference(&premises, query, limits);
+    assert_eq!(
+        (impossible.status, impossible.stop),
+        (S::Unknown, DifferenceStop::Inconsistent)
+    );
+}
+
+#[test]
 fn finite_integer_enumeration_oracle_checks_both_verdicts_and_contradictions() {
     let comparisons = [C::LessThan, C::LessOrEqual, C::Equal, C::NotEqual];
     // Deterministic mixed DBM + disequality corpus; all variables range 0..=3.
@@ -493,4 +534,47 @@ fn wrapping_addition_does_not_acquire_a_mathematical_offset_premise() {
             );
         }
     }
+}
+
+#[test]
+fn nonwrapping_two_input_sums_prove_slice_order_with_replayable_bounds() {
+    let source = "fn main()->u64 {return read(1usize,2usize);}
+        fn read(start:usize,count:usize)->u64 requires start<=2usize; requires count<=2usize;
+        {let values=[42,42,42,42]; let end=start+count; let view=&values[start..end]; return 42;}";
+    frontend_checks::checked("sum-order.nera", source, 42);
+    let output = frontend_checks::accepted("sum-order.nera", source);
+    let resolved = output.vir().unwrap().resolve().unwrap();
+    let config = CfgAnalysisConfig::default();
+    let report = verify_program(&resolved, config).unwrap();
+    let record = report
+        .functions()
+        .values()
+        .flat_map(|f| f.cfg().relation_evidence())
+        .find(|r| matches!(r.goal, RelationGoal::Ordered { .. }) && r.status == S::Proven)
+        .expect("actual slice range-order proof");
+    assert!(replay_relation_evidence(&resolved, config, record).unwrap());
+    let mut forged = record.clone();
+    forged.difference.as_mut().unwrap().premises.clear();
+    assert!(!replay_relation_evidence(&resolved, config, &forged).unwrap());
+    let missing = frontend_checks::accepted(
+        "sum-may-wrap.nera",
+        &source.replace("requires start<=2usize;", ""),
+    );
+    assert!(
+        !verify_program(&missing.vir().unwrap().resolve().unwrap(), config)
+            .unwrap()
+            .is_memory_checked_core0()
+    );
+    let limited = CfgAnalysisConfig {
+        relation_limits: DifferenceLimits {
+            max_steps: 0,
+            ..Default::default()
+        },
+        ..config
+    };
+    assert!(
+        !verify_program(&resolved, limited)
+            .unwrap()
+            .is_memory_checked_core0()
+    );
 }

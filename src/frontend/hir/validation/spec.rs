@@ -344,6 +344,26 @@ fn validate_spec_snapshot(
         return false;
     };
     match snapshot {
+        HirSpecSnapshot::Opened { function, action, holder, binder } => {
+            let Some(open) = program.specs().predicate_actions.get(action as usize) else { return false; };
+            let Some(body) = program.function_by_id(function).and_then(|f| f.body()) else { return false; };
+            let visible = match clause.location {
+                HirSpecLocation::LoopHead { function: owner, loop_id } if owner == function =>
+                    super::super::loop_spec::find_loop(&body.root, loop_id).is_some_and(|(s,_,_)|
+                        open.span.end() <= s.span.start()
+                            && super::super::loop_spec::visible_at_loop(&body.root, loop_id, open.scope)),
+                HirSpecLocation::Statement { function: owner, .. } => owner == function && open.span.end() <= term.span.start(),
+                _ => false,
+            };
+            open.id == action && open.function == function && visible
+                && matches!(open.kind, crate::HirPredicateActionKind::Unfold { holder: h, .. } if h == holder)
+                && program.predicate(open.predicate).and_then(|p|p.representation.as_ref())
+                    .and_then(|r| r.logic.existentials.get(binder as usize)).is_some_and(|b|
+                        matches!((b.ty, program.type_kind(term.ty)),
+                            (crate::predicate_logic::LogicType::U64, Some(HirTypeKind::Integer(HirIntegerType::U64)))
+                            | (crate::predicate_logic::LogicType::Usize, Some(HirTypeKind::Integer(HirIntegerType::Usize)))
+                            | (crate::predicate_logic::LogicType::Bool, Some(HirTypeKind::Bool))))
+        }
         HirSpecSnapshot::Length { function, parameter, entry } => program.function_by_id(function).is_some_and(|f| {
             if parameter.is_none() && entry { return false; }
             let post = entry || parameter.is_none();
@@ -381,7 +401,16 @@ fn validate_spec_snapshot(
                 };
                 let selected = match projection {
                     M::Cell => Some(pointee),
-                    M::Field(id) => program.fields().get(id.get() as usize).filter(|field| field.id == id && field.owner == pointee).map(|field| field.ty),
+                    M::Field(id) => program.fields().get(id.get() as usize).filter(|field| field.id == id && field.owner == pointee && program.type_definition(pointee).is_some_and(|ty| ty.opaque.is_none_or(|module| module == f.module))).map(|field| field.ty),
+                    M::Fields(path) => {
+                        let mut ty = pointee;
+                        for id in path.fields() {
+                            let Some(field) = program.fields().get(id.get() as usize).filter(|field| field.id == *id && field.owner == ty
+                                && program.type_definition(ty).is_some_and(|ty| ty.opaque.is_none_or(|module| module == f.module))) else { return false; };
+                            ty = field.ty;
+                        }
+                        Some(ty)
+                    }
                     M::Index(index) => {
                         if let I::Parameter(i) = index {
                             let index_ty = f.body().and_then(|b| b.parameters.get(i as usize).and_then(|id| b.locals.get(id.index()))).map(|l| l.ty);

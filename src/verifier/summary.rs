@@ -37,8 +37,8 @@ use std::{fmt, sync::Arc};
 pub(crate) use projection::project;
 pub use validate::SummaryValidationError;
 
-pub const SUMMARY_SCHEMA_VERSION: u32 = 7;
-pub const SUMMARY_VERIFIER_PROFILE: &str = "nera-resource-summary-v7";
+pub const SUMMARY_SCHEMA_VERSION: u32 = 151;
+pub const SUMMARY_VERIFIER_PROFILE: &str = "nera-resource-summary-v151";
 
 /// Exact content binding, shared by all functions in a report. Debug output is
 /// deliberately abbreviated; the diagnostic checksum is NEVER used for equality
@@ -143,6 +143,12 @@ pub enum ScalarTerm {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SummaryBound {
     pub terms: Vec<(usize, u64)>,
+    /// Physical U64 result slots, scoped to one checked return world. Currently
+    /// populated only for a checked array slice's actual returned length.
+    pub result_terms: Vec<(usize, u64)>,
+    /// Byte offsets of actual pointer result slots relative to the input
+    /// resource. Fresh per call; never interchangeable with U64 word results.
+    pub result_offset_terms: Vec<(usize, u64)>,
     pub addend: u64,
     pub interval: U64Interval,
 }
@@ -184,6 +190,9 @@ pub struct SummaryPointer {
 pub enum SummaryAuthority {
     Owner,
     InputLoan(usize),
+    /// A real loan stored in an entry aggregate payload. The path names the
+    /// payload, not a fresh allocation or a permission reconstructed from bits.
+    InputPayloadLoan(ResourceName),
     Unknown,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -243,6 +252,39 @@ pub struct VariantState {
     pub access: VirMemoryAccess,
     pub alternatives: Knowledge<Vec<VirVariantId>>,
 }
+/// A typed historical input, scoped to the callee's entry signature.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SummaryScalarRoot {
+    Cell {
+        resource: ResourceName,
+        bytes: ByteRange,
+        access: VirMemoryAccess,
+    },
+    Parameter(usize),
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SummaryScalarSource {
+    pub root: SummaryScalarRoot,
+    pub scale: u64,
+}
+/// Weighted sum of at most two distinct historical inputs and a constant.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SummaryScalarOrigin {
+    pub root: SummaryScalarRoot,
+    pub addend: u64,
+    pub second: Option<SummaryScalarSource>,
+    pub scale: u64,
+}
+impl SummaryScalarOrigin {
+    fn sources(&self) -> impl Iterator<Item = SummaryScalarSource> {
+        std::iter::once(SummaryScalarSource {
+            root: self.root.clone(),
+            scale: self.scale,
+        })
+        .chain(self.second.clone())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResourcePostState {
     pub name: ResourceName,
@@ -254,6 +296,10 @@ pub struct ResourcePostState {
     pub ownership: OwnershipState,
     pub initialization: InitializationState,
     pub validity: ByteSet,
+    /// Actual initialized scalar contents, bounded per allocation and free of SSA identities.
+    pub scalar_contents: Vec<(ByteRange, VirMemoryAccess, super::AbstractValue)>,
+    pub scalar_origins: Vec<(ByteRange, VirMemoryAccess, SummaryScalarOrigin)>,
+    pub bool_origins: Vec<(ByteRange, VirMemoryAccess, SummaryScalarRoot)>,
     pub variants: Vec<VariantState>,
     pub payloads: Vec<PayloadState>,
     pub object_precise: bool,
@@ -273,6 +319,20 @@ pub struct BorrowRestoration {
     pub permission: SummaryPermission,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredBorrowRestoration {
+    pub input: ResourceName,
+    /// Explicit exit in this return world's namespace, not inferred by callers.
+    pub exit: crate::BoundaryExit<StoredBorrowLocation, usize>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct StoredBorrowLocation {
+    pub resource: ResourceName,
+    pub offset: u64,
+    pub access: crate::VirMemoryAccess,
+}
+
 /// Every member is a complete possible state. A consumer must establish a
 /// guarantee in ALL worlds. This disjunction is the conservative merge when
 /// local guards are existentially hidden, NOT independently joined fact axes.
@@ -289,10 +349,14 @@ pub struct ReturnWorld {
     /// Index into cfg.returns(), which retains the source finding and case ID.
     pub return_evidence: usize,
     pub values: Vec<ValueMapping>,
+    /// Historical input-cell relations, aligned with physical return slots.
+    pub value_origins: Vec<Option<SummaryScalarOrigin>>,
+    pub bool_value_origins: Vec<Option<SummaryScalarRoot>>,
     /// Post-state of physical input slots, distinct from immutable pre snapshots.
     pub post_inputs: Knowledge<Vec<ValueMapping>>,
     pub resources: Vec<ResourcePostState>,
     pub borrow_restoration: Vec<BorrowRestoration>,
+    pub stored_borrow_restoration: Vec<StoredBorrowRestoration>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SummaryFootprint {
@@ -406,3 +470,5 @@ impl FunctionSummary {
         validate::validate(self, program, function, config)
     }
 }
+
+pub(super) use borrow::field_return_slots;

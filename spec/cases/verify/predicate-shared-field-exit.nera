@@ -1,0 +1,11 @@
+// Each returned reference is a real alias; source and unpassed aliases survive.
+struct Holder { value:&u64, }
+fn main()->u64 {
+    let value=21;
+    let holder=Holder {value:&value};
+    let copy=holder;
+    let first=get(&holder);
+    let second=get(&copy);
+    return *first+*second;
+}
+fn get(p:&Holder)->&u64 { return p.value; }

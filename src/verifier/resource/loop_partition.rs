@@ -46,7 +46,8 @@ impl ResourceState {
     }
 
     pub(in crate::verifier) fn same_loop_partition(&self, other: &Self) -> bool {
-        self.allocations.len() == other.allocations.len()
+        self.join_predicates(other).is_ok()
+            && self.allocations.len() == other.allocations.len()
             && self.allocations.iter().all(|(id, a)| {
                 other.allocations.get(id).is_some_and(|b| {
                     a.region() == b.region()

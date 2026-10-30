@@ -247,7 +247,7 @@ fn fixed_corpus_records_scaling_without_analysis_loop_unrolling() {
         let ranges = cfg
             .blocks()
             .values()
-            .flat_map(|b| b.instruction_states())
+            .flat_map(|b| b.instruction_states().unwrap())
             .flat_map(|state| state.allocations().values())
             .map(|a| {
                 a.initialization().initialized().ranges().len()

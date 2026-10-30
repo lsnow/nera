@@ -26,15 +26,18 @@ pub(super) enum InferredBorrowSource {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct BorrowOrigin {
     parameter: u32,
+    field: Option<u32>,
     projection: crate::BorrowProjection,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Origin {
     /// The analyzed path cannot return normally. This is the lattice bottom,
     /// not an inferred source and never escapes into HIR.
     NoNormalReturn,
     Parameter(BorrowOrigin),
+    /// Inline shape, in canonical layout order; scalar leaves are NotBorrow.
+    Aggregate(Vec<(String, Origin)>),
     LocalStorage,
     NotBorrow,
     Projection,
@@ -43,9 +46,70 @@ enum Origin {
 }
 
 impl Origin {
+    fn within_budget(&self) -> bool {
+        let mut pending = vec![(self, 0usize)];
+        let mut nodes = 0usize;
+        let mut references = 0usize;
+        while let Some((value, depth)) = pending.pop() {
+            nodes += 1;
+            if nodes > 4096 || depth > 16 {
+                return false;
+            }
+            match value {
+                Self::Aggregate(fields) => {
+                    if fields.len() > 4096 - pending.len() {
+                        return false;
+                    }
+                    pending.extend(fields.iter().map(|(_, v)| (v, depth + 1)));
+                }
+                Self::NotBorrow => {}
+                _ => {
+                    references += 1;
+                    if references > 256 {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    fn reference_leaves<'a>(&'a self, out: &mut Vec<&'a Origin>) {
+        match self {
+            Self::Aggregate(fields) => {
+                for (_, value) in fields {
+                    value.reference_leaves(out);
+                }
+            }
+            Self::NotBorrow => {}
+            _ => out.push(self),
+        }
+    }
     fn join(self, other: Self) -> Self {
         match (self, other) {
             (left, right) if left == right => left,
+            (Self::Parameter(left), Self::Parameter(right))
+                if left.parameter == right.parameter && left.field == right.field =>
+            {
+                // Different selections of one canonical array are one source,
+                // with a checked returned pointer/length instead of guessed
+                // entry bounds. Different parameters/fields remain conflicts.
+                match join_array_views(left.projection, right.projection) {
+                    Some(projection) => Self::Parameter(BorrowOrigin { projection, ..left }),
+                    None => Self::Conflict,
+                }
+            }
+            (Self::Aggregate(left), Self::Aggregate(right))
+                if left.len() == right.len()
+                    && left.iter().zip(&right).all(|(a, b)| a.0 == b.0) =>
+            {
+                Self::Aggregate(
+                    left.into_iter()
+                        .zip(right)
+                        .map(|((key, a), (_, b))| (key, a.join(b)))
+                        .collect(),
+                )
+            }
             (Self::NoNormalReturn, right) => right,
             (left, Self::NoNormalReturn) => left,
             (Self::Deferred, _) | (_, Self::Deferred) => Self::Deferred,
@@ -55,6 +119,46 @@ impl Origin {
             _ => Self::Conflict,
         }
     }
+}
+
+fn join_array_views(
+    left: crate::BorrowProjection,
+    right: crate::BorrowProjection,
+) -> Option<crate::BorrowProjection> {
+    use crate::{BorrowProjection::ArraySlice, BorrowSliceBound};
+    let (
+        ArraySlice {
+            offset_bytes,
+            length,
+            stride_bytes,
+            start,
+            ..
+        },
+        ArraySlice {
+            offset_bytes: other_offset,
+            length: other_length,
+            stride_bytes: other_stride,
+            start: other_start,
+            ..
+        },
+    ) = (left, right)
+    else {
+        return None;
+    };
+    if (offset_bytes, length, stride_bytes) != (other_offset, other_length, other_stride) {
+        return None;
+    }
+    Some(ArraySlice {
+        offset_bytes,
+        length,
+        stride_bytes,
+        start: if start == other_start {
+            start
+        } else {
+            BorrowSliceBound::ReturnedOffset
+        },
+        end: BorrowSliceBound::ReturnedLength,
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,6 +176,7 @@ impl Environment {
                         parameter.name.clone(),
                         Origin::Parameter(BorrowOrigin {
                             parameter: index as u32,
+                            field: None,
                             projection: crate::BorrowProjection::Whole,
                         }),
                     )
@@ -84,7 +189,7 @@ impl Environment {
         self.0
             .iter()
             .rev()
-            .find_map(|scope| scope.get(name).copied())
+            .find_map(|scope| scope.get(name).cloned())
             .unwrap_or(Origin::NotBorrow)
     }
 
@@ -110,7 +215,7 @@ impl Environment {
         for (scope, other_scope) in self.0.iter_mut().zip(&other.0) {
             for (name, origin) in scope.iter_mut() {
                 if let Some(other) = other_scope.get(name) {
-                    *origin = origin.join(*other);
+                    *origin = origin.clone().join(other.clone());
                 }
             }
         }
@@ -143,12 +248,16 @@ impl BlockResult {
     }
 
     fn add_return(&mut self, origin: Origin) {
-        self.returned = Some(self.returned.map_or(origin, |current| current.join(origin)));
+        self.returned = Some(
+            self.returned
+                .take()
+                .map_or_else(|| origin.clone(), |current| current.join(origin.clone())),
+        );
     }
 
     fn merge_returns(&mut self, other: &Self) {
-        if let Some(origin) = other.returned {
-            self.add_return(origin);
+        if let Some(origin) = &other.returned {
+            self.add_return(origin.clone());
         }
         self.breaks.extend(other.breaks.iter().cloned());
         self.loop_continues
@@ -173,7 +282,7 @@ impl Elaborator {
         let mut hypotheses = drafts
             .iter()
             .map(|draft| {
-                if draft.borrow_candidates().is_some() {
+                if self.tracks_borrow_shape(draft) {
                     Origin::Deferred
                 } else {
                     Origin::NotBorrow
@@ -187,7 +296,7 @@ impl Elaborator {
         for component in source_components(&graph) {
             let members = component
                 .into_iter()
-                .filter(|index| drafts[*index].borrow_candidates().is_some())
+                .filter(|index| self.tracks_borrow_shape(&drafts[*index]))
                 .collect::<Vec<_>>();
             if members.is_empty() {
                 continue;
@@ -203,11 +312,11 @@ impl Elaborator {
             let mut converged = false;
             for _ in 0..MAX_BORROW_SOURCE_FIXPOINT_ITERATIONS {
                 let mut trial = hypotheses.clone();
-                for (&member, &candidate) in members.iter().zip(&candidates) {
-                    trial[member] = candidate;
+                for (&member, candidate) in members.iter().zip(&candidates) {
+                    trial[member] = candidate.clone();
                 }
                 let mut next = Vec::with_capacity(members.len());
-                for (&member, &candidate) in members.iter().zip(&candidates) {
+                for (&member, candidate) in members.iter().zip(&candidates) {
                     self.current_module = functions[member].0;
                     let observed = self.infer_function_origin(
                         functions[member].1,
@@ -215,7 +324,7 @@ impl Elaborator {
                         drafts,
                         &trial,
                     );
-                    next.push(candidate.join(observed));
+                    next.push(candidate.clone().join(observed));
                 }
                 if next == candidates {
                     converged = true;
@@ -231,17 +340,17 @@ impl Elaborator {
             }
 
             let mut final_trial = hypotheses.clone();
-            for (&member, &candidate) in members.iter().zip(&candidates) {
-                final_trial[member] = candidate;
+            for (&member, candidate) in members.iter().zip(&candidates) {
+                final_trial[member] = candidate.clone();
             }
-            for (&member, &candidate) in members.iter().zip(&candidates) {
+            for (&member, candidate) in members.iter().zip(&candidates) {
                 self.current_module = functions[member].0;
                 if self.infer_function_origin(
                     functions[member].1,
                     &drafts[member],
                     drafts,
                     &final_trial,
-                ) != candidate
+                ) != *candidate
                 {
                     return Err(FrontendFailure::unsupported(
                         functions[member].1.span,
@@ -250,18 +359,43 @@ impl Elaborator {
                 }
             }
 
-            let unconditional = final_trial
-                .iter()
-                .map(|origin| match origin {
-                    Origin::Parameter(origin) => Some(*origin),
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
             let mut published = Vec::with_capacity(members.len());
             let mut relation_count = 0usize;
-            for (&member, &origin) in members.iter().zip(&candidates) {
+            for (&member, origin) in members.iter().zip(&candidates) {
+                let origin = origin.clone();
                 let function = functions[member].1;
                 let draft = &drafts[member];
+                if draft.borrow_candidates().is_none() {
+                    hypotheses[member] = origin.clone();
+                    let mut leaves = Vec::new();
+                    origin.reference_leaves(&mut leaves);
+                    let expected = draft.value_result_type().and_then(|ty| {
+                        super::regions::aggregate_reference_types(&self.types, &self.fields, ty)
+                    });
+                    if expected.is_some_and(|v| v.len() == leaves.len()) {
+                        let sources = leaves
+                            .into_iter()
+                            .map(|o| match o {
+                                Origin::Parameter(p)
+                                    if p.projection == crate::BorrowProjection::Whole =>
+                                {
+                                    Some(p.field.map_or(
+                                        crate::BoundarySource::Parameter { index: p.parameter },
+                                        |field| crate::BoundarySource::ParameterField {
+                                            index: p.parameter,
+                                            field,
+                                        },
+                                    ))
+                                }
+                                _ => None,
+                            })
+                            .collect::<Option<Vec<_>>>();
+                        if let Some(sources) = sources {
+                            self.aggregate_result_sources.insert(draft.owner, sources);
+                        }
+                    }
+                    continue;
+                }
                 self.current_module = functions[member].0;
                 let access = if draft.result_is_mutable() == Some(true) {
                     crate::BorrowAccess::Mutable
@@ -272,6 +406,7 @@ impl Elaborator {
                     Origin::Parameter(source) => {
                         InferredBorrowSource::Unconditional(crate::BorrowResultRelation {
                             parameter: source.parameter,
+                            parameter_field: source.field,
                             result: 0,
                             projection: source.projection,
                             access,
@@ -295,7 +430,7 @@ impl Elaborator {
                     }
                     Origin::Conflict => {
                         if let Some(alternatives) =
-                            self.infer_guarded_sources(function, draft, drafts, &unconditional)
+                            self.infer_guarded_sources(function, draft, drafts, &final_trial)
                         {
                             relation_count = relation_count.saturating_add(alternatives.len());
                             published.push((
@@ -316,7 +451,7 @@ impl Elaborator {
                             "returned reference cannot escape function-local storage",
                         ));
                     }
-                    Origin::NotBorrow => {
+                    Origin::NotBorrow | Origin::Aggregate(_) => {
                         return Err(FrontendFailure::elaboration(
                             function.span,
                             "return value does not match the function return type",
@@ -367,7 +502,7 @@ impl Elaborator {
                     .into_iter()
                     .filter_map(|name| self.function_names.get(&self.key(&name)).copied())
                     .map(|id| id.index())
-                    .filter(|index| drafts[*index].borrow_candidates().is_some())
+                    .filter(|index| self.tracks_borrow_shape(&drafts[*index]))
                     .collect()
             })
             .collect()
@@ -378,7 +513,7 @@ impl Elaborator {
         function: &AstFunction,
         draft: &SignatureDraft,
         drafts: &[SignatureDraft],
-        sources: &[Option<BorrowOrigin>],
+        sources: &[Origin],
     ) -> Option<Vec<crate::BorrowResultAlternative>> {
         let candidates = draft.borrow_candidates()?;
         let mutable_guards = assigned_names(&function.body);
@@ -390,17 +525,13 @@ impl Elaborator {
             .collect::<BTreeMap<_, _>>();
         let mut environment = Environment::new(function);
         let mut returns = Vec::new();
-        let source_hypotheses = sources
-            .iter()
-            .map(|source| source.map_or(Origin::Deferred, Origin::Parameter))
-            .collect::<Vec<_>>();
         self.collect_guarded_returns(
             &function.body,
             &mut environment,
             function,
             draft,
             drafts,
-            &source_hypotheses,
+            sources,
             &parameter_names,
             &mutable_guards,
             &[],
@@ -418,6 +549,7 @@ impl Elaborator {
         for (mut guard, origin) in returns {
             let Origin::Parameter(BorrowOrigin {
                 parameter,
+                field,
                 projection: crate::BorrowProjection::Whole,
             }) = origin
             else {
@@ -441,7 +573,12 @@ impl Elaborator {
             }
             let alternative = crate::BorrowResultAlternative {
                 guard,
-                relation: crate::BorrowResultRelation::whole(parameter, access),
+                relation: field.map_or_else(
+                    || crate::BorrowResultRelation::whole(parameter, access),
+                    |field| {
+                        crate::BorrowResultRelation::from_parameter_field(parameter, field, access)
+                    },
+                ),
             };
             if !alternatives.contains(&alternative) {
                 alternatives.push(alternative);
@@ -464,13 +601,15 @@ impl Elaborator {
         assigned: &BTreeSet<String>,
         guard: &[crate::BorrowGuardAtom],
         returns: &mut Vec<(Vec<crate::BorrowGuardAtom>, Origin)>,
-    ) -> Option<bool> {
+    ) -> Option<Option<Vec<crate::BorrowGuardAtom>>> {
         let mut continues = true;
+        let mut guard = guard.to_vec();
         for statement in &block.statements {
             if !continues {
                 break;
             }
             match &statement.kind {
+                AstStatementKind::Predicate { .. } => {}
                 AstStatementKind::Declare { name, .. } => {
                     environment.insert(name, Origin::NotBorrow)
                 }
@@ -504,7 +643,7 @@ impl Elaborator {
                 }
                 AstStatementKind::Block { block } => {
                     environment.0.push(BTreeMap::new());
-                    continues = self.collect_guarded_returns(
+                    let remaining = self.collect_guarded_returns(
                         block,
                         environment,
                         function,
@@ -513,15 +652,19 @@ impl Elaborator {
                         sources,
                         parameter_names,
                         assigned,
-                        guard,
+                        &guard,
                         returns,
                     )?;
                     environment.0.pop();
+                    continues = remaining.is_some();
+                    if let Some(remaining) = remaining {
+                        guard = remaining;
+                    }
                 }
                 AstStatementKind::If {
                     condition,
                     then_block,
-                    else_block: Some(else_block),
+                    else_block,
                 } => {
                     let name = match &condition.kind {
                         AstExpressionKind::Name(name) => name.as_str(),
@@ -546,7 +689,8 @@ impl Elaborator {
                     });
                     let before = environment.clone();
                     let mut then_environment = before.clone();
-                    let then_continues = self.collect_guarded_returns(
+                    then_environment.0.push(BTreeMap::new());
+                    let then_remaining = self.collect_guarded_returns(
                         then_block,
                         &mut then_environment,
                         function,
@@ -558,31 +702,40 @@ impl Elaborator {
                         &then_guard,
                         returns,
                     )?;
+                    then_environment.0.pop();
                     let mut else_environment = before;
-                    let else_continues = self.collect_guarded_returns(
-                        else_block,
-                        &mut else_environment,
-                        function,
-                        draft,
-                        drafts,
-                        sources,
-                        parameter_names,
-                        assigned,
-                        &else_guard,
-                        returns,
-                    )?;
-                    continues = then_continues || else_continues;
-                    if then_continues && else_continues {
+                    let else_remaining = if let Some(else_block) = else_block {
+                        else_environment.0.push(BTreeMap::new());
+                        let remaining = self.collect_guarded_returns(
+                            else_block,
+                            &mut else_environment,
+                            function,
+                            draft,
+                            drafts,
+                            sources,
+                            parameter_names,
+                            assigned,
+                            &else_guard,
+                            returns,
+                        )?;
+                        else_environment.0.pop();
+                        remaining
+                    } else {
+                        Some(else_guard)
+                    };
+                    continues = then_remaining.is_some() || else_remaining.is_some();
+                    if then_remaining.is_some() && else_remaining.is_some() {
                         then_environment.merge(&else_environment);
                         *environment = then_environment;
-                    } else if then_continues {
+                    } else if let Some(remaining) = then_remaining {
                         *environment = then_environment;
-                    } else if else_continues {
+                        guard = remaining;
+                    } else if let Some(remaining) = else_remaining {
                         *environment = else_environment;
+                        guard = remaining;
                     }
                 }
-                AstStatementKind::If { .. }
-                | AstStatementKind::Match { .. }
+                AstStatementKind::Match { .. }
                 | AstStatementKind::While { .. }
                 | AstStatementKind::For { .. } => return None,
                 AstStatementKind::Assert { .. }
@@ -594,7 +747,7 @@ impl Elaborator {
                 AstStatementKind::Assign { .. } => {}
             }
         }
-        Some(continues)
+        Some(continues.then_some(guard))
     }
 
     fn infer_function_origin(
@@ -617,7 +770,7 @@ impl Elaborator {
             // not evidence that the function diverges.
             Origin::NotBorrow
         } else {
-            result.returned.unwrap_or(Origin::NoNormalReturn)
+            self.expand_origin(result.returned.unwrap_or(Origin::NoNormalReturn), draft)
         }
     }
 
@@ -637,6 +790,7 @@ impl Elaborator {
                 break;
             }
             match &statement.kind {
+                AstStatementKind::Predicate { .. } => {}
                 AstStatementKind::Declare { name, .. } => {
                     environment.insert(name, Origin::NotBorrow);
                 }
@@ -855,12 +1009,32 @@ impl Elaborator {
         drafts: &[SignatureDraft],
         sources: &[Origin],
     ) -> Origin {
+        let origin =
+            self.infer_expression_shape(expression, environment, function, draft, drafts, sources);
+        if origin.within_budget() {
+            origin
+        } else {
+            Origin::Projection
+        }
+    }
+
+    fn infer_expression_shape(
+        &self,
+        expression: &AstExpression,
+        environment: &Environment,
+        function: &AstFunction,
+        draft: &SignatureDraft,
+        drafts: &[SignatureDraft],
+        sources: &[Origin],
+    ) -> Origin {
         match &expression.kind {
             AstExpressionKind::Name(name) => environment.lookup(name),
             AstExpressionKind::Place(place) if place.projections.is_empty() => {
                 environment.lookup(&place.base)
             }
-            AstExpressionKind::Place(_) => Origin::Projection,
+            AstExpressionKind::Place(place) => {
+                self.infer_reference_field(place, environment, draft)
+            }
             AstExpressionKind::Borrow { place, .. } => {
                 self.infer_borrow_place(place, environment, function, draft)
             }
@@ -871,28 +1045,275 @@ impl Elaborator {
                 let Some(callee) = self.function_names.get(&self.key(callee)).copied() else {
                     return Origin::NotBorrow;
                 };
-                if drafts[callee.index()].borrow_candidates().is_none() {
+                if !self.tracks_borrow_shape(&drafts[callee.index()]) {
                     return Origin::NotBorrow;
                 }
-                let source = sources[callee.index()];
-                let Origin::Parameter(source) = source else {
-                    return source;
-                };
-                arguments
-                    .get(source.parameter as usize)
-                    .map_or(Origin::Conflict, |argument| {
-                        let argument = self.infer_expression(
-                            argument,
-                            environment,
-                            function,
-                            draft,
-                            drafts,
-                            sources,
-                        );
-                        compose_origin(argument, source.projection)
+                let source = sources[callee.index()].clone();
+                let actual = arguments
+                    .iter()
+                    .map(|a| {
+                        self.infer_expression(a, environment, function, draft, drafts, sources)
                     })
+                    .collect::<Vec<_>>();
+                self.substitute_origin(source, &actual, draft)
+            }
+            AstExpressionKind::Struct {
+                name,
+                fields: values,
+            } => {
+                let Some(HirTypeKind::Struct { fields }) = self
+                    .type_names
+                    .get(&self.key(name))
+                    .and_then(|ty| self.type_definition(*ty))
+                    .map(|t| &t.kind)
+                else {
+                    return Origin::Projection;
+                };
+                let mut fields = fields.clone();
+                fields.sort_unstable();
+                Origin::Aggregate(
+                    fields
+                        .into_iter()
+                        .map(|id| {
+                            let name = self.fields[id.index()].name.clone();
+                            let value = values.iter().find(|v| v.name == name).map_or(
+                                Origin::Conflict,
+                                |v| {
+                                    self.infer_expression(
+                                        &v.value,
+                                        environment,
+                                        function,
+                                        draft,
+                                        drafts,
+                                        sources,
+                                    )
+                                },
+                            );
+                            (name, self.expand_origin(value, draft))
+                        })
+                        .collect(),
+                )
+            }
+            AstExpressionKind::Tuple(values) | AstExpressionKind::Array(values)
+                if values.len() <= 256 =>
+            {
+                Origin::Aggregate(
+                    values
+                        .iter()
+                        .enumerate()
+                        .map(|(i, v)| {
+                            (
+                                i.to_string(),
+                                self.expand_origin(
+                                    self.infer_expression(
+                                        v,
+                                        environment,
+                                        function,
+                                        draft,
+                                        drafts,
+                                        sources,
+                                    ),
+                                    draft,
+                                ),
+                            )
+                        })
+                        .collect(),
+                )
+            }
+            AstExpressionKind::ArrayRepeat { value, length } if *length <= 256 => {
+                let value = self.expand_origin(
+                    self.infer_expression(value, environment, function, draft, drafts, sources),
+                    draft,
+                );
+                Origin::Aggregate(
+                    (0..*length)
+                        .map(|i| (i.to_string(), value.clone()))
+                        .collect(),
+                )
             }
             _ => Origin::NotBorrow,
+        }
+    }
+
+    /// Select canonical stored reference leaves, including the designated
+    /// storage of one owner/reference parameter. Raw pointers have no source.
+    fn infer_reference_field(
+        &self,
+        place: &AstPlace,
+        environment: &Environment,
+        draft: &SignatureDraft,
+    ) -> Origin {
+        let origin = environment.lookup(&place.base);
+        let designated = matches!(&origin, Origin::Parameter(source) if source.field.is_none()
+            && draft.parameter_type(source.parameter).and_then(|ty| self.type_definition(ty))
+                .is_some_and(|t| matches!(t.kind, HirTypeKind::Own { .. } | HirTypeKind::Reference { .. })));
+        let mut value = self.expand_storage_origin(origin, draft, true);
+        if place.projections.len() > 16 {
+            return Origin::Projection;
+        }
+        for (index, projection) in place.projections.iter().enumerate() {
+            if index == 0
+                && designated
+                && matches!(projection, AstPlaceProjection::Dereference { .. })
+            {
+                continue;
+            }
+            let key = match projection {
+                AstPlaceProjection::Field { name, .. } => name.clone(),
+                AstPlaceProjection::TupleElement { index, .. } => index.to_string(),
+                AstPlaceProjection::Index { index, .. } => match index.kind {
+                    AstExpressionKind::Integer { value, .. } => value.to_string(),
+                    _ => return Origin::Projection,
+                },
+                _ => return Origin::Projection,
+            };
+            let Origin::Aggregate(fields) = value else {
+                return Origin::Projection;
+            };
+            value = fields
+                .into_iter()
+                .find(|(name, _)| *name == key)
+                .map_or(Origin::Projection, |(_, v)| v);
+        }
+        value
+    }
+
+    fn tracks_borrow_shape(&self, draft: &SignatureDraft) -> bool {
+        draft.borrow_candidates().is_some()
+            || draft
+                .value_result_type()
+                .and_then(|ty| {
+                    super::regions::aggregate_reference_types(&self.types, &self.fields, ty)
+                })
+                .is_some_and(|v| !v.is_empty())
+    }
+
+    fn expand_origin(&self, origin: Origin, draft: &SignatureDraft) -> Origin {
+        self.expand_storage_origin(origin, draft, false)
+    }
+
+    fn expand_storage_origin(
+        &self,
+        origin: Origin,
+        draft: &SignatureDraft,
+        designated: bool,
+    ) -> Origin {
+        let Origin::Parameter(source) = origin else {
+            return origin;
+        };
+        if source.field.is_some() || source.projection != crate::BorrowProjection::Whole {
+            return origin;
+        }
+        let Some(ty) = draft.parameter_type(source.parameter) else {
+            return Origin::Projection;
+        };
+        let ty = if designated {
+            match self.type_definition(ty).map(|t| &t.kind) {
+                Some(HirTypeKind::Own { pointee } | HirTypeKind::Reference { pointee, .. }) => {
+                    *pointee
+                }
+                _ => ty,
+            }
+        } else {
+            ty
+        };
+        if !self.is_aggregate(ty) {
+            return if self.reference_region(ty).is_some() {
+                origin
+            } else {
+                Origin::NotBorrow
+            };
+        }
+        if super::regions::aggregate_reference_types(&self.types, &self.fields, ty).is_none() {
+            return Origin::Projection;
+        }
+        fn walk(
+            e: &Elaborator,
+            ty: HirTypeId,
+            parameter: u32,
+            ordinal: &mut u32,
+            depth: usize,
+            budget: &mut usize,
+        ) -> Option<Origin> {
+            *budget = budget.checked_sub(1)?;
+            if depth > 16 {
+                return None;
+            }
+            let children = match &e.type_definition(ty)?.kind {
+                HirTypeKind::Reference { .. } => {
+                    let field = *ordinal;
+                    *ordinal += 1;
+                    return Some(Origin::Parameter(BorrowOrigin {
+                        parameter,
+                        field: Some(field),
+                        projection: crate::BorrowProjection::Whole,
+                    }));
+                }
+                HirTypeKind::Struct { fields } => {
+                    let mut fields = fields.clone();
+                    fields.sort_unstable();
+                    fields
+                        .into_iter()
+                        .map(|id| {
+                            let f = &e.fields[id.index()];
+                            (f.name.clone(), f.ty)
+                        })
+                        .collect::<Vec<_>>()
+                }
+                HirTypeKind::Tuple(elements) => elements
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| (i.to_string(), *t))
+                    .collect(),
+                HirTypeKind::Array { element, length } if *length <= 256 => {
+                    (0..*length).map(|i| (i.to_string(), *element)).collect()
+                }
+                HirTypeKind::Array { .. } => return None,
+                _ => return Some(Origin::NotBorrow),
+            };
+            Some(Origin::Aggregate(
+                children
+                    .into_iter()
+                    .map(|(key, ty)| {
+                        Some((key, walk(e, ty, parameter, ordinal, depth + 1, budget)?))
+                    })
+                    .collect::<Option<_>>()?,
+            ))
+        }
+        walk(self, ty, source.parameter, &mut 0, 0, &mut 4096).unwrap_or(Origin::Projection)
+    }
+
+    fn substitute_origin(
+        &self,
+        origin: Origin,
+        arguments: &[Origin],
+        draft: &SignatureDraft,
+    ) -> Origin {
+        match origin {
+            Origin::Aggregate(fields) => Origin::Aggregate(
+                fields
+                    .into_iter()
+                    .map(|(key, v)| (key, self.substitute_origin(v, arguments, draft)))
+                    .collect(),
+            ),
+            Origin::Parameter(source) => {
+                let Some(argument) = arguments.get(source.parameter as usize) else {
+                    return Origin::Conflict;
+                };
+                let argument =
+                    self.expand_storage_origin(argument.clone(), draft, source.field.is_some());
+                let argument = if let Some(field) = source.field {
+                    let mut leaves = Vec::new();
+                    argument.reference_leaves(&mut leaves);
+                    leaves
+                        .get(field as usize)
+                        .map_or(Origin::Projection, |v| (*v).clone())
+                } else {
+                    argument
+                };
+                compose_origin(argument, source.projection)
+            }
+            other => other,
         }
     }
 
@@ -915,6 +1336,7 @@ impl Elaborator {
         };
         Origin::Parameter(BorrowOrigin {
             parameter: source.parameter,
+            field: source.field,
             projection,
         })
     }
@@ -930,9 +1352,78 @@ impl Elaborator {
             return None;
         }
         let parameter = draft.parameter_type(source.parameter)?;
+        let parameter = if let Some(field) = source.field {
+            super::regions::parameter_reference_types(&self.types, &self.fields, parameter)?
+                .get(field as usize)?
+                .0
+        } else {
+            parameter
+        };
         let HirTypeKind::Reference { pointee, .. } = self.type_definition(parameter)?.kind else {
             return None;
         };
+        if let Some(AstPlaceProjection::Slice { start, end, .. }) = place.projections.last() {
+            let mut ty = pointee;
+            let mut offset_bytes = 0u64;
+            for projection in &place.projections[..place.projections.len() - 1] {
+                match projection {
+                    AstPlaceProjection::Dereference { .. }
+                        if ty == pointee && offset_bytes == 0 => {}
+                    AstPlaceProjection::Field { name, .. } => {
+                        let HirTypeKind::Struct { fields } = &self.type_definition(ty)?.kind else {
+                            return None;
+                        };
+                        let field = fields
+                            .iter()
+                            .filter_map(|id| self.fields.get(id.index()))
+                            .find(|f| f.name == *name)?;
+                        offset_bytes = offset_bytes.checked_add(
+                            self.resolved_layout(ty)?
+                                .fields
+                                .iter()
+                                .find(|f| f.field == field.id)?
+                                .offset_bytes,
+                        )?;
+                        ty = field.ty;
+                    }
+                    _ => return None,
+                }
+            }
+            if let HirTypeKind::Array { element, length } = self.type_definition(ty)?.kind {
+                if !self.borrow_projection_pointer_free(element, &mut BTreeSet::new()) {
+                    return None;
+                }
+                let layout = self.resolved_layout(element)?;
+                let start = self
+                    .borrow_slice_bound(
+                        start.as_deref(),
+                        function,
+                        draft,
+                        source.parameter,
+                        crate::BorrowSliceBound::Constant(0),
+                    )
+                    .unwrap_or(crate::BorrowSliceBound::ReturnedOffset);
+                let end = if start == crate::BorrowSliceBound::ReturnedOffset {
+                    crate::BorrowSliceBound::ReturnedLength
+                } else {
+                    self.borrow_slice_bound(
+                        end.as_deref(),
+                        function,
+                        draft,
+                        source.parameter,
+                        crate::BorrowSliceBound::Constant(length),
+                    )
+                    .unwrap_or(crate::BorrowSliceBound::ReturnedLength)
+                };
+                return Some(crate::BorrowProjection::ArraySlice {
+                    offset_bytes: offset_bytes.try_into().ok()?,
+                    length: length.try_into().ok()?,
+                    start,
+                    end,
+                    stride_bytes: layout.size_bytes.try_into().ok()?,
+                });
+            }
+        }
         let projections = match place.projections.as_slice() {
             [projection] => std::slice::from_ref(projection),
             [AstPlaceProjection::Dereference { .. }, projection] => {
@@ -1184,6 +1675,7 @@ fn source_components(graph: &[BTreeSet<usize>]) -> Vec<Vec<usize>> {
 fn collect_called_functions(block: &AstBlock, names: &mut BTreeSet<String>) {
     for statement in &block.statements {
         match &statement.kind {
+            AstStatementKind::Predicate { .. } => {}
             AstStatementKind::Declare { .. }
             | AstStatementKind::Free { .. }
             | AstStatementKind::Break
@@ -1291,6 +1783,7 @@ fn collect_expression_calls(expression: &AstExpression, names: &mut BTreeSet<Str
         | AstExpressionKind::Bool(_)
         | AstExpressionKind::Name(_)
         | AstExpressionKind::Unit
+        | AstExpressionKind::NullPointer { .. }
         | AstExpressionKind::Allocate { .. }
         | AstExpressionKind::Load { .. } => {}
     }
@@ -1320,6 +1813,11 @@ fn assigned_names(block: &AstBlock) -> BTreeSet<String> {
     fn visit(block: &AstBlock, names: &mut BTreeSet<String>) {
         for statement in &block.statements {
             match &statement.kind {
+                AstStatementKind::Predicate { .. } => {}
+                AstStatementKind::Let { name, .. } | AstStatementKind::Declare { name, .. } => {
+                    // A same-named local is not the immutable entry guard.
+                    names.insert(name.clone());
+                }
                 AstStatementKind::Assign { destination, .. }
                     if destination.projections.is_empty() =>
                 {
@@ -1350,4 +1848,73 @@ fn assigned_names(block: &AstBlock) -> BTreeSet<String> {
     }
     visit(block, &mut names);
     names
+}
+
+#[cfg(test)]
+mod origin_join_tests {
+    use super::*;
+    use crate::{BorrowProjection as P, BorrowSliceBound as B};
+
+    fn origin(parameter: u32, field: Option<u32>, offset: u16, start: B, end: B) -> Origin {
+        Origin::Parameter(BorrowOrigin {
+            parameter,
+            field,
+            projection: P::ArraySlice {
+                offset_bytes: offset,
+                length: 4,
+                stride_bytes: 8,
+                start,
+                end,
+            },
+        })
+    }
+
+    #[test]
+    fn array_view_join_widens_coordinates_but_never_the_source_geometry() {
+        let dynamic = origin(0, None, 8, B::Parameter(1), B::Parameter(2));
+        let empty = origin(0, None, 8, B::Constant(0), B::Constant(0));
+        let joined = origin(0, None, 8, B::ReturnedOffset, B::ReturnedLength);
+        assert_eq!(dynamic.clone().join(empty.clone()), joined);
+        assert_eq!(empty.clone().join(dynamic.clone()), joined);
+        assert_eq!(joined.clone().join(dynamic.clone()), joined);
+        assert_eq!(joined.clone().join(empty.clone()), joined);
+        assert_eq!(dynamic.clone().join(dynamic.clone()), dynamic);
+        assert_eq!(
+            origin(0, None, 8, B::Constant(0), B::Constant(2)).join(empty.clone()),
+            origin(0, None, 8, B::Constant(0), B::ReturnedLength)
+        );
+        for other in [
+            origin(1, None, 8, B::Constant(0), B::Constant(0)),
+            origin(0, Some(1), 8, B::Constant(0), B::Constant(0)),
+            origin(0, None, 16, B::Constant(0), B::Constant(0)),
+        ] {
+            assert_eq!(empty.clone().join(other), Origin::Conflict);
+        }
+        for projection in [
+            P::Whole,
+            P::ArraySlice {
+                offset_bytes: 8,
+                length: 5,
+                stride_bytes: 8,
+                start: B::Constant(0),
+                end: B::Constant(0),
+            },
+            P::ArraySlice {
+                offset_bytes: 8,
+                length: 4,
+                stride_bytes: 16,
+                start: B::Constant(0),
+                end: B::Constant(0),
+            },
+        ] {
+            assert_eq!(
+                empty.clone().join(Origin::Parameter(BorrowOrigin {
+                    parameter: 0,
+                    field: None,
+                    projection
+                })),
+                Origin::Conflict
+            );
+        }
+    }
 }

@@ -1,0 +1,22 @@
+// Pure existentials have values; they do not assert initialization or ownership.
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>) {
+    exists used:usize;
+    exists next:usize = used + 1usize;
+    exists enabled:bool = true;
+    owns(p);
+    initialized(p.value,0..1);
+    next <= 8usize;
+    enabled;
+}
+fn main()->u64 {
+    let p=alloc<Cell>(1);
+    p.value=42;
+    let candidate=3usize;
+    fold Ready(p) with (used = candidate * 2usize, enabled = true);
+    unfold Ready(p);
+    let outcome=p.value;
+    free(p);
+    finish Ready(p);
+    return outcome;
+}

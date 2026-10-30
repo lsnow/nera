@@ -205,21 +205,14 @@ fn cross_module_wrapper_uses_caller_coordinates_and_runs_natively() {
 }
 
 #[test]
-fn local_escape_and_unrepresentable_conditional_sources_fail_closed() {
-    for (name, source, status, message) in [
-        (
+fn local_escape_fails_closed() {
+    {
+        let (name, source, status, message) = (
             "local",
             "fn main()->u64{return 42;} fn bad(a:&u64,b:&u64)->&u64{let local=1;return &local;}",
             FrontendStatus::Invalid,
             "local storage",
-        ),
-        (
-            "conditional",
-            "fn main()->u64{return 42;} fn choose(flag:bool,a:&u64,b:&u64)->&u64{if flag{return a;}return b;}",
-            FrontendStatus::Unsupported,
-            "multiple path-dependent",
-        ),
-    ] {
+        );
         let output = analyze(&SourceFile::from_text(name, source));
         assert_eq!(output.status(), status, "{name}: {:?}", output.issues());
         assert!(

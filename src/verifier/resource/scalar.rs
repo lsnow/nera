@@ -273,6 +273,33 @@ impl AffineExpression {
             .map(|addend| Self { addend, ..self })
     }
 
+    /// Translate a coordinate only when its explicit base contains the whole
+    /// displacement. This does not infer a lower bound for symbolic terms.
+    pub(crate) fn checked_sub_constant(self, value: u64) -> Option<Self> {
+        self.addend
+            .checked_sub(value)
+            .map(|addend| Self { addend, ..self })
+    }
+
+    /// Changes units only when every term is exactly divisible. This proves no
+    /// bounds or machine definedness for the resulting expression.
+    pub(crate) fn checked_div_exact(self, divisor: u64) -> Option<Self> {
+        if divisor == 0 || !self.addend.is_multiple_of(divisor) {
+            return None;
+        }
+        let terms = self
+            .terms()
+            .into_iter()
+            .flatten()
+            .map(|(id, scale)| {
+                scale
+                    .is_multiple_of(divisor)
+                    .then_some((id, scale / divisor))
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Self::from_terms(self.addend / divisor, terms)
+    }
+
     /// Multiplies the expression without introducing wrapping semantics.
     #[must_use]
     pub fn checked_scale(self, factor: u64) -> Option<Self> {

@@ -1,0 +1,79 @@
+// Parameter start and heap end remain paired with the actual returned length.
+opaque struct Arena {
+    cursor: usize,
+    slots: [u64; 8],
+}
+predicate Ready(p: ptr<Arena>) {
+    owns(p);
+    initialized(p, 0usize..1usize);
+    p.cursor >= 2usize;
+    p.cursor <= 8usize;
+}
+fn main() -> u64 {
+    let a = make();
+    let view = begin(&mut *a);
+    let b = fill(view);
+    let previous = reset(b);
+    let slice = take(b, 1usize);
+    let total = slice[0] + previous;
+    let status = reset(b);
+    let ended = close(b);
+    free(a);
+    return total + status + ended;
+}
+fn make() -> Own<Arena>
+{
+    let p = alloc<Arena>(1);
+    p.cursor = 0usize;
+    p.slots = [0, 0, 0, 0, 0, 0, 0, 0];
+    return p;
+}
+fn begin(p: &mut Arena) -> &mut Arena
+ensures Ready(result);
+{
+    p.cursor = 2usize;
+    fold Ready(p);
+    return p;
+}
+fn fill(p: &mut Arena) -> &mut Arena
+requires Ready(p);
+ensures Ready(result);
+{
+    unfold Ready(p);
+    let left = &mut p.slots[0usize..2usize];
+    let right = &mut p.slots[2usize..4usize];
+    left[0] = 12;
+    right[0] = 30;
+    let total = left[0] + right[0];
+    p.slots[1] = total;
+    p.cursor = 4usize;
+    fold Ready(p);
+    return p;
+}
+fn reset(p: &mut Arena) -> u64
+requires Ready(p);
+ensures Ready(p);
+{
+    unfold Ready(p);
+    p.cursor = 2usize;
+    fold Ready(p);
+    return 0;
+}
+fn take(p: &mut Arena, start: usize) -> &mut [u64]
+requires Ready(p);
+requires start <= 1usize;
+ensures Ready(p);
+{
+    unfold Ready(p);
+    let view = &mut p.slots[start..p.cursor];
+    fold Ready(p);
+    return view;
+}
+
+fn close(p: &mut Arena) -> u64
+requires Ready(p);
+{
+    unfold Ready(p);
+    finish Ready(p);
+    return 0;
+}

@@ -43,6 +43,23 @@ pub(super) struct InitializationPrefixes {
 }
 
 impl InitializationPrefixes {
+    pub(super) fn forget_value(&mut self, value: VirValueId) {
+        let independent = |expression: AffineExpression| {
+            expression
+                .terms()
+                .into_iter()
+                .flatten()
+                .all(|(id, _)| id != value)
+        };
+        self.facts.retain(|key, counts| {
+            if !independent(key.begin) {
+                return false;
+            }
+            counts.retain(|count| independent(*count));
+            true
+        });
+    }
+
     pub(super) fn invalidate(&mut self, range: ByteRange) {
         for (key, counts) in &mut self.facts {
             if key.extent().is_none_or(|extent| overlaps(extent, range)) {
@@ -145,29 +162,75 @@ fn interval(
     expression: AffineExpression,
     values: &BTreeMap<VirValueId, AbstractValue>,
 ) -> Option<U64Interval> {
-    let root = match expression.root() {
-        Some(id) => match values.get(&id)? {
-            AbstractValue::U64(value) => *value,
-            _ => return None,
-        },
-        None if expression.is_constant() => U64Interval::exact(0),
-        None => return None,
-    };
+    let terms = expression
+        .terms()
+        .into_iter()
+        .flatten()
+        .map(|(id, coefficient)| {
+            let AbstractValue::U64(value) = values.get(&id)? else {
+                return None;
+            };
+            Some((coefficient, value.lower(), value.upper()))
+        })
+        .collect::<Option<Vec<_>>>()?;
     // The lower bound is sufficient for reduction; an overflowing abstract
     // upper bound loses precision rather than inventing a wrapping count.
-    U64Interval::new(
-        root.lower()
-            .checked_mul(expression.scale())?
-            .checked_add(expression.addend())?,
-        root.upper()
-            .checked_mul(expression.scale())
-            .and_then(|value| value.checked_add(expression.addend()))
-            .unwrap_or(u64::MAX),
-    )
-    .ok()
+    let (lower, upper) =
+        crate::predicate_logic::affine::positive_word_envelope(expression.addend(), terms).ok()?;
+    U64Interval::new(lower, upper).ok()
 }
 
 impl AbstractAllocation {
+    /// Only explicit scalar ABI pairs may carry local initialization roots
+    /// across a call. Byte reduction happens before this projection.
+    pub(super) fn project_call_initialization(
+        &mut self,
+        remapper: &ExpressionRemapper,
+        values: &BTreeMap<VirValueId, AbstractValue>,
+        has_scalar_abi: bool,
+    ) {
+        if has_scalar_abi {
+            self.initialization_prefixes = self.initialization_prefixes.project(remapper, values);
+        } else {
+            self.detach_initialization_prefixes();
+        }
+    }
+
+    /// A frame without an explicit scalar ABI cannot retain local SSA roots.
+    /// Reduce definite bytes before calling this; constant prefix facts remain.
+    pub(super) fn detach_initialization_prefixes(&mut self) {
+        self.initialization_prefixes.facts.retain(|key, counts| {
+            if !key.begin.is_constant() {
+                return false;
+            }
+            counts.retain(|count| count.is_constant());
+            true
+        });
+    }
+
+    /// Syntactic prefix containment: no new numeric hypothesis or authority.
+    pub(crate) fn prefix_covers_count(
+        &self,
+        p: HeapInitializationPrefix,
+        count: AffineExpression,
+    ) -> bool {
+        if count.is_constant() && count.addend() == 0 {
+            return true;
+        }
+        self.initialization_prefixes
+            .facts
+            .iter()
+            .any(|(key, counts)| {
+                key.base == p.array_offset
+                    && key.stride == p.stride
+                    && key.length == p.length
+                    && key.element == p.element
+                    && key.begin == AffineExpression::constant(0)
+                    && counts
+                        .iter()
+                        .any(|known| known.same_terms(count) && known.addend() >= count.addend())
+            })
+    }
     pub(crate) fn seed_initialization_prefixes(
         &mut self,
         memory: &VirMemorySchema,
@@ -212,6 +275,66 @@ impl AbstractAllocation {
 }
 
 impl ResourceState {
+    pub(crate) fn bind_heap_initialization_prefix(
+        &mut self,
+        id: AbstractAllocationId,
+        p: HeapInitializationPrefix,
+        count: AffineExpression,
+    ) -> bool {
+        self.bind_array_initialization_prefix(
+            id,
+            p.array_offset,
+            p.element,
+            p.length,
+            p.stride,
+            count,
+        )
+    }
+
+    /// Called only after a real initialization proof or a checked contract
+    /// import. Arithmetic and witness declarations alone cannot call this.
+    pub(in crate::verifier) fn bind_array_initialization_prefix(
+        &mut self,
+        id: AbstractAllocationId,
+        base: u64,
+        element: VirMemoryAccess,
+        length: u64,
+        stride: u64,
+        count: AffineExpression,
+    ) -> bool {
+        let Some(allocation) = self.allocations.get_mut(&id) else {
+            return false;
+        };
+        let key = ArrayKey {
+            base,
+            stride,
+            length,
+            element,
+            begin: AffineExpression::constant(0),
+        };
+        if allocation.liveness() != LivenessState::Live
+            || key
+                .extent()
+                .is_none_or(|r| r.end() > allocation.size_bytes())
+        {
+            return false;
+        }
+        if allocation.initialization_prefixes.facts.len() >= MAX_PREFIXES
+            && !allocation.initialization_prefixes.facts.contains_key(&key)
+        {
+            return false;
+        }
+        let counts = allocation
+            .initialization_prefixes
+            .facts
+            .entry(key)
+            .or_default();
+        if counts.len() >= MAX_EQUIVALENT_COUNTS {
+            return false;
+        }
+        counts.insert(count);
+        true
+    }
     /// Only facts whose scalar roots are syntactically unchanged survive an
     /// inner induction cut. Actual scalar writes preserve their valid bytes.
     pub(in crate::verifier) fn inherit_loop_initialization_frame(
@@ -260,21 +383,7 @@ impl ResourceState {
         let Some(base) = pointer.offset_bytes().exact_value() else {
             return false;
         };
-        let index = |e: AffineExpression| {
-            if stride == 0
-                || !e.scale().is_multiple_of(stride)
-                || !e.addend().is_multiple_of(stride)
-                || (!e.is_constant() && e.root().is_none())
-            {
-                return None;
-            }
-            Some(AffineExpression {
-                root: e.root(),
-                scale: e.scale() / stride,
-                addend: e.addend() / stride,
-                second: None,
-            })
-        };
+        let index = |e: AffineExpression| e.checked_div_exact(stride);
         let (Some(begin), Some(cursor)) = (index(bounds.0), index(bounds.1)) else {
             return false;
         };
@@ -332,7 +441,7 @@ impl ResourceState {
                 return true;
             }
         }
-        false
+        self.logical_initialized_prefix_covers(allocation, access, range)
     }
 
     /// Export only proved lower prefixes to edge arguments before the loop
@@ -520,17 +629,12 @@ impl ResourceState {
             let Some(relative) = offset.addend().checked_sub(key.base) else {
                 continue;
             };
-            if (!offset.is_constant() && offset.root().is_none())
-                || offset.scale() % key.stride != 0
-                || relative % key.stride != 0
-            {
+            let Some(index) = (AffineExpression {
+                addend: relative,
+                ..offset
+            })
+            .checked_div_exact(key.stride) else {
                 continue;
-            }
-            let index = AffineExpression {
-                root: offset.root(),
-                scale: offset.scale() / key.stride,
-                addend: relative / key.stride,
-                second: None,
             };
             let Some(indices) = interval(index, &self.values) else {
                 continue;

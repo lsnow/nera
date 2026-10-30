@@ -1,0 +1,65 @@
+// Raw links carry addresses. Each allocation retains its own owner.
+struct Node {
+    value: u64,
+    prev: ptr<Node>,
+    next: ptr<Node>,
+}
+struct List {
+    head: ptr<Node>,
+    tail: ptr<Node>,
+}
+
+fn main() -> u64 {
+    let a = alloc<Node>(1);
+    let b = alloc<Node>(1);
+    let list = alloc<List>(1);
+    a.value = 20;
+    b.value = 22;
+    let pa = &raw mut *a;
+    let pb = &raw mut *b;
+    a.prev = null<Node>();
+    a.next = link(pb);
+    b.prev = pa;
+    b.next = null<Node>();
+    list.head = null<Node>();
+    list.tail = null<Node>();
+    set_ends(&mut *list, pa, pb);
+    let head_linked = list.head == pa;
+    let tail_linked = list.tail == pb;
+    let linked = a.next == pb;
+    let back_linked = b.prev == pa;
+
+    set_next(&mut *a, null<Node>());
+    b.prev = null<Node>();
+    let detached = a.next == null<Node>();
+    let back_detached = b.prev == null<Node>();
+    let total = a.value + b.value;
+    free(b);
+    free(a);
+    free(list);
+    if head_linked {
+        if tail_linked {
+            if linked {
+                if back_linked {
+                    if detached {
+                        if back_detached { return total; }
+                    }
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+fn link(p: ptr<Node>) -> ptr<Node> { return p; }
+
+fn set_next(node: &mut Node, next: ptr<Node>) {
+    node.next = next;
+    return;
+}
+
+fn set_ends(list: &mut List, head: ptr<Node>, tail: ptr<Node>) {
+    list.head = head;
+    list.tail = tail;
+    return;
+}

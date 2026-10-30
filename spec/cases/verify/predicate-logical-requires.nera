@@ -1,0 +1,27 @@
+// Logical input slots stay separate from the linear owner ABI.
+struct Cell { value:u64, }
+predicate Ready(limit:usize,p:ptr<Cell>) {
+    owns(p);
+    initialized(p.value,0..1);
+    limit == limit;
+}
+fn main()->u64 {
+    let p=alloc<Cell>(1);
+    p.value=42;
+    fold Ready(7usize,p);
+    return relay(7usize,p);
+}
+fn consume(p:Own<Cell>,limit:usize)->u64
+requires Ready(limit,p);
+{
+    unfold Ready(limit,p);
+    let value=p.value;
+    free(p);
+    finish Ready(limit,p);
+    return value;
+}
+fn relay(limit:usize,p:Own<Cell>)->u64
+requires Ready(limit,p);
+{
+    return consume(p,limit);
+}

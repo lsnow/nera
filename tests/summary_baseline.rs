@@ -109,7 +109,7 @@ fn local_guard_controls_do_not_need_an_interprocedural_relation() {
 }
 
 #[test]
-fn projected_subviews_advance_without_opening_conditional_interfaces() {
+fn projected_and_conditional_views_preserve_the_current_summary_boundary() {
     let source = "fn main()->u64 { let a=[1,42]; let p=tail(&a[..]); return p[0]; } fn tail(p:&[u64])->&[u64] { return &p[1..]; }";
     let output = analyze(&SourceFile::from_text(
         "summary-interface-gate.nera",
@@ -124,10 +124,6 @@ fn projected_subviews_advance_without_opening_conditional_interfaces() {
     assert!(output.vir().is_some());
 
     for (source, message) in [
-        (
-            "fn choose(a:&u64,b:&u64,c:bool)->&u64 { if c { return a; } return b; } fn main()->u64 { return 0; }",
-            "multiple path-dependent input sources",
-        ),
         (
             "enum Choice { First, Second, } fn main()->u64 { let c=choose(true); match c { Choice::First => { return 42; }, Choice::Second => { return 0; }, } } fn choose(b:bool)->Choice { if b { return Choice::First; } return Choice::Second; }",
             "post-CFG initialization planning",

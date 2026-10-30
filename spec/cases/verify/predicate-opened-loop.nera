@@ -1,0 +1,33 @@
+// Opened witnesses stay ghost values across an inductive loop. The callee
+// knows only the existential package and its bounds, not the caller's choice.
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>) {
+    exists used:usize = 0usize;
+    exists enabled:bool = true;
+    owns(p);
+    initialized(p.value,0..1);
+    used<=7usize;
+    enabled;
+}
+fn main()->u64 {
+    let p=alloc<Cell>(1);
+    p.value=42;
+    fold Ready(p) with (used=6usize);
+    return consume(p);
+}
+fn consume(p:Own<Cell>)->u64
+requires Ready(p);
+{
+    unfold Ready(p) as (saved,on);
+    let mut i=0usize;
+    while i<3usize {
+        invariant i<=3usize;
+        invariant saved<=7usize;
+        invariant on;
+        i=i+1usize;
+    }
+    let outcome=p.value;
+    free(p);
+    finish Ready(p);
+    return outcome;
+}

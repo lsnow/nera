@@ -1,0 +1,41 @@
+// A Boolean actual retains the numeric type needed to recover its guarantee.
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>,inside:bool,count:usize) {
+    exists used:usize = 0usize;
+    owns(p);
+    initialized(p.value,0..1);
+    inside;
+    used==count;
+}
+fn main()->u64 {
+    let p=alloc<Cell>(1);
+    p.value=42;
+    fold Ready(p,6usize<7usize,6usize) with (used=6usize);
+    return consume(p,6usize,7usize);
+}
+fn forward(p:&mut Cell,count:usize,limit:usize)
+requires Ready(p,count<limit,count);
+ensures Ready(p,count<limit,count);
+{
+    unfold Ready(p,count<limit,count) as (saved);
+    fold Ready(p,count<limit,count) with (used=saved);
+    return;
+}
+fn consume(p:Own<Cell>,count:usize,limit:usize)->u64
+requires Ready(p,count<limit,count);
+{
+    forward(&mut *p,count,limit);
+    unfold Ready(p,count<limit,count) as (saved);
+    let mut i=0usize;
+    while i<3usize {
+        invariant i<=3usize;
+        invariant saved<limit;
+        i=i+1usize;
+    }
+    fold Ready(p,count<limit,count) with (used=saved);
+    unfold Ready(p,count<limit,count);
+    let outcome=p.value;
+    free(p);
+    finish Ready(p,count<limit,count);
+    return outcome;
+}

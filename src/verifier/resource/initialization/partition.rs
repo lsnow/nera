@@ -53,6 +53,41 @@ impl ArrayKey {
 }
 
 impl ResourceState {
+    /// Existing valid element counts for one exact array geometry. This is a
+    /// read-only projection of initialization evidence, not a consequence of
+    /// numeric bounds. Keep the same endpoint/domain checks as byte partitions.
+    pub(in crate::verifier) fn array_initialization_counts(
+        &self,
+        id: AbstractAllocationId,
+        base: u64,
+        element: VirMemoryAccess,
+        length: u64,
+        stride: u64,
+    ) -> Vec<AffineExpression> {
+        let Some(allocation) = self.allocation(id) else {
+            return Vec::new();
+        };
+        if allocation.liveness() != LivenessState::Live {
+            return Vec::new();
+        }
+        let key = ArrayKey {
+            base,
+            element,
+            length,
+            stride,
+            begin: AffineExpression::constant(0),
+        };
+        allocation
+            .initialization_prefixes
+            .facts
+            .get(&key)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|count| key.partition(id, *count, &self.values).is_some())
+            .collect()
+    }
+
     /// Only reads facts established by transfer on this path. In particular,
     /// this does not seed loop-head hypotheses or mark the remainder writable.
     pub(in crate::verifier) fn initialization_partitions(

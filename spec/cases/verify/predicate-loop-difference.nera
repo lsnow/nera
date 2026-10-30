@@ -1,0 +1,43 @@
+// Overlapping high/low intervals need the current low<=high relation.
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>,remaining:usize) {
+    exists used:usize = 0usize;
+    owns(p);
+    initialized(p.value,0..1);
+    p.value<=42;
+    remaining<=7usize;
+    used<=7usize;
+}
+fn main()->u64 { return run(true); }
+fn initial_high(seed:bool)->usize
+ensures 4usize<=result;
+ensures result<=7usize;
+{
+    if seed { return 5usize; }
+    return 7usize;
+}
+fn initial_low(seed:bool)->usize
+ensures result<=3usize;
+{
+    if seed { return 1usize; }
+    return 3usize;
+}
+fn run(seed:bool)->u64 {
+    let p=alloc<Cell>(1);
+    p.value=42;
+    let high=initial_high(seed);
+    let mut low=initial_low(seed);
+    fold Ready(p,high-low) with (used=low);
+    while low<high {
+        invariant high<=7usize;
+        invariant low<=high;
+        unfold Ready(p,high-low);
+        low=low+1usize;
+        fold Ready(p,high-low) with (used=low);
+    }
+    unfold Ready(p,high-low);
+    let outcome=p.value;
+    free(p);
+    finish Ready(p,high-low);
+    return outcome;
+}

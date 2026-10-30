@@ -1,0 +1,35 @@
+// Full composite origins follow the actual scalar selected at the CFG merge.
+// Neither historical root needs its own surviving runtime slot.
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>,limit:usize) {
+    exists used:usize = 0usize;
+    owns(p);
+    initialized(p.value,0..1);
+    p.value<=42;
+    limit<=7usize;
+    used<=7usize;
+}
+fn main()->u64 {
+    return choose(1usize,3usize,true);
+}
+fn choose(first:usize,second:usize,which:bool)->u64
+requires first<=3usize;
+requires second<=3usize;
+{
+    let p=alloc<Cell>(1);
+    p.value=42;
+    let mut limit=first+second+1usize;
+    if which {
+        fold Ready(p,limit) with (used=1usize);
+    } else {
+        limit=(second+second)+1usize;
+        fold Ready(p,limit) with (used=2usize);
+    }
+    unfold Ready(p,limit) as (saved);
+    fold Ready(p,limit) with (used=saved);
+    unfold Ready(p,limit);
+    let outcome=p.value;
+    free(p);
+    finish Ready(p,limit);
+    return outcome;
+}

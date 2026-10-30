@@ -142,6 +142,121 @@ fn prefixes(counts: impl IntoIterator<Item = AffineExpression>) -> Initializatio
 }
 
 #[test]
+fn compound_counts_reduce_only_guaranteed_bytes_and_require_every_operand() {
+    let a = VirValueId::new(1);
+    let b = VirValueId::new(2);
+    let sum = AffineExpression::identity(a)
+        .checked_add(AffineExpression::identity(b))
+        .unwrap();
+    for upper in [1, u64::MAX] {
+        let values = BTreeMap::from([
+            (a, AbstractValue::U64(U64Interval::new(1, upper).unwrap())),
+            (b, AbstractValue::U64(U64Interval::new(1, 2).unwrap())),
+        ]);
+        let mut allocation = AbstractAllocation::new_local(40, 8).unwrap();
+        allocation.initialization_prefixes = prefixes([sum]);
+        allocation.reduce_initialization_prefixes(&values);
+        assert_eq!(
+            allocation
+                .initialization()
+                .classify(ByteRange::new(8, 24).unwrap()),
+            InitializationClass::Initialized
+        );
+        assert!(
+            allocation
+                .valid_value_bytes()
+                .contains(ByteRange::new(8, 24).unwrap())
+        );
+        assert_ne!(
+            allocation
+                .initialization()
+                .classify(ByteRange::new(24, 32).unwrap()),
+            InitializationClass::Initialized
+        );
+        assert_eq!(
+            key()
+                .partition(AbstractAllocationId::new(0), sum, &values)
+                .is_some(),
+            upper == 1
+        );
+        for missing in [a, b] {
+            let mut incomplete = values.clone();
+            incomplete.remove(&missing);
+            assert!(interval(sum, &incomplete).is_none());
+            let mut facts = prefixes([sum]);
+            facts.forget_value(missing);
+            assert!(!facts.facts[&key()].contains(&sum));
+        }
+    }
+}
+
+#[test]
+fn compound_projection_requires_both_roots_or_an_exact_count() {
+    let a = VirValueId::new(1);
+    let b = VirValueId::new(2);
+    let x = VirValueId::new(3);
+    let y = VirValueId::new(4);
+    let sum = AffineExpression::identity(a)
+        .checked_add(AffineExpression::identity(b))
+        .unwrap();
+    let renamed = AffineExpression::identity(x)
+        .checked_add(AffineExpression::identity(y))
+        .unwrap();
+    let mut state = ResourceState::new();
+    for id in [a, b] {
+        state
+            .define_value(id, AbstractValue::U64(U64Interval::new(0, 1).unwrap()))
+            .unwrap();
+    }
+    let facts = prefixes([sum]);
+    let project = |renames: &[(VirValueId, VirValueId)]| {
+        facts.project(&ExpressionRemapper::new(&state, renames), &state.values)
+    };
+    assert!(project(&[(a, x), (b, y)]).facts[&key()].contains(&renamed));
+    assert_eq!(project(&[(a, x)]).facts[&key()], empty_prefix());
+    assert_eq!(project(&[(b, y)]).facts[&key()], empty_prefix());
+    for id in [a, b] {
+        state
+            .values
+            .insert(id, AbstractValue::U64(U64Interval::exact(1)));
+    }
+    let projected = facts.project(&ExpressionRemapper::new(&state, &[]), &state.values);
+    assert!(projected.facts[&key()].contains(&AffineExpression::constant(2)));
+}
+
+#[test]
+fn exact_unit_conversion_preserves_all_terms_and_rejects_truncation() {
+    let a = AffineExpression::identity(VirValueId::new(1));
+    let b = AffineExpression::identity(VirValueId::new(2));
+    let sum = a.checked_add(b).unwrap().checked_add_constant(1).unwrap();
+    assert_eq!(
+        sum.checked_scale(8).unwrap().checked_div_exact(8),
+        Some(sum)
+    );
+    assert_eq!(sum.checked_div_exact(0), None);
+    assert_eq!(
+        a.checked_scale(8)
+            .unwrap()
+            .checked_add(b)
+            .unwrap()
+            .checked_div_exact(8),
+        None
+    );
+    assert_eq!(
+        sum.checked_scale(8)
+            .unwrap()
+            .checked_add_constant(1)
+            .unwrap()
+            .checked_div_exact(8),
+        None
+    );
+    assert_eq!(
+        AffineExpression::constant(16).checked_div_exact(8),
+        Some(AffineExpression::constant(2))
+    );
+}
+
+#[test]
 fn joins_keep_only_predecessor_independent_facts() {
     for a in 0..=4 {
         for b in 0..=4 {

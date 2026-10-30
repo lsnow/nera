@@ -1,0 +1,32 @@
+// Old guarantees prove new arithmetic in arguments, explicit and default witnesses.
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>,n:usize) {
+    exists low:usize = 0usize;
+    exists high:usize = 0usize;
+    exists width:usize = high-low;
+    owns(p);
+    initialized(p.value,0..1);
+    low<=high;
+    high<=10usize;
+    width==high-low;
+    n==width;
+}
+fn main()->u64 {
+    let p=alloc<Cell>(1);
+    p.value=42;
+    fold Ready(p,3usize) with (low=2usize,high=5usize);
+    return consume(p,3usize);
+}
+fn consume(p:Own<Cell>,n:usize)->u64
+requires Ready(p,n);
+{
+    unfold Ready(p,n) as (lo,hi,width);
+    fold Ready(p,n) with (low=lo,high=hi,width=hi-lo);
+    unfold Ready(p,n) as (lo2,hi2,width2);
+    fold Ready(p,n) with (low=lo2,high=hi2);
+    unfold Ready(p,n) as (lo3,hi3,width3);
+    let outcome=p.value;
+    free(p);
+    finish Ready(p,hi3-lo3);
+    return outcome;
+}

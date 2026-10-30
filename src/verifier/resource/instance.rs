@@ -26,23 +26,26 @@ impl ResourceState {
         let provenance = AbstractProvenance::Known(id);
         // Preflight before mutation: never erase a live/maybe-live resource
         // responsibility or a loan, including an imprecise loan after a join.
-        if self.allocations.get(&id).is_some_and(|old| {
-            old.liveness != LivenessState::Dead
-                && (old.ownership != OwnershipState::Unowned
-                    || old
-                        .object_state
-                        .resource_payloads
-                        .values()
-                        .any(|p| !matches!(p, MovePathState::Moved)))
-        }) || self.loans.values().any(|loan| {
-            (loan.provenance == provenance
-                || loan.provenance == AbstractProvenance::Unknown
-                || loan.authorities.iter().any(|authority| {
-                    matches!(authority,
+        if self.predicate_references_allocation(id)
+            || self.allocations.get(&id).is_some_and(|old| {
+                old.liveness != LivenessState::Dead
+                    && (old.ownership != OwnershipState::Unowned
+                        || old
+                            .object_state
+                            .resource_payloads
+                            .values()
+                            .any(|p| !matches!(p, MovePathState::Moved)))
+            })
+            || self.loans.values().any(|loan| {
+                (loan.provenance == provenance
+                    || loan.provenance == AbstractProvenance::Unknown
+                    || loan.authorities.iter().any(|authority| {
+                        matches!(authority,
                     AbstractLoanAuthority::Stored { allocation, .. } if *allocation == id)
-                }))
-                && (loan.activity != LoanActivity::Ended || !loan.authorities.is_empty())
-        }) {
+                    }))
+                    && (loan.activity != LoanActivity::Ended || !loan.authorities.is_empty())
+            })
+        {
             return Err(ResourceStateDefinitionError::AllocationInstanceStillReferenced(id));
         }
         if !self.allocations.contains_key(&id) && self.allocations.len() >= MAX_ALLOCATION_SLOTS {

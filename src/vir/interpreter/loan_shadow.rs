@@ -8,6 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 mod calls;
+mod field_calls;
 
 use super::{
     BlockFrame, VirExecutionError, VirExecutionErrorKind, VirRuntimePermission, VirRuntimePointer,
@@ -22,7 +23,62 @@ use crate::vir::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct RuntimeLoanAuthority {
     pub(super) loan: VirLoanId,
-    pub(super) token: u64,
+    pub(super) token: RuntimeLoanToken,
+}
+
+/// An invocation identity is never reused, including after a frame returns.
+/// A token cannot be reconstructed from an address or a frame-local loan ID.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) struct RuntimeLoanToken {
+    invocation: u64,
+    ordinal: u64,
+}
+
+/// Evidence captured from an actual caller loan, never reconstructed from
+/// parameter pointer bits in the callee.
+#[derive(Clone, Copy)]
+pub(super) struct RuntimeBorrowImport {
+    parameter: u32,
+    authority: RuntimeLoanAuthority,
+    pointer: VirRuntimePointer,
+    permission: VirRuntimePermission,
+}
+
+pub(super) struct RuntimeBorrowCall {
+    pub(super) imports: Vec<RuntimeBorrowImport>,
+    pub(super) returns: Vec<RuntimeBorrowReturn>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct RuntimeStoredBorrowReturn {
+    source: crate::BoundarySource,
+    caller: RuntimeLoanAuthority,
+    callee: RuntimeLoanAuthority,
+    pointer: VirRuntimePointer,
+    permission: VirRuntimePermission,
+    reference: crate::VirMemoryAccess,
+}
+
+impl RuntimeStoredBorrowReturn {
+    fn binding(
+        &self,
+    ) -> crate::BoundaryBinding<RuntimeLoanAuthority, (VirRuntimePointer, VirRuntimePermission)>
+    {
+        crate::BoundaryBinding {
+            source: self.source,
+            authority: self.caller,
+            view: (self.pointer, self.permission),
+        }
+    }
+}
+
+/// A candidate SSA destination derived from the canonical field-result ABI.
+/// It is only admitted after checking the callee's actual unique token.
+pub(super) struct RuntimeStoredValueExit {
+    pub(super) source: crate::BoundarySource,
+    pub(super) pointer: VirValueId,
+    pub(super) permission: VirValueId,
+    pub(super) caller_result: VirValueId,
 }
 
 pub(super) struct RuntimeBorrowReturn {
@@ -68,7 +124,7 @@ enum RuntimeLoanActivity {
     Ended,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct RuntimeLoan {
     allocation: u64,
     range: VirLoanRange,
@@ -78,7 +134,7 @@ struct RuntimeLoan {
     parent: Option<VirLoanId>,
     pointee: crate::vir::VirMemoryAccess,
     activity: RuntimeLoanActivity,
-    authorities: BTreeSet<u64>,
+    authorities: BTreeSet<RuntimeLoanToken>,
 }
 
 impl RuntimeLoan {
@@ -93,15 +149,18 @@ impl RuntimeLoan {
 }
 
 /// Concrete loan state for one function invocation.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct RuntimeLoanShadow {
+    invocation: u64,
     loans: BTreeMap<VirLoanId, RuntimeLoan>,
     next_authority: u64,
     next_dynamic_loan: u32,
 }
 
-impl Default for RuntimeLoanShadow {
-    fn default() -> Self {
+impl RuntimeLoanShadow {
+    pub(super) fn new(invocation: u64) -> Self {
         Self {
+            invocation,
             loans: BTreeMap::new(),
             next_authority: 0,
             next_dynamic_loan: 1 << 31,
@@ -820,7 +879,10 @@ impl RuntimeLoanShadow {
         loan: VirLoanId,
         source_span: ByteSpan,
     ) -> Result<RuntimeLoanAuthority, VirExecutionError> {
-        let token = self.next_authority;
+        let token = RuntimeLoanToken {
+            invocation: self.invocation,
+            ordinal: self.next_authority,
+        };
         self.next_authority = self.next_authority.checked_add(1).ok_or_else(|| {
             error(
                 VirExecutionErrorKind::ActiveLoanLimitExceeded { limit: usize::MAX },
@@ -839,7 +901,13 @@ impl RuntimeLoanShadow {
     ) -> Result<RuntimeLoanAuthority, VirExecutionError> {
         frame
             .loan_authority(permission)
-            .filter(|authority| authority.loan == loan)
+            .filter(|authority| {
+                authority.loan == loan
+                    && self
+                        .loans
+                        .get(&loan)
+                        .is_some_and(|state| state.authorities.contains(&authority.token))
+            })
             .ok_or_else(|| authority_error(loan, permission, source_span))
     }
 
@@ -981,4 +1049,115 @@ fn authority_error(
         VirExecutionErrorKind::LoanAuthorityMismatch { loan, permission },
         source_span,
     )
+}
+
+#[cfg(test)]
+mod frame_identity_tests {
+    use super::*;
+
+    #[test]
+    fn stored_authorities_cannot_cross_or_reenter_invocations_with_reused_loan_ids() {
+        let span = ByteSpan::empty();
+        let mut interpreter =
+            super::super::Interpreter::new(super::super::VirInterpreterConfig::default());
+        let id = VirLoanId::new(0);
+        let access = crate::VirMemoryAccess::core_u64();
+        let range = VirLoanRange {
+            start_bytes: 0,
+            end_bytes: 8,
+        };
+        let pointer = VirRuntimePointer {
+            allocation: 0,
+            offset_bytes: 0,
+            access,
+            paths: crate::VirPointerPaths::default(),
+            view_range: Some(range),
+            domain: crate::VirPointerDomain::Restricted(range),
+        };
+        let permission = VirRuntimePermission {
+            allocation: 0,
+            start_bytes: 0,
+            end_bytes: 8,
+            can_free_when_complete: false,
+        };
+        let limits = RuntimeLoanLimits {
+            active_loans: 8,
+            aliases_per_loan: 8,
+            reborrow_depth: 8,
+        };
+        let permission_id = VirValueId::new(1);
+        let mut retired = Vec::new();
+        for _ in 0..16 {
+            let invocation = interpreter.fresh_loan_frame(span).unwrap();
+            let mut shadow = RuntimeLoanShadow::new(invocation);
+            let local = shadow.fresh_authority(id, span).unwrap();
+            assert_eq!(local.token.ordinal, 0);
+            shadow.loans.insert(
+                id,
+                RuntimeLoan {
+                    allocation: 0,
+                    range,
+                    envelope: range,
+                    kind: VirLoanKind::Shared,
+                    region: crate::VirBorrowRegionId::new(0),
+                    parent: None,
+                    pointee: access,
+                    activity: RuntimeLoanActivity::Active,
+                    authorities: BTreeSet::from([local.token]),
+                },
+            );
+            for foreign in &retired {
+                assert_ne!(*foreign, local);
+                let frame = BlockFrame {
+                    values: BTreeMap::from([(
+                        permission_id,
+                        VirRuntimeValue::Permission(permission),
+                    )]),
+                    consumed_permissions: BTreeSet::new(),
+                    loan_authorities: BTreeMap::from([(permission_id, *foreign)]),
+                };
+                assert!(
+                    shadow
+                        .require_authority(&frame, id, permission_id, span)
+                        .is_err()
+                );
+                assert!(
+                    shadow
+                        .check_access(
+                            &frame,
+                            RuntimeLoanAccessRequest {
+                                permission: permission_id,
+                                pointer,
+                                start_bytes: 0,
+                                end_bytes: 8,
+                                kind: RuntimeLoanAccess::Read,
+                            },
+                            span
+                        )
+                        .is_err()
+                );
+                assert!(
+                    shadow
+                        .alias_stored(*foreign, pointer, access, limits, span)
+                        .is_err()
+                );
+                assert!(shadow.end_stored(*foreign, pointer, access, span).is_err());
+                assert!(
+                    shadow
+                        .activate_conditional_return(*foreign, None, permission, limits, span)
+                        .is_err()
+                );
+                assert_eq!(shadow.loans[&id].authorities, BTreeSet::from([local.token]));
+                assert_eq!(shadow.loans[&id].activity, RuntimeLoanActivity::Active);
+                assert_eq!(shadow.next_authority, 1);
+            }
+            let alias = shadow
+                .alias_stored(local, pointer, access, limits, span)
+                .unwrap();
+            shadow.end_stored(alias, pointer, access, span).unwrap();
+            shadow.end_stored(local, pointer, access, span).unwrap();
+            shadow.finish(span).unwrap();
+            retired.push(local);
+        }
+    }
 }

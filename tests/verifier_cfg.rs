@@ -286,6 +286,7 @@ fn diamond_cfg_preserves_initialized_memory_and_linear_permissions() {
         .expect("exit block analysis");
     let allocation = exit
         .exit_state()
+        .unwrap()
         .allocation(AbstractAllocationId::vir_allocation_site(VirValueId::new(
             2,
         )))
@@ -400,7 +401,9 @@ fn cfg_edges_and_returns_enforce_linear_permission_moves() {
 
 #[test]
 fn loop_widening_converges_without_silently_assuming_memory_safety() {
-    let program = widening_memory_loop();
+    // Leave enough valid iterations to reach widening. An 8-byte allocation
+    // refutes the second write and terminates that path before widening.
+    let program = widening_memory_loop(64);
 
     let analysis = analyze_function_cfg(
         &program.resolve().expect("analysis input resolves"),
@@ -423,6 +426,7 @@ fn loop_widening_converges_without_silently_assuming_memory_safety() {
         .block(VirBlockId::new(1))
         .expect("loop block")
         .entry_state()
+        .unwrap()
         .value(VirValueId::new(12))
         .copied()
         .expect("loop offset")
@@ -431,6 +435,21 @@ fn loop_widening_converges_without_silently_assuming_memory_safety() {
     };
     assert_eq!(offset, U64Interval::unknown());
     assert!(analysis.block_visits() < CfgAnalysisConfig::default().max_block_visits);
+}
+
+#[test]
+fn refuted_loop_access_stops_the_path_but_retains_its_failure() {
+    let program = widening_memory_loop(8);
+    let analysis =
+        analyze_function_cfg(&program.resolve().unwrap(), VirFunctionId::new(0)).unwrap();
+    assert!(analysis.widened_blocks().is_empty());
+    assert!(!analysis.all_obligations_proven());
+    assert!(analysis.obligations().iter().any(|record| {
+        matches!(
+            record.obligation().kind(),
+            ResourceObligationKind::AccessWithinBounds { .. }
+        ) && record.obligation().status() == ObligationStatus::Refuted
+    }));
 }
 
 #[test]
@@ -557,7 +576,7 @@ fn every_block_in_a_multi_block_cycle_exposes_an_inferred_entry_invariant() {
 
 #[test]
 fn analysis_budget_exhaustion_fails_closed_when_widening_is_disabled() {
-    let program = widening_memory_loop();
+    let program = widening_memory_loop(64);
     let error = analyze_function_cfg_with_entry(
         &program.resolve().expect("analysis input resolves"),
         VirFunctionId::new(0),
@@ -576,7 +595,7 @@ fn analysis_budget_exhaustion_fails_closed_when_widening_is_disabled() {
     );
 }
 
-fn widening_memory_loop() -> ValidatedVirUnit {
+fn widening_memory_loop(size_bytes: u64) -> ValidatedVirUnit {
     validated(
         vec![VirType::Bool],
         Vec::new(),
@@ -587,7 +606,7 @@ fn widening_memory_loop() -> ValidatedVirUnit {
                 vec![
                     instruction(VirInstruction::Constant {
                         result: word(1),
-                        value: VirConstant::U64(8),
+                        value: VirConstant::U64(size_bytes),
                     }),
                     instruction(VirInstruction::Allocate {
                         pointer_result: pointer(2),

@@ -1,0 +1,14 @@
+struct Links { first: ptr<u64>, second: ptr<u64>, }
+
+fn main() -> u64 {
+    let mut word: u64 = 42;
+    let original = Links { first: &raw mut word, second: null<u64>() };
+    let copied = relay(original);
+    let mut changed = copied;
+    changed.first = null<u64>();
+    if copied.first == &raw mut word {
+        if changed.first == null<u64>() { return word; }
+    }
+    return 0;
+}
+fn relay(value: Links) -> Links { return value; }

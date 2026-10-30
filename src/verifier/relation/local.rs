@@ -38,7 +38,7 @@ fn insert(
 }
 
 /// Retain only the connected, supported part of the current query. Intervals
-/// and unit-scale affine equalities come from existing production transfers;
+/// and affine equalities/monotonic bounds come from existing production transfers;
 /// guards are actual path facts, never pending memory obligations or booleans
 /// that merely happened to be compared. Different loads remain distinct SSA.
 pub(super) fn project(
@@ -67,12 +67,12 @@ pub(super) fn project(
             if visits > limits.max_steps {
                 return Err(DifferenceStop::Budget);
             }
-            if let Some(expression) = state.word_expression(value)
-                && expression.scale() == 1
-                && let Some(root) = expression.root()
-                && interval(state, word(root)).is_some()
-            {
-                insert(&mut values, root, limits)?;
+            if let Some(expression) = state.word_expression(value) {
+                for (root, _) in expression.terms().into_iter().flatten() {
+                    if interval(state, word(root)).is_some() {
+                        insert(&mut values, root, limits)?;
+                    }
+                }
             }
         }
         for fact in facts {
@@ -168,6 +168,16 @@ pub(super) fn project(
             interval: interval(state, word(value)).ok_or(DifferenceStop::InvalidInput)?,
         })?;
         if let Some(expression) = state.word_expression(value) {
+            // Transfers retain affine expressions only for established
+            // non-wrapping arithmetic. Each positive word term is at most
+            // the sum minus its nonnegative constant. Derive these bounded
+            // consequences in the query projection, without adding a global
+            // quadratic closure for every intermediate expression.
+            for bound in super::state::affine_lower_bounds(value, expression) {
+                if bound.left.is_some_and(|root| values.contains(&root)) {
+                    push(bound.premise())?;
+                }
+            }
             let right = match expression.root() {
                 Some(root) if expression.scale() == 1 && values.contains(&root) => word(root),
                 None if expression.is_constant() => RelationTerm::Constant(0),

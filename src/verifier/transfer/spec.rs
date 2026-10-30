@@ -2,6 +2,7 @@
 //! Never applies a runtime instruction, defines an SSA value, or commits state.
 use super::*;
 use crate::verifier::vc::VcQueryBudget;
+pub(super) mod observation;
 mod symbolic;
 pub(in crate::verifier) use symbolic::{SymbolicSpecMemoryQuery, query_symbolic_spec_memory};
 #[cfg(test)]
@@ -177,12 +178,22 @@ pub(in crate::verifier) fn query_spec_memory(
     budget: &mut VcQueryBudget,
 ) -> Option<ObligationStatus> {
     let pointer = pointer_fact(state, query.pointer).ok()?;
-    query_spec_memory_pointer(state, memory, query, pointer, config, budget)
+    query_spec_memory_pointer(
+        state,
+        memory,
+        query,
+        pointer,
+        config,
+        budget,
+        AccessPurpose::Runtime,
+    )
 }
 
 /// Typed ABI/field/index resolution must establish the selected access and
 /// offset before calling this adapter. It retains provenance, domain and loan
-/// identity; all ordinary bounds/alignment/authority checks still run.
+/// identity. Logical reads may observe a suspended parent's disjoint bytes;
+/// carrier, bounds, alignment and initialization checks still run. No runtime
+/// permission is restored, and write/points-to claims keep ordinary rules.
 pub(in crate::verifier) fn query_contract_memory(
     state: &ResourceState,
     memory: &VirMemorySchema,
@@ -204,6 +215,7 @@ pub(in crate::verifier) fn query_contract_memory(
             ..Default::default()
         },
         budget,
+        AccessPurpose::LogicalRead,
     )
 }
 
@@ -214,6 +226,7 @@ fn query_spec_memory_pointer(
     pointer: AbstractPointer,
     config: crate::CfgAnalysisConfig,
     budget: &mut VcQueryBudget,
+    purpose: AccessPurpose,
 ) -> Option<ObligationStatus> {
     budget.begin_query()?;
     if !state.path_condition().is_reachable() {
@@ -270,6 +283,7 @@ fn query_spec_memory_pointer(
                         query.layout,
                         query.access,
                         selected,
+                        purpose,
                     )
                     .ok()?
             } else {
@@ -340,6 +354,7 @@ fn query_spec_memory_pointer(
                         authority,
                         permission,
                         PermissionAccessContext {
+                            purpose,
                             allocation: object.allocation_id,
                             envelope: object.envelope,
                             pointer: selected,

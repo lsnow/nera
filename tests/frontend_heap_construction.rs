@@ -196,7 +196,6 @@ fn aggregate_heap_profile_is_explicitly_bounded() {
         "fn main() -> u64 { let p = alloc<()>(1); return 42; }",
         "fn main() -> u64 { let p = alloc<Own<u64> >(1); return 42; }",
         "enum Item { Empty, Full(Own<u64>), } struct Box { item: Item, } fn main() -> u64 { let p = alloc<Box>(1); return 42; }",
-        "struct Box { word: u64, } fn make() -> Own<Box> { let p = alloc<Box>(1); return p; } fn main() -> u64 { return 42; }",
     ] {
         let output = analyze(&SourceFile::from_text("heap-gated.nera", source));
         assert_eq!(
@@ -207,6 +206,14 @@ fn aggregate_heap_profile_is_explicitly_bounded() {
         );
         assert!(output.vir().is_none());
     }
+    // A typed owner result is now supported. It still cannot justify reading
+    // storage that the callee never initialized.
+    let output = accepted(
+        "struct Box { word: u64, }
+        fn main() -> u64 { let p = make(); let total = p.word; free(p); return total; }
+        fn make() -> Own<Box> { let p = alloc<Box>(1); return p; }",
+    );
+    rejected(output.vir().unwrap().as_unit().clone());
 }
 
 #[test]

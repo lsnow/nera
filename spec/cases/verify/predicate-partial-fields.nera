@@ -1,0 +1,45 @@
+// A predicate exports only initialized fields, not the entire backing array.
+opaque struct Arena {
+    cursor: usize,
+    slots: [u64; 8],
+}
+predicate Ready(p: ptr<Arena>) {
+    owns(p);
+    initialized(p.cursor, 0usize..1usize);
+    initialized(p.slots, 0usize..2usize);
+    p.cursor <= 2usize;
+}
+fn main() -> u64 {
+    let a = make();
+    let b = update(a);
+    return destroy(b);
+}
+fn make() -> Own<Arena>
+ensures Ready(result);
+{
+    let p = alloc<Arena>(1);
+    p.cursor = 0usize;
+    p.slots[0] = 20;
+    p.slots[1] = 0;
+    fold Ready(p);
+    return p;
+}
+fn update(p: Own<Arena>) -> Own<Arena>
+requires Ready(p);
+ensures Ready(result);
+{
+    unfold Ready(p);
+    p.slots[1] = 22;
+    p.cursor = 2usize;
+    fold Ready(p);
+    return p;
+}
+fn destroy(p: Own<Arena>) -> u64
+requires Ready(p);
+{
+    unfold Ready(p);
+    let total = p.slots[0] + p.slots[1];
+    free(p);
+    finish Ready(p);
+    return total;
+}

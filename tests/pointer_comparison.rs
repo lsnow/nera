@@ -56,7 +56,7 @@ fn builtin_checks_types_arity_and_shadowing() {
 
 #[test]
 fn independent_parameters_do_not_gain_an_alias_or_domain_promise() {
-    let source = "fn main() -> u64 { let a = 1; return compare(&a,&a); } fn compare(a: &u64, b: &u64) -> u64 { let x = &raw *a; let y = &raw *b; if x == y { return 42; } return 0; }";
+    let source = "fn main() -> u64 { let a = 1; return compare(&a,&a); } fn compare(a: &u64, b: &u64) -> u64 { let x = &raw *a; let y = &raw *b; if x <= y { return 42; } return 0; }";
     let output = frontend_checks::accepted("parameter-alias.nera", source);
     let resolved = output.vir().unwrap().resolve().unwrap();
     let report = verify_program(&resolved, CfgAnalysisConfig::default()).unwrap();
@@ -161,7 +161,7 @@ fn canonical_paths_are_exact_bounded_and_missing_paths_do_not_prove_compatibilit
     );
     let output = frontend_checks::accepted(
         "domain-identity.nera",
-        "fn main() -> u64 { let a=alloc<u64>(1); let x=&raw *a; let y=&raw *a; let same=x==y; free(a); return 0; }",
+        "fn main() -> u64 { let a=alloc<u64>(1); let x=&raw *a; let y=&raw *a; let same=x<=y; free(a); return 0; }",
     );
     let resolved = output.vir().unwrap().resolve().unwrap();
     let instructions = &resolved.runtime().functions[0].blocks[0].instructions;
@@ -224,15 +224,15 @@ fn unsafe_relations_are_not_checked_and_fault_independently() {
             0,
         ),
         (
-            "fn main() -> u64 { let a=[1,2,3]; let s=&a[0..2]; let x=&raw a[0]; let y=&raw s[0]; let c=x==y; return 0; }",
+            "fn main() -> u64 { let a=[1,2,3]; let s=&a[0..2]; let x=&raw a[0]; let y=&raw s[0]; let c=x<=y; return 0; }",
             0,
         ),
         (
-            "fn main() -> u64 { let a = alloc<u64>(1); let b = alloc<u64>(1); let x = &raw *a; let y = &raw *b; let c = x == y; free(a); free(b); return 0; }",
+            "fn main() -> u64 { let a = alloc<u64>(1); let b = alloc<u64>(1); let x = &raw *a; let y = &raw *b; let c = x <= y; free(a); free(b); return 0; }",
             0,
         ),
         (
-            "fn main() -> u64 { let a = alloc<u64>(1); let x = &raw *a; free(a); let c = x == x; return 0; }",
+            "fn main() -> u64 { let a = alloc<u64>(1); let x = &raw *a; free(a); let c = x <= x; return 0; }",
             1,
         ),
         (
@@ -240,7 +240,7 @@ fn unsafe_relations_are_not_checked_and_fault_independently() {
             2,
         ),
         (
-            "struct Pair { a: u64, b: u64, } fn main() -> u64 { let p = Pair { a: 1, b: 2 }; let x = &raw p.a; let y = &raw p.b; let c = x + 8 == y; return 0; }",
+            "struct Pair { a: u64, b: u64, } fn main() -> u64 { let p = Pair { a: 1, b: 2 }; let x = &raw p.a; let y = &raw p.b; let c = x + 8 <= y; return 0; }",
             0,
         ),
     ] {

@@ -118,6 +118,11 @@ pub(super) fn run(
     // Roots are all concrete declarations, not just functions reachable at run time.
     for module in 0..files.len() {
         let mut ast = worker.output[module].clone();
+        for p in &mut ast.predicates {
+            for param in &mut p.parameters {
+                worker.ty(module, &mut param.ty, &Environment::new(), param.span, 0)?;
+            }
+        }
         for s in &mut ast.structs {
             for f in &mut s.fields {
                 worker.ty(module, &mut f.ty, &Environment::new(), f.span, 0)?;
@@ -381,6 +386,12 @@ impl Instantiator<'_> {
                 element: Box::new(self.semantic_type(module, element, span, depth + 1)?),
                 length: *length,
             },
+            AstType::OwnPointer { pointee } => AstType::OwnPointer {
+                pointee: Box::new(self.semantic_type(module, pointee, span, depth + 1)?),
+            },
+            AstType::RawPointer { pointee } => AstType::RawPointer {
+                pointee: Box::new(self.semantic_type(module, pointee, span, depth + 1)?),
+            },
             AstType::Reference { pointee, mutable } => AstType::Reference {
                 pointee: Box::new(self.semantic_type(module, pointee, span, depth + 1)?),
                 mutable: *mutable,
@@ -489,7 +500,9 @@ impl Instantiator<'_> {
                     self.ty(module, ty, env, span, depth + 1)?;
                 }
             }
-            AstType::Reference { pointee, .. }
+            AstType::OwnPointer { pointee }
+            | AstType::RawPointer { pointee }
+            | AstType::Reference { pointee, .. }
             | AstType::Array {
                 element: pointee, ..
             }
@@ -611,6 +624,16 @@ impl Instantiator<'_> {
                         self.block(module, &mut arm.body, env, depth + 1)?;
                     }
                 }
+                AstStatementKind::Predicate {
+                    locals, witnesses, ..
+                } => {
+                    for expression in locals {
+                        self.logical_expression(module, expression, env, depth + 1)?;
+                    }
+                    for (_, expression) in witnesses {
+                        self.logical_expression(module, expression, env, depth + 1)?;
+                    }
+                }
                 AstStatementKind::Free { .. }
                 | AstStatementKind::Break
                 | AstStatementKind::Continue => {}
@@ -641,6 +664,19 @@ impl Instantiator<'_> {
                 self.expression(module, pointer, env, depth + 1)?;
                 self.logical_expression(module, start, env, depth + 1)?;
                 self.logical_expression(module, end, env, depth + 1)
+            }
+            super::AstLogicalExpressionKind::Call { callee, arguments } => {
+                if self.templates.contains_key(&self.graph.key(module, callee)) {
+                    return Err(modules::at(
+                        module,
+                        expression.span,
+                        "generic function requires explicit type/const arguments",
+                    ));
+                }
+                for argument in arguments {
+                    self.logical_expression(module, argument, env, depth + 1)?;
+                }
+                Ok(())
             }
             super::AstLogicalExpressionKind::Value(value) => {
                 self.expression(module, value, env, depth + 1)
@@ -805,7 +841,10 @@ impl Instantiator<'_> {
                 self.expression(module, left, env, depth + 1)?;
                 self.expression(module, right, env, depth + 1)?;
             }
-            AstExpressionKind::Allocate { element_type, .. } => {
+            AstExpressionKind::NullPointer {
+                pointee: element_type,
+            }
+            | AstExpressionKind::Allocate { element_type, .. } => {
                 self.ty(module, element_type, env, span, 0)?
             }
             AstExpressionKind::Place(place)

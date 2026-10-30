@@ -1,0 +1,17 @@
+// One aggregate owns every allocation of a sealed, non-recursive predicate.
+struct PairStorage { left:Own<u64>, right:Own<u64>, }
+predicate Pair(a:ptr<u64>,b:ptr<u64>) {
+    owns(a);
+    owns(b);
+    initialized(a,0usize..1usize);
+}
+fn main()->u64 {
+    let a=alloc<u64>(1);
+    let b=alloc<u64>(1);
+    *a=42;
+    let total=*a;
+    fold Pair(a,b);
+    let storage=PairStorage { left:a, right:b };
+    let moved=storage;
+    return total;
+}

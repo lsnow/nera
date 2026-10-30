@@ -15,6 +15,7 @@ fn setup() -> (Interpreter, VirRuntimePointer) {
                 bytes: BTreeMap::new(),
                 objects: Vec::new(),
                 resource_payloads: BTreeMap::new(),
+                raw_payloads: BTreeMap::new(),
             },
         );
     }
@@ -165,4 +166,27 @@ fn empty_selected_domain_has_an_endpoint_but_no_accessible_byte() {
             .check_domain(empty, 24, 25, ByteSpan::empty())
             .is_err()
     );
+}
+
+#[test]
+fn raw_cell_shadow_is_invalidated_by_partial_byte_overwrites_and_retirement() {
+    let (mut interpreter, pointer) = setup();
+    let allocation = interpreter.allocations.get_mut(&0).unwrap();
+    let first = RuntimeResourcePayloadKey {
+        offset_bytes: 0,
+        access: pointer.access,
+    };
+    let neighbor = RuntimeResourcePayloadKey {
+        offset_bytes: 8,
+        access: pointer.access,
+    };
+    allocation.raw_payloads.insert(first, (8, pointer));
+    allocation.raw_payloads.insert(neighbor, (8, pointer));
+    // A single-byte overwrite cannot retain pointer provenance, even if all
+    // numerical bytes are later restored to the previous bit pattern.
+    allocation.write_byte(7, 0);
+    assert!(!allocation.raw_payloads.contains_key(&first));
+    assert!(allocation.raw_payloads.contains_key(&neighbor));
+    allocation.remove_byte(&8);
+    assert!(allocation.raw_payloads.is_empty());
 }

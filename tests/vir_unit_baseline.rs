@@ -176,7 +176,13 @@ fn unit_owns_all_tables_and_exposes_a_read_only_runtime_view() {
     let unit = program.as_unit();
     let runtime = program.runtime();
 
-    assert_eq!(unit.version, VirUnitVersion::V28);
+    assert_eq!(unit.version, VirUnitVersion::V54);
+    let mut old_schema = unit.clone();
+    old_schema.version = VirUnitVersion::V42;
+    assert!(matches!(
+        old_schema.validate().unwrap_err().kind(),
+        nera::VirValidationErrorKind::UnsupportedUnitVersion(VirUnitVersion::V42)
+    ));
     assert_eq!(unit.specs.len(), 1);
     assert_eq!(unit.specs.contracts()[0].function, VirFunctionId::new(0));
     assert!(!unit.source_map.sources().is_empty());
@@ -186,7 +192,7 @@ fn unit_owns_all_tables_and_exposes_a_read_only_runtime_view() {
 
     let dump = unit.stable_dump();
     let sections = [
-        "vir-unit-v28",
+        "vir-unit-v54",
         "memory {",
         "borrow-regions {",
         "runtime {",
@@ -200,7 +206,7 @@ fn unit_owns_all_tables_and_exposes_a_read_only_runtime_view() {
     assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
 
     let runtime_dump = runtime.stable_dump();
-    assert!(runtime_dump.starts_with("runtime-vir-v17\n"));
+    assert!(runtime_dump.starts_with("runtime-vir-v26\n"));
     assert!(!runtime_dump.contains("specs {"));
     assert!(!runtime_dump.contains("source-map {"));
 }
@@ -296,6 +302,32 @@ fn historical_unit_versions_fail_closed_at_the_current_schema_boundary() {
         VirUnitVersion::V25,
         VirUnitVersion::V26,
         VirUnitVersion::V27,
+        VirUnitVersion::V28,
+        VirUnitVersion::V29,
+        VirUnitVersion::V30,
+        VirUnitVersion::V31,
+        VirUnitVersion::V32,
+        VirUnitVersion::V33,
+        VirUnitVersion::V34,
+        VirUnitVersion::V35,
+        VirUnitVersion::V36,
+        VirUnitVersion::V37,
+        VirUnitVersion::V38,
+        VirUnitVersion::V39,
+        VirUnitVersion::V40,
+        VirUnitVersion::V41,
+        VirUnitVersion::V42,
+        VirUnitVersion::V43,
+        VirUnitVersion::V44,
+        VirUnitVersion::V45,
+        VirUnitVersion::V46,
+        VirUnitVersion::V47,
+        VirUnitVersion::V48,
+        VirUnitVersion::V49,
+        VirUnitVersion::V50,
+        VirUnitVersion::V51,
+        VirUnitVersion::V52,
+        VirUnitVersion::V53,
     ] {
         legacy.version = version;
         assert_eq!(

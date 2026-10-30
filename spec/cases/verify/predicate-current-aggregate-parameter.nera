@@ -1,0 +1,41 @@
+// By-value aggregate parameters retain their scalar fields in postconditions.
+struct Cell { value:u64, }
+struct Meta { count:usize, valid:bool, }
+struct Wrapper { meta:Meta, }
+predicate Ready(p:ptr<Cell>,count:usize,valid:bool) {
+    owns(p);
+    initialized(p.value,0..1);
+    count==count;
+    valid;
+}
+fn main()->u64 {
+    let p=alloc<Cell>(1);
+    p.value=42;
+    let meta=Wrapper { meta:Meta { count:7usize, valid:true } };
+    let decoy=Wrapper { meta:Meta { count:5usize, valid:false } };
+    fold Ready(p,meta.meta.count,meta.meta.valid);
+    let q=pass(p,1,meta,decoy);
+    unfold Ready(q,meta.meta.count,meta.meta.valid);
+    let outcome=q.value;
+    free(q);
+    finish Ready(q,meta.meta.count,meta.meta.valid);
+    return outcome;
+}
+fn forward(p:&mut Cell,tag:u64,meta:Wrapper,decoy:Wrapper)
+requires Ready(p,meta.meta.count,meta.meta.valid);
+ensures Ready(p,meta.meta.count,meta.meta.valid);
+{ return; }
+fn relay(p:&mut Cell,tag:u64,meta:Wrapper,decoy:Wrapper)
+requires Ready(p,meta.meta.count,meta.meta.valid);
+ensures Ready(p,meta.meta.count,meta.meta.valid);
+{
+    forward(&mut *p,tag,meta,decoy);
+    return;
+}
+fn pass(p:Own<Cell>,tag:u64,meta:Wrapper,decoy:Wrapper)->Own<Cell>
+requires Ready(p,meta.meta.count,meta.meta.valid);
+ensures Ready(result,meta.meta.count,meta.meta.valid);
+{
+    relay(&mut *p,tag,meta,decoy);
+    return p;
+}

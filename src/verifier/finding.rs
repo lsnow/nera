@@ -11,6 +11,7 @@ use crate::{
 /// proof entities may share the same function entry, result, or runtime point.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum VerifierSpecEntity {
+    PredicateAction(u32),
     Clause(VirSpecClauseId),
     Prove(VirSpecProveId),
     TrustEntry(VirTrustEntryId),
@@ -53,6 +54,24 @@ pub struct VerifierFinding {
 }
 
 impl VerifierFinding {
+    pub(super) fn predicate_action(unit: &ResolvedVirUnit<'_>, id: u32) -> Option<Self> {
+        let action = unit.as_unit().specs.predicate_actions().get(id as usize)?;
+        let source = unit
+            .as_unit()
+            .source_map
+            .source_span_for_origin(action.origin)?;
+        Some(Self {
+            site: VerifierFindingSite::Spec {
+                location: VirSpecLocation::Runtime(action.location),
+                entity: VerifierSpecEntity::PredicateAction(id),
+                occurrence: None,
+            },
+            origin: action.origin,
+            source: source.source,
+            source_span: source.span,
+        })
+    }
+
     pub(super) fn loop_invariant(
         unit: &ResolvedVirUnit<'_>,
         invariant: &crate::VirSpecLoopInvariant,

@@ -268,6 +268,19 @@ impl<'environment> TransferBuilder<'environment> {
         let destination = pointer_fact(&self.state, destination_id)?;
         let value = pointer_fact(&self.state, value_id)?;
         let value_permission = permission_fact(&self.state, value_permission_id)?;
+        let sealed = if matches!(
+            resource,
+            StorableResource::Own { .. }
+                | StorableResource::Reference {
+                    kind: crate::VirLoanKind::Mutable,
+                    ..
+                }
+        ) {
+            self.state
+                .predicate_carrier_to_store(value_permission_id, value)
+        } else {
+            None
+        };
 
         self.require(
             ResourceObligationKind::PointerMemoryAccessMatches {
@@ -283,7 +296,8 @@ impl<'environment> TransferBuilder<'environment> {
                     value_id,
                     value_permission_id,
                     value,
-                    value_permission,
+                    sealed.map_or(value_permission, |(_, permission)| permission),
+                    sealed.is_some(),
                 );
                 None
             }
@@ -291,7 +305,7 @@ impl<'environment> TransferBuilder<'environment> {
                 let (loan, status) = permission_loan_access_status(
                     &self.state,
                     value_permission_id,
-                    value_permission,
+                    sealed.map_or(value_permission, |(_, permission)| permission),
                     LoanAccess::bytes(
                         value,
                         self.memory
@@ -349,6 +363,28 @@ impl<'environment> TransferBuilder<'environment> {
                 } else {
                     PermissionAuthority::Unknown
                 });
+            let permission = if sealed.is_some() {
+                value_permission
+            } else {
+                permission
+            };
+            if let Some((holder, _)) = sealed {
+                let valid = self.obligations.iter().all(|o| o.is_proven())
+                    && self
+                        .state
+                        .store_predicate_carrier(value_permission_id, allocation_id, key);
+                self.require(
+                    ResourceObligationKind::PredicateBoundaryRestored {
+                        holder: holder.0,
+                        function_exit: false,
+                    },
+                    if valid {
+                        ObligationStatus::Proven
+                    } else {
+                        ObligationStatus::Unknown
+                    },
+                );
+            }
             if let Some(allocation) = self.state.allocation_mut(allocation_id) {
                 let _ = allocation.set_resource_payload(
                     key,
@@ -469,7 +505,14 @@ impl<'environment> TransferBuilder<'environment> {
                 },
                 status,
             );
-            if let (Some(loan_id), Some(allocation), Some(key)) = (loan_id, allocation_id, key)
+            // A sealed payload is moved atomically by take_predicate_carrier
+            // below; moving only its loan first would invalidate the token.
+            if permission.availability() == PermissionAvailability::Consumed {
+                if !status.is_proven() {
+                    permission = permission.with_authority(PermissionAuthority::Unknown);
+                }
+            } else if let (Some(loan_id), Some(allocation), Some(key)) =
+                (loan_id, allocation_id, key)
                 && let Some(loan) = self.state.loan_mut(loan_id)
             {
                 if status.is_proven()
@@ -483,6 +526,31 @@ impl<'environment> TransferBuilder<'environment> {
             } else {
                 permission = permission.with_authority(PermissionAuthority::Unknown);
             }
+        }
+        if permission.availability() == PermissionAvailability::Consumed {
+            let restored = self.obligations.iter().all(|o| o.is_proven())
+                && allocation_id.zip(key).is_some_and(|(allocation, key)| {
+                    self.state
+                        .take_predicate_carrier(
+                            allocation,
+                            key,
+                            TypedResourcePayload::new(pointer, permission),
+                            permission_result.id,
+                        )
+                        .is_ok_and(|found| found)
+                });
+            self.require(
+                ResourceObligationKind::ResourcePayloadAvailable {
+                    allocation: allocation_id,
+                    offset_bytes: offset,
+                    access,
+                },
+                if restored {
+                    ObligationStatus::Proven
+                } else {
+                    ObligationStatus::Unknown
+                },
+            );
         }
         self.define(pointer_result, AbstractValue::Pointer(pointer))?;
         self.define(permission_result, AbstractValue::Permission(permission))?;
@@ -512,6 +580,7 @@ impl<'environment> TransferBuilder<'environment> {
         permission_id: VirValueId,
         pointer: AbstractPointer,
         permission: AbstractPermission,
+        sealed: bool,
     ) {
         self.require(
             ResourceObligationKind::PointerProvenanceKnown {
@@ -525,12 +594,16 @@ impl<'environment> TransferBuilder<'environment> {
             },
             base_pointer_status(pointer.offset_bytes()),
         );
-        self.require(
-            ResourceObligationKind::PermissionAvailable {
-                permission: permission_id,
-            },
-            permission_availability_status(permission.availability()),
-        );
+        // A sealed token can move into storage, but is not available for access.
+        // The caller validates and transfers it with PredicateBoundaryRestored.
+        if !sealed {
+            self.require(
+                ResourceObligationKind::PermissionAvailable {
+                    permission: permission_id,
+                },
+                permission_availability_status(permission.availability()),
+            );
+        }
         self.require(
             ResourceObligationKind::PermissionCanFree {
                 permission: permission_id,
@@ -773,6 +846,10 @@ impl<'environment> TransferBuilder<'environment> {
     ) {
         let base = object.pointer.offset_bytes().exact_value();
         for leaf in &mask.possible_resource_leaves {
+            // Raw links contain addresses, never linear resource payloads.
+            if leaf.kind() == VirPointerKind::Raw {
+                continue;
+            }
             let offset = base.and_then(|base| base.checked_add(leaf.bytes().start_bytes()));
             let state = object
                 .allocation
@@ -899,6 +976,16 @@ impl<'environment> TransferBuilder<'environment> {
             })
             .collect::<Vec<_>>();
         for (leaf, source_key, destination_key, payload) in &payloads {
+            if source_mode == VirObjectSourceMode::Move
+                && self.obligations.iter().all(|o| o.is_proven())
+            {
+                self.state.move_stored_predicate_carrier(
+                    source_id,
+                    *source_key,
+                    destination_id,
+                    *destination_key,
+                );
+            }
             if leaf.kind() != VirPointerKind::Reference {
                 continue;
             }
@@ -1026,8 +1113,30 @@ impl<'environment> TransferBuilder<'environment> {
             Some(true) => {}
             Some(false) | None => return Ok(()),
         }
+        let before = self.state.clone();
+        let first = self.obligations.len();
         let object =
             self.object_access_facts(pointer_id, permission_id, access, AccessPermission::Write)?;
+        let Some(plan) = self.memory.object_drop_plan(access) else {
+            self.require(
+                ResourceObligationKind::ObjectBuiltinDroppable { access },
+                ObligationStatus::Unknown,
+            );
+            return Ok(());
+        };
+        let result = self.object_drop_contents(object, &plan);
+        if result.is_err() || self.obligations[first..].iter().any(|o| !o.is_proven()) {
+            self.state = before;
+        }
+        result
+    }
+
+    fn object_drop_contents(
+        &mut self,
+        object: ObjectAccessFacts,
+        plan: &crate::vir::ObjectDropPlan,
+    ) -> Result<(), TransferError> {
+        let access = plan.access;
         let mask = active_object_mask(&object);
         self.require(
             ResourceObligationKind::ObjectBuiltinDroppable { access },
@@ -1074,8 +1183,72 @@ impl<'environment> TransferBuilder<'environment> {
         }
 
         let base = object.pointer.offset_bytes().exact_value();
+        let drop_scope = mask
+            .guaranteed_resource_leaves
+            .iter()
+            .filter(|leaf| leaf.kind() != VirPointerKind::Raw)
+            .filter_map(|leaf| {
+                Some((
+                    object.allocation_id?,
+                    ResourcePayloadKey::new(
+                        base?.checked_add(leaf.bytes().start_bytes())?,
+                        leaf.access(),
+                    ),
+                ))
+            })
+            .collect::<BTreeSet<_>>();
+        // Admit every sealed member against the pre-destruction representation.
+        // Cleaning a child's fields must not invalidate a sibling's admission.
+        let admissions = mask
+            .possible_resource_leaves
+            .iter()
+            .map(|leaf| {
+                let offset = base.and_then(|base| base.checked_add(leaf.bytes().start_bytes()));
+                let state = object
+                    .allocation
+                    .as_ref()
+                    .zip(offset)
+                    .map(|(allocation, offset)| {
+                        allocation.resource_payload(ResourcePayloadKey::new(offset, leaf.access()))
+                    })
+                    .unwrap_or(MovePathState::Unknown);
+                let guaranteed = mask
+                    .guaranteed_resource_leaves
+                    .iter()
+                    .any(|candidate| candidate == leaf);
+                match (&state, leaf.kind(), object.allocation_id.zip(offset)) {
+                    (
+                        MovePathState::Available(payload),
+                        VirPointerKind::Own,
+                        Some((storage, offset)),
+                    ) if guaranteed => self.state.predicate_owner_to_drop(
+                        storage,
+                        ResourcePayloadKey::new(offset, leaf.access()),
+                        payload,
+                        &drop_scope,
+                    ),
+                    (
+                        MovePathState::Available(payload),
+                        VirPointerKind::Reference,
+                        Some((storage, offset)),
+                    ) if guaranteed => self
+                        .state
+                        .predicate_borrowed_to_drop(
+                            storage,
+                            ResourcePayloadKey::new(offset, leaf.access()),
+                            payload,
+                            &drop_scope,
+                        )
+                        .map(|holder| (holder, **payload)),
+                    _ => None,
+                }
+            })
+            .collect::<Vec<_>>();
         let mut dropped = Vec::new();
-        for leaf in &mask.possible_resource_leaves {
+        for (leaf_index, leaf) in mask.possible_resource_leaves.iter().enumerate() {
+            if leaf.kind() == VirPointerKind::Raw {
+                continue;
+            }
             let offset = base.and_then(|base| base.checked_add(leaf.bytes().start_bytes()));
             let state = object
                 .allocation
@@ -1089,10 +1262,89 @@ impl<'environment> TransferBuilder<'environment> {
                 .guaranteed_resource_leaves
                 .iter()
                 .any(|candidate| candidate == leaf);
+            let sealed_drop = admissions[leaf_index];
             let status = match state {
                 MovePathState::Available(ref payload) if guaranteed => match leaf.kind() {
-                    VirPointerKind::Own => object_drop_payload_status(&self.state, payload),
+                    VirPointerKind::Own => {
+                        let owned = sealed_drop.as_ref().map_or(payload.as_ref(), |(_, p)| p);
+                        if let Some(child) = plan.child(leaf.bytes().start_bytes(), leaf.access()) {
+                            let permission = owned.permission();
+                            let pointer = owned.pointer();
+                            let id = match pointer.provenance() {
+                                AbstractProvenance::Known(id) => Some(id),
+                                _ => None,
+                            };
+                            let valid = combine_statuses([
+                                object_drop_owner_status(&self.state, owned),
+                                memory_access_status(pointer.memory_access(), child.access),
+                                if permission.authority() == PermissionAuthority::Owner
+                                    && permission.access() == AccessPermission::Write
+                                {
+                                    ObligationStatus::Proven
+                                } else {
+                                    ObligationStatus::Refuted
+                                },
+                                if self.state.loans().values().any(|l| {
+                                    l.activity() != LoanActivity::Ended
+                                        && (l.provenance() == pointer.provenance()
+                                            || l.provenance() == AbstractProvenance::Unknown)
+                                }) {
+                                    ObligationStatus::Refuted
+                                } else {
+                                    ObligationStatus::Proven
+                                },
+                            ]);
+                            if valid.is_proven() {
+                                let allocation =
+                                    id.and_then(|id| self.state.allocation(id).cloned());
+                                let fits = allocation.as_ref().is_some_and(|a| {
+                                    a.size_bytes() >= child.shape.size_bytes()
+                                        && object_alignment_status(
+                                            pointer,
+                                            a,
+                                            child.shape.alignment(),
+                                        )
+                                        .is_proven()
+                                });
+                                if fits {
+                                    self.object_drop_contents(
+                                        ObjectAccessFacts {
+                                            pointer,
+                                            allocation_id: id,
+                                            allocation,
+                                            envelope: access_envelope(
+                                                pointer.offset_bytes(),
+                                                child.shape.size_bytes(),
+                                            ),
+                                            shape: child.shape.clone(),
+                                        },
+                                        child,
+                                    )?;
+                                    object_drop_payload_status(&self.state, owned)
+                                } else {
+                                    ObligationStatus::Unknown
+                                }
+                            } else {
+                                valid
+                            }
+                        } else {
+                            object_drop_payload_status(&self.state, owned)
+                        }
+                    }
                     VirPointerKind::Reference => {
+                        if payload.permission().availability() == PermissionAvailability::Consumed
+                            && sealed_drop.is_none()
+                        {
+                            self.require(
+                                ResourceObligationKind::ObjectDropPayloadValid {
+                                    allocation: object.allocation_id,
+                                    offset_bytes: offset,
+                                    access: leaf.access(),
+                                },
+                                ObligationStatus::Unknown,
+                            );
+                            continue;
+                        }
                         let PermissionAuthority::Loan(loan_id) = payload.permission().authority()
                         else {
                             self.require(
@@ -1155,11 +1407,24 @@ impl<'environment> TransferBuilder<'environment> {
                     leaf.kind(),
                     payload,
                     status,
+                    sealed_drop.map(|(holder, _)| holder),
                 ));
             }
         }
 
-        for (owner, key, kind, payload, status) in dropped {
+        // A sealed group is one destruction transaction. Do not free its first
+        // field if another field or an object-level obligation has failed.
+        if dropped.iter().any(|(_, _, _, payload, _, _)| {
+            payload.permission().availability() == PermissionAvailability::Consumed
+        }) && !self.obligations.iter().all(|o| o.is_proven())
+        {
+            return Ok(());
+        }
+        let predicates = dropped
+            .iter()
+            .filter_map(|(_, _, _, _, _, p)| *p)
+            .collect::<BTreeSet<_>>();
+        for (owner, key, kind, payload, status, _) in dropped {
             if status.is_proven() {
                 match kind {
                     VirPointerKind::Own => {
@@ -1183,6 +1448,19 @@ impl<'environment> TransferBuilder<'environment> {
                 }
             }
         }
+        // Retire the group only after every actual allocation and storage leaf
+        // has been released by the ordinary runtime operation.
+        for holder in predicates {
+            let progressed = self.state.advance_dropped_predicate(holder);
+            self.require(
+                ResourceObligationKind::PredicateCleanupPreserved { holder: holder.0 },
+                if progressed {
+                    ObligationStatus::Proven
+                } else {
+                    ObligationStatus::Unknown
+                },
+            );
+        }
         self.apply_object_deinitialize(&object, &mask)
     }
 
@@ -1193,7 +1471,36 @@ impl<'environment> TransferBuilder<'environment> {
         condition_id: VirValueId,
     ) -> Result<(), TransferError> {
         match self.require_drop_flag(condition_id)? {
-            Some(true) => self.free(pointer_id, permission_id),
+            Some(true) => {
+                let pointer = pointer_fact(&self.state, pointer_id)?;
+                let permission = permission_fact(&self.state, permission_id)?;
+                let Some((holder, available)) =
+                    self.state
+                        .predicate_ssa_owner_to_drop(permission_id, pointer, permission)
+                else {
+                    return self.free(pointer_id, permission_id);
+                };
+                let before = self.state.clone();
+                let first = self.obligations.len();
+                *self.state.value_mut(permission_id).unwrap() =
+                    AbstractValue::Permission(available);
+                let result = self.free(pointer_id, permission_id);
+                if result.is_ok() && self.obligations[first..].iter().all(|o| o.is_proven()) {
+                    let progressed = self.state.advance_dropped_predicate(holder);
+                    self.require(
+                        ResourceObligationKind::PredicateCleanupPreserved { holder: holder.0 },
+                        if progressed {
+                            ObligationStatus::Proven
+                        } else {
+                            ObligationStatus::Unknown
+                        },
+                    );
+                }
+                if result.is_err() || self.obligations[first..].iter().any(|o| !o.is_proven()) {
+                    self.state = before;
+                }
+                result
+            }
             Some(false) | None => Ok(()),
         }
     }

@@ -1,0 +1,32 @@
+// Distributive forms join only after actual capture sources are aligned.
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>,choice:bool) {
+    owns(p);
+    initialized(p.value,0..1);
+    p.value<=42;
+}
+fn main()->u64 { return choose(true,false,true,false,true); }
+fn forward(p:&mut Cell,a:bool,b:bool,c:bool)
+requires Ready(p,a&&(b||c));
+ensures Ready(p,a&&(b||c));
+{     return;
+}
+fn choose(first:bool,second:bool,third:bool,other:bool,which:bool)->u64 {
+    let p=alloc<Cell>(1);
+    p.value=42;
+    let mut a=first;
+    let b=second;
+    let c=third;
+    if which {
+        fold Ready(p,(a&&b)||(a&&c));
+    } else {
+        a=other;
+        fold Ready(p,a&&(b||c));
+    }
+    forward(&mut *p,a,b,c);
+    unfold Ready(p,(a&&c)||(a&&b));
+    let outcome=p.value;
+    free(p);
+    finish Ready(p,a&&(b||c));
+    return outcome;
+}

@@ -263,6 +263,7 @@ impl ResourceContract {
         let values = SnapshotValues::Bound {
             state,
             snapshots: &snapshots,
+            booleans: None,
         };
         let mut budget = VcQueryBudget::new(VcLimits::default());
         budget.relation_limits = config.relation_limits;

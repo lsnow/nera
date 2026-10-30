@@ -1,0 +1,42 @@
+// Calls hide concrete witnesses. Different call counts must not make the
+// bound names of otherwise identical closed packages prevent a CFG join.
+struct Cell { value:u64, }
+predicate Ready(p:ptr<Cell>) {
+    exists used:usize = 0usize;
+    owns(p);
+    initialized(p.value,0..1);
+    p.value<=42;
+    used<=7usize;
+}
+fn main()->u64 {
+    let p=alloc<Cell>(1);
+    p.value=0;
+    fold Ready(p);
+    let q=choose(p,true);
+    unfold Ready(q);
+    let outcome=q.value;
+    free(q);
+    finish Ready(q);
+    return outcome;
+}
+fn refresh(p:Own<Cell>)->Own<Cell>
+requires Ready(p);
+ensures Ready(result);
+{
+    unfold Ready(p);
+    p.value=42;
+    fold Ready(p) with (used=3usize);
+    return p;
+}
+fn choose(p:Own<Cell>,which:bool)->Own<Cell>
+requires Ready(p);
+ensures Ready(result);
+{
+    let mut current=p;
+    if which {
+        current=refresh(current);
+    } else {
+        current=refresh(refresh(current));
+    }
+    return current;
+}

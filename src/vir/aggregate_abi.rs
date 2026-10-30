@@ -146,6 +146,23 @@ impl VirAbiBinding {
         self.interface
     }
 
+    /// By-value resource aggregates use a caller-owned argument buffer. Even
+    /// a Copy aggregate of shared references contains loan authorities owned
+    /// by that copy; the callee must transfer or end them before returning the
+    /// empty buffer. Copy describes construction of the argument, not reuse of
+    /// its contents after the call.
+    pub(crate) fn consumes_indirect_contents(&self, memory: &VirMemorySchema) -> bool {
+        let VirAbiValue::IndirectAggregate { access } = self.value else {
+            return false;
+        };
+        self.interface.transfer == VirInterfaceTransfer::Move
+            || memory.object_shape(access).is_ok_and(|shape| {
+                shape.resource_leaves().iter().any(|leaf| {
+                    matches!(leaf.kind(), VirPointerKind::Own | VirPointerKind::Reference)
+                })
+            })
+    }
+
     #[must_use]
     pub fn parameter_slots(&self) -> &[u32] {
         &self.parameter_slots
@@ -347,14 +364,18 @@ impl VirAbiSignature {
         &self.borrow_result_alternatives
     }
 
+    /// Logical direct-reference candidates only; field sources carry their own
+    /// stored authorities and must not enter direct-parameter loan algorithms.
     #[must_use]
     pub fn borrow_result_parameters(&self) -> BTreeSet<usize> {
         self.borrow_result
             .iter()
+            .filter(|relation| relation.parameter_field.is_none())
             .map(|relation| relation.parameter as usize)
             .chain(
                 self.borrow_result_alternatives
                     .iter()
+                    .filter(|alternative| alternative.relation.parameter_field.is_none())
                     .map(|alternative| alternative.relation.parameter as usize),
             )
             .collect()
@@ -375,10 +396,11 @@ impl VirAbiSignature {
         &self.physical
     }
 
-    /// Compatibility accessor for the canonical logical relation. Consumers
-    /// never rediscover a source by counting parameters or comparing types.
+    /// Direct-reference compatibility accessor. A field source is not its
+    /// aggregate storage permission; use the canonical source plan for fields.
     pub fn borrow_result_parameter(&self) -> Option<usize> {
         self.borrow_result
+            .filter(|relation| relation.parameter_field.is_none())
             .map(|relation| relation.parameter as usize)
     }
 
@@ -484,7 +506,13 @@ impl VirAbiEnvironment {
                 .find(|function| function.id == entry.function)
                 .ok_or_else(|| abi_error(VirAbiErrorKind::FunctionTableMismatch))?;
             entry.signature.validate(memory)?;
-            if !super::borrow_interface::preserves_returned_view(function, &entry.signature) {
+            if !super::borrow_interface::preserves_closed_returned_view(
+                function,
+                &entry.signature,
+                memory,
+                functions,
+                self,
+            ) {
                 return Err(abi_error(VirAbiErrorKind::NonCanonicalSlotMap));
             }
             if entry.signature.physical() != &function.signature {
@@ -519,6 +547,18 @@ fn classify_value(
                 ty: VirType::U64,
             })
         }
+        VirMemoryTypeKind::Pointer {
+            pointee,
+            kind: VirPointerKind::Raw,
+            ..
+        } => Ok(VirAbiValue::Scalar {
+            access,
+            ty: VirType::Pointer {
+                access: memory
+                    .access(*pointee)
+                    .ok_or_else(|| abi_error(VirAbiErrorKind::InvalidAccess(access)))?,
+            },
+        }),
         VirMemoryTypeKind::Pointer { pointee, .. } => Ok(VirAbiValue::Pointer {
             access,
             pointee: memory
@@ -549,11 +589,15 @@ fn classify_aggregate(
         .type_capabilities(access.ty)
         .ok_or_else(|| abi_error(VirAbiErrorKind::InvalidAccess(access)))?;
     let pointer_free = capabilities.pointer_free_trivial();
-    let owning = capabilities.value == ValueCapability::MoveOnly
-        && capabilities.drop == crate::DropCapability::BuiltinDrop
-        && capabilities.contains_resource
+    let resource_bearing = matches!(
+        capabilities.value,
+        ValueCapability::MoveOnly | ValueCapability::Copy
+    ) && matches!(
+        capabilities.drop,
+        crate::DropCapability::TrivialDrop | crate::DropCapability::BuiltinDrop
+    ) && capabilities.contains_resource
         && capabilities.size == crate::SizeCapability::Sized;
-    if !pointer_free && !owning {
+    if !pointer_free && !resource_bearing {
         return Err(abi_error(VirAbiErrorKind::OwnershipBearingAggregate(
             access,
         )));
@@ -568,13 +612,21 @@ fn classify_aggregate(
     // is the stable carrier for the typed resource payload across the call.
     // Variant-dependent payload transfer needs a conditional interface
     // summary and therefore remains fail-closed until that summary exists.
-    if owning {
+    if resource_bearing {
         if !shape.variants().is_empty()
             || shape.resource_leaves().is_empty()
-            || !shape
+            || !shape.resource_leaves().iter().all(|leaf| {
+                matches!(
+                    memory.kind(leaf.access().ty),
+                    Some(VirMemoryTypeKind::Pointer { .. })
+                )
+            })
+            || shape
                 .resource_leaves()
                 .iter()
-                .all(|leaf| leaf.kind() == VirPointerKind::Own)
+                .filter(|leaf| leaf.kind() == VirPointerKind::Reference)
+                .count()
+                > 256
         {
             return Err(abi_error(VirAbiErrorKind::OwnershipBearingAggregate(
                 access,
@@ -717,7 +769,7 @@ fn build_signature(
                 &result.value,
                 relation,
             )
-            || input.interface != result.interface
+            || (relation.parameter_field.is_none() && input.interface != result.interface)
             || result.interface.transfer != transfer
             || results
                 .iter()
@@ -760,7 +812,7 @@ fn build_signature(
                 &result.value,
                 relation,
             )
-            || input.interface != result.interface
+            || (relation.parameter_field.is_none() && input.interface != result.interface)
             || result.interface.transfer != transfer
         {
             return Err(abi_error(VirAbiErrorKind::InvalidBorrowResult));
@@ -781,7 +833,11 @@ fn build_signature(
         }
     }
     let escaping_mutable = borrow_result
-        .filter(|r| r.access == BorrowAccess::Mutable && r.projection == BorrowProjection::Whole)
+        .filter(|r| {
+            r.parameter_field.is_none()
+                && r.access == BorrowAccess::Mutable
+                && r.projection == BorrowProjection::Whole
+        })
         .map(|r| r.parameter as usize);
     for (index, binding) in parameters.iter_mut().enumerate() {
         if escaping_mutable == Some(index) {
@@ -827,6 +883,22 @@ fn borrow_projection_compatible(
     result: &VirAbiValue,
     relation: BorrowResultRelation,
 ) -> bool {
+    // Field sources have a separate canonical plan; direct-parameter
+    // consumers must never silently reinterpret them as ordinary borrows.
+    if relation.parameter_field.is_some() {
+        let Some(parameters) = parameters
+            .iter()
+            .map(|b| b.value().access())
+            .collect::<Option<Vec<_>>>()
+        else {
+            return false;
+        };
+        let Some(result) = result.access() else {
+            return false;
+        };
+        return super::plan_parameter_field_result(memory, &parameters, &[result], relation)
+            .is_some();
+    }
     match relation.projection {
         BorrowProjection::Whole => borrow_values_compatible(input, result),
         BorrowProjection::Fixed {
@@ -856,6 +928,46 @@ fn borrow_projection_compatible(
                     .checked_add(size_bytes)
                     .is_some_and(|end| end <= input_layout.size_bytes)
                 && memory.object_shape(*result).is_ok_and(|shape| {
+                    shape.resource_leaves().is_empty() && shape.variants().is_empty()
+                })
+        }
+        BorrowProjection::ArraySlice {
+            offset_bytes,
+            length,
+            start,
+            end,
+            stride_bytes,
+        } => {
+            let (VirAbiValue::Pointer { pointee: input, .. }, VirAbiValue::Slice { element, .. }) =
+                (input, result)
+            else {
+                return false;
+            };
+            let (Some(input_layout), Some(element_layout)) =
+                (memory.layout(input.layout), memory.layout(element.layout))
+            else {
+                return false;
+            };
+            u64::from(stride_bytes) == element_layout.size_bytes
+                && element_layout.alignment.is_power_of_two()
+                && u64::from(offset_bytes) % element_layout.alignment == 0
+                && u64::from(length)
+                    .checked_mul(u64::from(stride_bytes))
+                    .and_then(|n| u64::from(offset_bytes).checked_add(n))
+                    .is_some_and(|end| end <= input_layout.size_bytes)
+                && ((end == crate::BorrowSliceBound::ReturnedLength
+                    && (start == crate::BorrowSliceBound::ReturnedOffset
+                        || (matches!(
+                            start,
+                            crate::BorrowSliceBound::Constant(_)
+                                | crate::BorrowSliceBound::Parameter(_)
+                        ) && borrow_bound_compatible(parameters, relation.parameter, start))))
+                    || [start, end].iter().all(|b| {
+                        *b == crate::BorrowSliceBound::SourceLength
+                            || borrow_bound_compatible(parameters, relation.parameter, *b)
+                    }))
+                && !matches!((start, end), (crate::BorrowSliceBound::Constant(a), crate::BorrowSliceBound::Constant(b)) if a > b)
+                && memory.object_shape(*element).is_ok_and(|shape| {
                     shape.resource_leaves().is_empty() && shape.variants().is_empty()
                 })
         }
@@ -897,6 +1009,7 @@ fn borrow_bound_compatible(
     bound: crate::BorrowSliceBound,
 ) -> bool {
     match bound {
+        crate::BorrowSliceBound::ReturnedLength | crate::BorrowSliceBound::ReturnedOffset => false,
         crate::BorrowSliceBound::Constant(_) => true,
         crate::BorrowSliceBound::Parameter(parameter) => matches!(
             parameters.get(parameter as usize).map(VirAbiBinding::value),
@@ -1007,6 +1120,18 @@ fn append_parameter_slots(
             .map(|leaf| append_slot(output, leaf.ty))
             .collect(),
     }
+}
+
+/// Canonical parameter slots shared by source plans and callable signatures.
+pub(crate) fn plan_reference_parameter_slots(
+    memory: &VirMemorySchema,
+    accesses: &[VirMemoryAccess],
+) -> Result<Vec<Vec<u32>>, VirAbiError> {
+    let mut physical = Vec::new();
+    accesses
+        .iter()
+        .map(|access| append_parameter_slots(&classify_value(memory, *access)?, &mut physical))
+        .collect()
 }
 
 fn append_result_slots(
@@ -1124,20 +1249,24 @@ mod tests {
         }
         // This checks value origin only, not linear authority conservation.
         assert!(super::super::borrow_interface::preserves_returned_view(
-            &function, &abi
+            &function,
+            &abi,
+            &unit.memory
         ));
         let mut wrong_source = abi.clone();
         wrong_source.borrow_result.as_mut().unwrap().parameter = 0;
         wrong_source.validate(&unit.memory).unwrap(); // Same shapes/slots.
         assert!(!super::super::borrow_interface::preserves_returned_view(
             &function,
-            &wrong_source
+            &wrong_source,
+            &unit.memory
         ));
         let mut missing_source = abi.clone();
         missing_source.borrow_result = None;
         assert!(!super::super::borrow_interface::preserves_returned_view(
             &function,
-            &missing_source
+            &missing_source,
+            &unit.memory
         ));
         let mut wrong_slot = abi.clone();
         wrong_slot.results[0].result_slots.swap(0, 1);
@@ -1201,7 +1330,9 @@ mod tests {
         deleted.borrow_result_alternatives.pop();
         deleted.validate(&unit.memory).unwrap();
         assert!(!super::super::borrow_interface::preserves_returned_view(
-            function, &deleted
+            function,
+            &deleted,
+            &unit.memory
         ));
     }
 }

@@ -11,6 +11,13 @@ pub(super) struct SignatureDraft {
 }
 
 impl SignatureDraft {
+    pub(super) fn value_result_type(&self) -> Option<HirTypeId> {
+        match self.result {
+            PendingResult::Value(ty) => Some(ty),
+            _ => None,
+        }
+    }
+
     pub(super) fn parameter_type(&self, index: u32) -> Option<HirTypeId> {
         self.parameters.get(index as usize).copied()
     }
@@ -70,7 +77,16 @@ impl Elaborator {
                 candidates: parameters
                     .iter()
                     .enumerate()
-                    .filter_map(|(index, ty)| self.reference_region(*ty).map(|_| index as u32))
+                    .filter_map(|(index, ty)| {
+                        (self.reference_region(*ty).is_some()
+                            || super::regions::parameter_reference_types(
+                                &self.types,
+                                &self.fields,
+                                *ty,
+                            )
+                            .is_some_and(|fields| !fields.is_empty()))
+                        .then_some(index as u32)
+                    })
                     .collect(),
             },
             other => PendingResult::Value(self.signature_type(other, function.span)?),
@@ -127,7 +143,12 @@ impl Elaborator {
                                 "returned reference source is not a direct reference parameter",
                             ));
                         }
-                        let parameter = draft.parameters[index as usize];
+                        let parameter = self.borrow_source_type(
+                            draft.owner,
+                            &draft.parameters,
+                            relation,
+                            function.span,
+                        )?;
                         let access = if mutable {
                             crate::BorrowAccess::Mutable
                         } else {
@@ -200,16 +221,12 @@ impl Elaborator {
                     }
                     super::borrow_inference::InferredBorrowSource::Conditional(alternatives) => {
                         for alternative in &alternatives {
-                            let parameter = draft
-                                .parameters
-                                .get(alternative.relation.parameter as usize)
-                                .copied()
-                                .ok_or_else(|| {
-                                    FrontendFailure::unsupported(
-                                        function.span,
-                                        "conditional returned reference source is not a parameter",
-                                    )
-                                })?;
+                            let parameter = self.borrow_source_type(
+                                draft.owner,
+                                &draft.parameters,
+                                alternative.relation,
+                                function.span,
+                            )?;
                             if !matches!(self.types[parameter.index()].kind, HirTypeKind::Reference { pointee, mutability, .. } if pointee == expected && (mutability == HirMutability::Mutable) == mutable)
                             {
                                 return Err(FrontendFailure::unsupported(
@@ -228,19 +245,24 @@ impl Elaborator {
                             origin: HirRegionOrigin::Result,
                             span: function.span,
                         });
-                        for source in alternatives
-                            .iter()
-                            .map(|a| a.relation.parameter)
-                            .collect::<BTreeSet<_>>()
-                        {
-                            let superregion = self
-                                .reference_region(draft.parameters[source as usize])
-                                .ok_or_else(|| {
+                        let mut source_regions = BTreeSet::new();
+                        for alternative in &alternatives {
+                            let source = self.borrow_source_type(
+                                draft.owner,
+                                &draft.parameters,
+                                alternative.relation,
+                                function.span,
+                            )?;
+                            source_regions.insert(self.reference_region(source).ok_or_else(
+                                || {
                                     FrontendFailure::unsupported(
                                         function.span,
                                         "conditional borrow source is not a reference",
                                     )
-                                })?;
+                                },
+                            )?);
+                        }
+                        for superregion in source_regions {
                             self.region_constraints.push(HirRegionConstraint { id: HirRegionConstraintId::new(self.region_constraints.len() as u32), owner: draft.owner, subregion: region, superregion, span: function.span });
                         }
                         let result = self.intern_reference_type(
@@ -259,6 +281,58 @@ impl Elaborator {
             }
         };
         Ok((draft.parameters, result, relation, alternatives))
+    }
+
+    /// Resolve the function-owned binder for the precise inline reference leaf.
+    /// Nominal AggregateErased regions cannot identify a parameter occurrence.
+    pub(super) fn borrow_source_type(
+        &mut self,
+        owner: HirFunctionId,
+        parameters: &[HirTypeId],
+        relation: crate::BorrowResultRelation,
+        span: ByteSpan,
+    ) -> Result<HirTypeId, FrontendFailure> {
+        let invalid = || {
+            FrontendFailure::unsupported(
+                span,
+                "returned reference source is not a supported parameter reference leaf",
+            )
+        };
+        let parameter = *parameters
+            .get(relation.parameter as usize)
+            .ok_or_else(invalid)?;
+        let Some(field) = relation.parameter_field else {
+            return Ok(parameter);
+        };
+        if relation.projection != crate::BorrowProjection::Whole {
+            return Err(invalid());
+        }
+        let fields =
+            super::regions::parameter_reference_types(&self.types, &self.fields, parameter)
+                .ok_or_else(invalid)?;
+        let ty = fields.get(field as usize).ok_or_else(invalid)?.0;
+        let HirTypeKind::Reference {
+            pointee,
+            mutability,
+            ..
+        } = self.types[ty.index()].kind
+        else {
+            return Err(invalid());
+        };
+        let region = self
+            .regions
+            .iter()
+            .find(|r| {
+                r.owner == HirRegionOwner::Function(owner)
+                    && r.origin
+                        == HirRegionOrigin::ParameterField {
+                            index: relation.parameter,
+                            slot: field,
+                        }
+            })
+            .map(|r| r.id)
+            .ok_or_else(invalid)?;
+        self.intern_reference_type(pointee, mutability, region, span)
     }
 
     pub(super) fn reference_region(&self, ty: HirTypeId) -> Option<HirRegionId> {

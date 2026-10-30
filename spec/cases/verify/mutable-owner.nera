@@ -1,0 +1,16 @@
+struct Slot { value:Own<u64>, }
+
+fn main()->u64 {
+    let first=alloc<u64>(1);
+    *first=1;
+    let mut current=alloc<Slot>(1);
+    current.value=first;
+    let second=alloc<u64>(1);
+    *second=42;
+    let replacement=alloc<Slot>(1);
+    replacement.value=second;
+    current=replacement;
+    current=current;
+    let answer=current.value;
+    return *answer;
+}

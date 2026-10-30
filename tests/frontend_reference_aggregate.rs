@@ -63,7 +63,10 @@ fn shared_reference_struct_copy_tracks_each_stored_alias() {
         .collect::<Vec<_>>();
     assert!(instructions.iter().any(|instruction| matches!(
         instruction.instruction,
-        VirInstruction::LoanAliasAuthority { .. }
+        VirInstruction::ObjectTransfer {
+            source_mode: nera::VirObjectSourceMode::Copy,
+            ..
+        }
     )));
     assert!(instructions.iter().any(|instruction| matches!(
         instruction.instruction,
@@ -254,34 +257,107 @@ fn evaluated_indices_use_actual_ranges_not_candidate_envelopes() {
 }
 
 #[test]
-fn raw_pointer_bearing_aggregate_remains_gated() {
-    let output = analyze(&SourceFile::from_text(
+fn raw_pointer_fields_store_addresses_without_owning_the_referent() {
+    let output = accepted(
         "raw-aggregate.nera",
         "struct RawHolder { value: ptr<u64>, }
-         fn main() { return; }",
-    ));
-    assert_eq!(output.status(), FrontendStatus::Unsupported);
-    assert!(output.hir().is_none());
-    assert!(output.vir().is_none());
+         fn main() -> u64 {
+             let word = 42;
+             let holder = alloc<RawHolder>(1);
+             holder.value = null<u64>();
+             holder.value = null<u64>();
+             let empty = holder.value == null<u64>();
+             free(holder);
+             if empty { return word; }
+             return 0;
+         }",
+    );
+    assert_checked_result(&output, 42);
 }
 
 #[test]
-fn reference_aggregate_function_abi_remains_gated() {
+fn raw_aggregate_calls_copy_address_metadata_and_keep_overwrites_local() {
+    let output = accepted(
+        "raw-aggregate-call.nera",
+        include_str!("../spec/cases/verify/raw-aggregate-call.nera"),
+    );
+    assert_checked_result(&output, 42);
+}
+
+#[test]
+fn field_returns_preserve_nonzero_referent_offsets_and_actual_domains() {
+    let output = accepted(
+        "field-domain.nera",
+        "struct View { tag:u64, view:&mut u64, }
+         fn main()->u64 {
+             let mut words=[1,2,3];
+             let selected=relay(View {tag:0,view:&mut words[1]});
+             *selected=38;
+             return words[0]+words[1]+words[2];
+         }
+         fn relay(value:View)->&mut u64 {return take(value);}
+         fn take(value:View)->&mut u64 {return value.view;}",
+    );
+    assert_checked_result(&output, 42);
+}
+
+#[test]
+fn reference_fields_can_carry_bounded_nodes_with_raw_links() {
+    let output = accepted(
+        "borrowed-raw-node-field.nera",
+        "struct Node { link:ptr<Node>, value:u64, }
+         struct View { view:&mut Node, }
+         fn main()->u64 {
+             let mut node=Node {link:null<Node>(),value:40};
+             let selected=take(View {view:&mut node});
+             selected.value=42;
+             return selected.value;
+         }
+         fn take(value:View)->&mut Node {return value.view;}",
+    );
+    assert_checked_result(&output, 42);
+}
+
+#[test]
+fn unproved_aggregate_result_cannot_invent_a_returned_loan() {
+    let output = accepted(
+        "unproved-field-return.nera",
+        "struct View { view:&mut u64, }
+         fn main()->u64 {
+             let mut word=42;
+             let returned=broken(View {view:&mut word});
+             let value=returned.view;
+             return *value;
+         }
+         fn broken(value:View)->View {
+             let first=value.view;
+             let duplicate=value.view;
+             return View {view:first};
+         }",
+    );
+    let resolved = output.vir().unwrap().resolve().unwrap();
+    let report = verify_program(&resolved, Default::default())
+        .expect("an unavailable loan mapping produces an obligation, not an internal error");
+    assert!(!report.is_memory_checked_core0());
+    assert!(interpret(resolved.runtime()).is_err());
+}
+
+#[test]
+fn reference_aggregate_function_abi_preserves_actual_shared_authority() {
     let output = analyze(&SourceFile::from_text(
         "reference-aggregate-call.nera",
         "struct Holder { value: &u64, }
-         fn read(holder: Holder) -> u64 {
-             let value = holder.value;
-             return *value;
-         }
          fn main() -> u64 {
              let word = 7;
              let holder = Holder { value: &word };
              return read(holder);
+         }
+         fn read(holder: Holder) -> u64 {
+             let value = holder.value;
+             return *value;
          }",
     ));
-    assert_eq!(output.status(), FrontendStatus::Unsupported);
-    assert!(output.vir().is_none());
+    assert_checked_result(&output, 7);
 }
 
 #[test]
@@ -302,10 +378,10 @@ fn authority_effects_cannot_claim_a_user_source_origin() {
         .iter_mut()
         .flat_map(|block| &mut block.instructions)
         .find_map(|instruction| match &mut instruction.instruction {
-            VirInstruction::LoanAliasAuthority { effect, .. } => Some(effect),
+            VirInstruction::LoanEndAuthority { effect, .. } => Some(effect),
             _ => None,
         })
-        .expect("shared aggregate field read emits an authority alias");
+        .expect("shared aggregate field read emits a matching authority end");
     effect.origin = VirOriginId::new(0);
     assert_eq!(
         unit.validate()
@@ -313,4 +389,229 @@ fn authority_effects_cannot_claim_a_user_source_origin() {
             .kind(),
         &VirValidationErrorKind::InvalidLoanAuthorityEffectOrigin
     );
+}
+
+#[test]
+fn field_call_profile_preserves_sources_results_and_aliases() {
+    let output = accepted(
+        "reference-fields.nera",
+        include_str!("../spec/cases/verify/predicate-reference-fields.nera"),
+    );
+    assert_checked_result(&output, 192);
+    let hir = output.hir().unwrap();
+    for (name, parameter, field) in [
+        ("extract", 0, 0),
+        ("relay", 0, 0),
+        ("second", 1, 0),
+        ("nested", 0, 3),
+        ("reshuffle", 0, 1),
+        ("subaggregate", 0, 2),
+        ("after_stored", 0, 1),
+        ("tuple_extract", 0, 1),
+        ("array_extract", 0, 0),
+    ] {
+        let function = hir.functions().iter().find(|f| f.name == name).unwrap();
+        let relation = function.signature.borrow_result.unwrap();
+        assert_eq!(relation.parameter, parameter);
+        assert_eq!(relation.parameter_field, Some(field));
+    }
+}
+
+#[test]
+fn guarded_field_summary_rejects_swapped_source_claims() {
+    let output = accepted(
+        "guarded-fields.nera",
+        include_str!("../spec/cases/verify/predicate-reference-fields.nera"),
+    );
+    let hir = output.hir().unwrap();
+    let id = nera::VirFunctionId::new(
+        hir.functions()
+            .iter()
+            .find(|f| f.name == "select")
+            .unwrap()
+            .id
+            .get(),
+    );
+    let mut unit = output.vir().unwrap().as_unit().clone();
+    let symbol = unit
+        .runtime
+        .functions
+        .iter()
+        .find(|f| f.id == id)
+        .unwrap()
+        .name
+        .clone();
+    let original = unit.runtime.abis.function(id).unwrap().signature.clone();
+    let mut alternatives = original.borrow_result_alternatives().to_vec();
+    assert_eq!(alternatives.len(), 2);
+    for alternative in &mut alternatives {
+        let field = alternative.relation.parameter_field.unwrap();
+        alternative.relation.parameter_field = Some(1 - field);
+    }
+    let parameters = original
+        .parameters()
+        .iter()
+        .map(|b| b.value().access().unwrap())
+        .collect::<Vec<_>>();
+    let results = original
+        .results()
+        .iter()
+        .map(|b| b.value().access().unwrap())
+        .collect::<Vec<_>>();
+    let forged = nera::VirAbiSignature::classify_with_borrow_results(
+        &unit.memory,
+        &parameters,
+        &results,
+        None,
+        alternatives,
+    )
+    .unwrap();
+    unit.runtime
+        .abis
+        .functions
+        .iter_mut()
+        .find(|f| f.function == id)
+        .unwrap()
+        .signature = forged.clone();
+    for function in &mut unit.runtime.functions {
+        for block in &mut function.blocks {
+            for instruction in &mut block.instructions {
+                if let VirInstruction::Call { target, .. } = &mut instruction.instruction
+                    && target.symbol == symbol
+                {
+                    target.abi = Some(forged.clone());
+                }
+            }
+        }
+    }
+    let validated = unit
+        .into_validated()
+        .expect("types and unguarded pointer source set still match");
+    let resolved = validated.resolve().unwrap();
+    assert!(
+        !verify_program(&resolved, Default::default())
+            .unwrap()
+            .is_memory_checked_core0()
+    );
+}
+
+#[test]
+fn field_return_rejects_wrong_pointee_strength_and_unbounded_storage() {
+    for (name, source) in [
+        (
+            "pointee",
+            "struct V { value: &mut u64, } fn bad(v: V)->&mut bool { return v.value; } fn main()->u64{return 0;}",
+        ),
+        (
+            "strength",
+            "struct V { value: &u64, } fn bad(v: V)->&mut u64 { return v.value; } fn main()->u64{return 0;}",
+        ),
+        (
+            "raw",
+            "struct V { value: ptr<u64>, } fn bad(v: V)->&mut u64 { return v.value; } fn main()->u64{return 0;}",
+        ),
+        (
+            "field-budget",
+            "struct V { values: [&mut u64; 257], } fn bad(v: V)->&mut u64 { return v.values[0]; } fn main()->u64{return 0;}",
+        ),
+        (
+            "stored-fat-view",
+            "struct V { value: &mut [u64], } fn main()->u64{return 0;}",
+        ),
+    ] {
+        let output = analyze(&SourceFile::from_text(format!("{name}.nera"), source));
+        assert_ne!(output.status(), FrontendStatus::AcceptedProposal, "{name}");
+        assert!(!output.issues().is_empty(), "{name}: missing diagnostic");
+        assert!(
+            output.vir().is_none(),
+            "{name}: unsupported source reached VIR"
+        );
+    }
+}
+
+#[test]
+fn a_moved_mutable_field_cannot_be_taken_again_across_a_call() {
+    let output = accepted(
+        "field-taken-twice.nera",
+        "
+        struct V { value: &mut u64, }
+        fn identity(v: &mut u64)->&mut u64 { return v; }
+        fn main()->u64 {
+            let mut word = 7;
+            let stored = V { value: &mut word };
+            let first = identity(stored.value);
+            let second = stored.value;
+            return *first + *second;
+        }",
+    );
+    let resolved = output.vir().unwrap().resolve().unwrap();
+    assert!(
+        !verify_program(&resolved, Default::default())
+            .unwrap()
+            .is_memory_checked_core0()
+    );
+    assert!(interpret(resolved.runtime()).is_err());
+}
+
+#[test]
+fn independent_ssa_rejects_wrong_field_after_move_construction_and_stored_call() {
+    let output = accepted(
+        "field-source.nera",
+        include_str!("../spec/cases/verify/predicate-reference-fields.nera"),
+    );
+    for name in ["extract", "reshuffle", "after_stored", "subaggregate"] {
+        let mut unit = output.vir().unwrap().as_unit().clone();
+        let function = unit
+            .runtime
+            .functions
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap();
+        let id = function.id;
+        let original = &unit.runtime.abis.function(id).unwrap().signature;
+        let mut relation = original.borrow_result().unwrap();
+        relation.parameter_field = Some(if relation.parameter_field == Some(0) {
+            1
+        } else {
+            0
+        });
+        let parameters = original
+            .parameters()
+            .iter()
+            .map(|p| p.value().access().unwrap())
+            .collect::<Vec<_>>();
+        let results = original
+            .results()
+            .iter()
+            .map(|r| r.value().access().unwrap())
+            .collect::<Vec<_>>();
+        let forged = nera::VirAbiSignature::classify_with_borrow_results(
+            &unit.memory,
+            &parameters,
+            &results,
+            Some(relation),
+            vec![],
+        )
+        .unwrap();
+        unit.runtime
+            .abis
+            .functions
+            .iter_mut()
+            .find(|f| f.function == id)
+            .unwrap()
+            .signature = forged.clone();
+        for function in &mut unit.runtime.functions {
+            for instruction in function.blocks.iter_mut().flat_map(|b| &mut b.instructions) {
+                if let VirInstruction::Call { target, .. } = &mut instruction.instruction
+                    && target.symbol == name
+                {
+                    target.abi = Some(forged.clone());
+                }
+            }
+        }
+        assert!(
+            unit.validate().is_err(),
+            "{name}: wrong field passed independent SSA validation"
+        );
+    }
 }

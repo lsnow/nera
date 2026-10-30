@@ -1,0 +1,52 @@
+// A normal checked call repacks the same owner on every loop backedge.
+struct Cell { value:u64, flag:bool, }
+predicate Ready(p:ptr<Cell>) {
+    exists saved:u64 = p.value;
+    exists saved_flag:bool = p.flag;
+    owns(p);
+    initialized(p.value,0..1);
+    initialized(p.flag,0..1);
+    saved==p.value;
+    saved_flag==p.flag;
+    p.value<=42;
+}
+fn main()->u64 {
+    let p=alloc<Cell>(1);
+    p.value=42;
+    p.flag=false;
+    fold Ready(p);
+    let q=update(p,3usize);
+    unfold Ready(q);
+    let outcome=q.value;
+    free(q);
+    finish Ready(q);
+    return outcome;
+}
+fn step(p:Own<Cell>)->Own<Cell>
+requires Ready(p);
+ensures Ready(result);
+{
+    unfold Ready(p);
+    let previous=p.value;
+    if previous<42 {
+        p.value=previous+1;
+    } else {
+        p.value=42;
+    }
+    p.flag=true;
+    fold Ready(p);
+    return p;
+}
+fn update(p:Own<Cell>,steps:usize)->Own<Cell>
+requires Ready(p);
+ensures Ready(result);
+{
+    let mut current=p;
+    let mut i=0usize;
+    while i<steps {
+        invariant i<=steps;
+        current=step(current);
+        i=i+1usize;
+    }
+    return current;
+}

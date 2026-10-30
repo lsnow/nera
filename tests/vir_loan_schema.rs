@@ -269,7 +269,7 @@ fn current_schema_dumps_every_closed_loan_effect_and_reaches_all_consumers() {
     let unit = loan_unit();
     unit.validate().expect("canonical loan schema validates");
     let dump = unit.stable_dump();
-    assert!(dump.starts_with("vir-unit-v28\n"));
+    assert!(dump.starts_with("vir-unit-v54\n"));
     assert!(dump.contains("borrow-regions {"));
     assert!(dump.contains("constraint bconstraint0 owner fn0 bregion1 <= bregion0"));
     for spelling in [
@@ -287,7 +287,7 @@ fn current_schema_dumps_every_closed_loan_effect_and_reaches_all_consumers() {
         validated
             .runtime()
             .stable_dump()
-            .starts_with("runtime-vir-v17\n")
+            .starts_with("runtime-vir-v26\n")
     );
     let resolved = validated
         .resolve()

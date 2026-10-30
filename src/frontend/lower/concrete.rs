@@ -150,7 +150,8 @@ impl<'hir> ConcreteTypes<'hir> {
                 | HirTypeKind::Bool
                 | HirTypeKind::Integer(_)
                 | HirTypeKind::Own { .. }
-                | HirTypeKind::Reference { .. },
+                | HirTypeKind::Reference { .. }
+                | HirTypeKind::RawPointer { .. },
             ) => true,
             Some(HirTypeKind::Array { element, .. }) => {
                 self.supports_storable_value(*element, visiting, depth + 1)
@@ -173,8 +174,7 @@ impl<'hir> ConcreteTypes<'hir> {
                 })
             }),
             Some(
-                HirTypeKind::RawPointer { .. }
-                | HirTypeKind::Slice { .. }
+                HirTypeKind::Slice { .. }
                 | HirTypeKind::Function(_)
                 | HirTypeKind::GenericParameter(_)
                 | HirTypeKind::Never,

@@ -13,6 +13,7 @@ use crate::{
     AbstractByteRange, AbstractPointer, ObligationStatus as S, ResourceState, SymbolicRangeBound,
     U64Interval,
 };
+mod coordinates;
 
 pub(in crate::verifier) fn interval_coverage(
     permission: AbstractByteRange,
@@ -98,6 +99,9 @@ pub struct BoundEvidence {
     pub status: S,
     /// Equal terms were subtracted from both sides before a difference query.
     pub cancelled: Option<(crate::AffineExpression, crate::AffineExpression)>,
+    /// Current evaluated address coordinates, kept separate from scalar SSA
+    /// difference premises. The original query endpoints remain above.
+    pub coordinates: Option<(SymbolicRangeBound, SymbolicRangeBound)>,
 }
 
 pub fn ordered(
@@ -114,9 +118,24 @@ pub fn ordered(
         difference: None,
         status: kernel::bound_le_status(left, right),
         cancelled: None,
+        coordinates: None,
     };
     if out.status != S::Unknown {
         return out;
+    }
+    match coordinates::refine_pair(state, left, right, limits) {
+        Ok(Some((a, b))) => {
+            out.coordinates = Some((a, b));
+            out.status = kernel::bound_le_status(a, b);
+            if out.status != S::Unknown {
+                return out;
+            }
+        }
+        Ok(None) => {}
+        Err(stop) => {
+            out.stop = Some(stop);
+            return out;
+        }
     }
     let (a, b) = left.expression().cancel_common(right.expression());
     if (a, b) != (left.expression(), right.expression()) {

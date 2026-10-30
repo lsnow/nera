@@ -44,6 +44,8 @@ fn alternatives(summary: &FunctionSummary) -> &[ReturnAlternative] {
 fn real_cfg_projection_covers_all_returns_and_old_postconditions() {
     for source in [
         include_str!("../spec/cases/verify/summary-baseline.nera"),
+        include_str!("../spec/cases/verify/predicate-calls.nera"),
+        include_str!("../spec/cases/verify/predicate-borrow-calls.nera"),
         include_str!("../spec/cases/aggregate/owning-abi.nera"),
         include_str!("../spec/cases/verify/initialization-interfaces-owning.nera"),
         include_str!("../spec/cases/verify/borrow-calls.nera"),
@@ -490,4 +492,548 @@ fn block_argument_guards_are_rewritten_to_signature_slots() {
         ));
     }
     assert!(!summary.stable_dump().contains("VirValueId"));
+}
+
+#[test]
+fn scalar_content_summaries_validate_type_extent_and_initialization() {
+    use nera::{AbstractBool, AbstractValue, ByteRange, LivenessState};
+    let source = "fn main()->u64 {let p=make(); let n=*p; free(p); return n;} fn make()->Own<u64> {let p=alloc<u64>(1); *p=42; return p;}";
+    with_report(source, |unit, report| {
+        assert!(report.is_memory_checked_core0());
+        let id = unit
+            .runtime()
+            .functions
+            .iter()
+            .find(|f| f.name == "make")
+            .unwrap()
+            .id;
+        let original = report.functions()[&id].summary();
+        for mutation in 0..6 {
+            let mut summary = original.clone();
+            let Knowledge::Known(alternatives) = &mut summary.normal_returns else {
+                panic!("closed return");
+            };
+            let resource = alternatives[0].worlds[0]
+                .resources
+                .iter_mut()
+                .find(|r| !r.scalar_contents.is_empty())
+                .unwrap();
+            match mutation {
+                0 => resource.scalar_contents[0].2 = AbstractValue::Bool(AbstractBool::True),
+                1 => resource.scalar_contents[0].0 = ByteRange::new(0, 16).unwrap(),
+                2 => resource.scalar_contents.push(resource.scalar_contents[0]),
+                3 => resource.liveness = LivenessState::Dead,
+                4 => resource.scalar_contents = vec![resource.scalar_contents[0]; 65],
+                5 => resource.validity = Default::default(),
+                _ => unreachable!(),
+            }
+            assert!(
+                summary
+                    .validate_structure(unit, id, Default::default())
+                    .is_err(),
+                "mutation {mutation}"
+            );
+        }
+    });
+}
+
+#[test]
+fn scalar_summary_effects_do_not_reuse_stale_input_values() {
+    for valid in [true, false] {
+        let body = if valid { "*p=42;" } else { "*p=43;" };
+        let source = format!(
+            "fn main()->u64 {{let mut n=41; update(&mut n); consume(&n); return 0;}} fn update(p:&mut u64) {{{body} return;}} fn consume(p:&u64) requires *p==42; {{return;}}"
+        );
+        with_report(&source, |_, report| {
+            assert_eq!(report.is_memory_checked_core0(), valid)
+        });
+    }
+}
+
+#[test]
+fn historical_scalar_summary_origins_are_scoped_to_typed_input_cells() {
+    let source = include_str!("../spec/cases/verify/predicate-cursor-increment.nera");
+    with_report(source, |unit, report| {
+        assert!(report.is_memory_checked_core0());
+        let id = unit
+            .runtime()
+            .functions
+            .iter()
+            .find(|f| f.name == "append")
+            .unwrap()
+            .id;
+        let original = report.functions()[&id].summary();
+        for mutation in 0..7 {
+            let mut summary = original.clone();
+            let Knowledge::Known(alternatives) = &mut summary.normal_returns else {
+                panic!("checked world")
+            };
+            let resource = alternatives[0].worlds[0]
+                .resources
+                .iter_mut()
+                .find(|r| !r.scalar_origins.is_empty())
+                .unwrap();
+            match mutation {
+                0 => {
+                    let nera::verifier::summary::SummaryScalarRoot::Cell { resource: name, .. } =
+                        &mut resource.scalar_origins[0].2.root
+                    else {
+                        panic!("cell");
+                    };
+                    *name = ResourceName::Fresh(0);
+                }
+                1 => {
+                    let nera::verifier::summary::SummaryScalarRoot::Cell { bytes, .. } =
+                        &mut resource.scalar_origins[0].2.root
+                    else {
+                        panic!("cell");
+                    };
+                    *bytes = nera::ByteRange::new(64, 72).unwrap();
+                }
+                2 => resource.scalar_origins[0].0 = nera::ByteRange::new(64, 72).unwrap(),
+                3 => resource
+                    .scalar_origins
+                    .push(resource.scalar_origins[0].clone()),
+                4 => resource.scalar_origins = vec![resource.scalar_origins[0].clone(); 65],
+                5 => resource.scalar_origins[0].2.addend = u64::MAX,
+                6 => resource.scalar_contents.clear(),
+                _ => unreachable!(),
+            }
+            assert!(
+                summary
+                    .validate_structure(unit, id, Default::default())
+                    .is_err(),
+                "origin mutation {mutation}"
+            );
+        }
+    });
+}
+
+#[test]
+fn scalar_return_origins_are_aligned_and_scoped_to_typed_inputs() {
+    let source = include_str!("../spec/cases/verify/predicate-cursor-return.nera");
+    with_report(source, |unit, report| {
+        assert!(report.is_memory_checked_core0());
+        let id = unit
+            .runtime()
+            .functions
+            .iter()
+            .find(|f| f.name == "append_index")
+            .unwrap()
+            .id;
+        let original = report.functions()[&id].summary();
+        let Knowledge::Known(alternatives) = &original.normal_returns else {
+            panic!("checked world")
+        };
+        assert!(
+            alternatives
+                .iter()
+                .flat_map(|a| &a.worlds)
+                .any(|w| w.value_origins.iter().any(Option::is_some))
+        );
+        for mutation in 0..7 {
+            let mut summary = original.clone();
+            let Knowledge::Known(alternatives) = &mut summary.normal_returns else {
+                unreachable!()
+            };
+            let world = alternatives
+                .iter_mut()
+                .flat_map(|a| &mut a.worlds)
+                .find(|w| w.value_origins.iter().any(Option::is_some))
+                .unwrap();
+            let slot = world
+                .value_origins
+                .iter()
+                .position(Option::is_some)
+                .unwrap();
+            match mutation {
+                0 => world.value_origins.clear(),
+                1 => world.value_origins.push(None),
+                2 => {
+                    let nera::verifier::summary::SummaryScalarRoot::Cell { resource, .. } =
+                        &mut world.value_origins[slot].as_mut().unwrap().root
+                    else {
+                        panic!("cell");
+                    };
+                    *resource = ResourceName::Fresh(0);
+                }
+                3 => {
+                    let nera::verifier::summary::SummaryScalarRoot::Cell { bytes, .. } =
+                        &mut world.value_origins[slot].as_mut().unwrap().root
+                    else {
+                        panic!("cell");
+                    };
+                    *bytes = nera::ByteRange::new(64, 72).unwrap();
+                }
+                4 => world.value_origins[slot].as_mut().unwrap().addend = u64::MAX,
+                5 => world.value_origins[slot] = None,
+                6 => world.value_origins[slot].as_mut().unwrap().addend = 1,
+                _ => unreachable!(),
+            }
+            assert!(
+                summary
+                    .validate_structure(unit, id, Default::default())
+                    .is_err(),
+                "return origin mutation {mutation}"
+            );
+        }
+    });
+}
+
+#[test]
+fn two_cell_summary_relations_validate_both_sources_and_return_slots() {
+    let source = include_str!("../spec/cases/verify/predicate-cursor-step.nera");
+    with_report(source, |unit, report| {
+        assert!(report.is_memory_checked_core0());
+        let id = unit
+            .runtime()
+            .functions
+            .iter()
+            .find(|f| f.name == "advance_index")
+            .unwrap()
+            .id;
+        let original = report.functions()[&id].summary();
+        for returned in [false, true] {
+            for mutation in 0..5 {
+                let mut summary = original.clone();
+                let Knowledge::Known(alternatives) = &mut summary.normal_returns else {
+                    panic!("checked worlds")
+                };
+                let world = &mut alternatives[0].worlds[0];
+                let origin = if returned {
+                    world
+                        .value_origins
+                        .iter_mut()
+                        .flatten()
+                        .find(|o| o.second.is_some())
+                        .unwrap()
+                } else {
+                    &mut world
+                        .resources
+                        .iter_mut()
+                        .flat_map(|r| &mut r.scalar_origins)
+                        .find(|(_, _, o)| o.second.is_some())
+                        .unwrap()
+                        .2
+                };
+                match mutation {
+                    0 => {
+                        if let nera::verifier::summary::SummaryScalarRoot::Cell {
+                            resource, ..
+                        } = &mut origin.second.as_mut().unwrap().root
+                        {
+                            *resource = ResourceName::Fresh(0);
+                        } else {
+                            panic!("expected cell");
+                        }
+                    }
+                    1 => {
+                        if let nera::verifier::summary::SummaryScalarRoot::Cell { bytes, .. } =
+                            &mut origin.second.as_mut().unwrap().root
+                        {
+                            *bytes = nera::ByteRange::new(80, 88).unwrap();
+                        } else {
+                            panic!("expected cell");
+                        }
+                    }
+                    2 => origin.second = None,
+                    3 => origin.second.as_mut().unwrap().root = origin.root.clone(),
+                    4 => origin.addend = u64::MAX,
+                    _ => unreachable!(),
+                }
+                assert!(
+                    summary
+                        .validate_structure(unit, id, Default::default())
+                        .is_err(),
+                    "return {returned}, mutation {mutation}"
+                );
+            }
+        }
+    });
+}
+
+#[test]
+fn weighted_summary_sources_require_positive_checked_coefficients() {
+    let source = include_str!("../spec/cases/verify/predicate-cursor-repeat.nera");
+    with_report(source, |unit, report| {
+        assert!(report.is_memory_checked_core0());
+        let id = unit
+            .runtime()
+            .functions
+            .iter()
+            .find(|f| f.name == "advance_index")
+            .unwrap()
+            .id;
+        let original = report.functions()[&id].summary();
+        for returned in [false, true] {
+            for mutation in 0..6 {
+                let mut summary = original.clone();
+                let Knowledge::Known(alternatives) = &mut summary.normal_returns else {
+                    panic!("checked worlds")
+                };
+                let world = &mut alternatives[0].worlds[0];
+                let origin = if returned {
+                    world
+                        .value_origins
+                        .iter_mut()
+                        .flatten()
+                        .find(|o| o.second.is_some())
+                        .unwrap()
+                } else {
+                    &mut world
+                        .resources
+                        .iter_mut()
+                        .flat_map(|r| &mut r.scalar_origins)
+                        .find(|(_, _, o)| o.second.is_some())
+                        .unwrap()
+                        .2
+                };
+                assert_eq!(origin.scale, 1);
+                assert_eq!(origin.second.as_ref().unwrap().scale, 2);
+                match mutation {
+                    0 => origin.scale = 0,
+                    1 => origin.second.as_mut().unwrap().scale = 0,
+                    2 => origin.second.as_mut().unwrap().scale = 1,
+                    3 => origin.second.as_mut().unwrap().scale = u64::MAX,
+                    4 => origin.scale = u64::MAX,
+                    5 => {
+                        let second = origin.second.as_mut().unwrap();
+                        second.root = origin.root.clone();
+                    }
+                    _ => unreachable!(),
+                }
+                assert!(
+                    summary
+                        .validate_structure(unit, id, Default::default())
+                        .is_err(),
+                    "return {returned}, mutation {mutation}"
+                );
+            }
+        }
+    });
+}
+
+#[test]
+fn parameter_history_sources_require_typed_entry_slots_and_exact_evidence() {
+    use nera::verifier::summary::SummaryScalarRoot;
+    let source = "fn main()->u64 {let mut p=1; return add(&mut p,2,3);} fn add(p:&mut u64,n:u64,m:u64)->u64 requires *p<8; requires n<8; requires m<8; ensures result==old(*p)+n; {*p=*p+n; return *p;}";
+    with_report(source, |unit, report| {
+        let id = unit
+            .runtime()
+            .functions
+            .iter()
+            .find(|f| f.name == "add")
+            .unwrap()
+            .id;
+        let original = report.functions()[&id].summary();
+        for mutation in 0..4 {
+            let mut summary = original.clone();
+            let Knowledge::Known(alternatives) = &mut summary.normal_returns else {
+                panic!("closed worlds")
+            };
+            let origin = alternatives[0].worlds[0]
+                .value_origins
+                .iter_mut()
+                .flatten()
+                .find(|o| o.second.is_some())
+                .unwrap();
+            let second = origin.second.as_mut().unwrap();
+            assert!(matches!(second.root, SummaryScalarRoot::Parameter(_)));
+            match mutation {
+                0 => second.root = SummaryScalarRoot::Parameter(usize::MAX),
+                1 => second.root = SummaryScalarRoot::Parameter(0),
+                2 => second.root = origin.root.clone(),
+                3 => {
+                    let SummaryScalarRoot::Parameter(slot) = second.root else {
+                        unreachable!()
+                    };
+                    second.root = SummaryScalarRoot::Parameter(slot + 1);
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                summary
+                    .validate_structure(unit, id, Default::default())
+                    .is_err()
+            );
+        }
+    });
+}
+
+#[test]
+fn stored_loan_summary_claims_cannot_replace_direct_parameter_authorities() {
+    with_report(
+        "fn main()->u64{return 0;} fn read(p:&mut u64)->u64{return *p;}",
+        |unit, report| {
+            let function = named(unit, report, "read");
+            let original = function.summary();
+            let id = unit
+                .runtime()
+                .functions
+                .iter()
+                .find(|f| f.name == "read")
+                .unwrap()
+                .id;
+            for exit in [
+                nera::BoundaryExit::InPlace,
+                nera::BoundaryExit::Ended,
+                nera::BoundaryExit::Value(0),
+            ] {
+                let mut changed = original.clone();
+                let Knowledge::Known(worlds) = &mut changed.normal_returns else {
+                    panic!("missing return worlds");
+                };
+                worlds[0].worlds[0]
+                    .stored_borrow_restoration
+                    .push(StoredBorrowRestoration {
+                        input: ResourceName::Input {
+                            parameter: 0,
+                            payload_offsets: vec![0],
+                        },
+                        exit,
+                    });
+                assert!(
+                    changed
+                        .validate_structure(unit, id, CfgAnalysisConfig::default())
+                        .is_err()
+                );
+            }
+            for path in [
+                ResourceName::Fresh(0),
+                ResourceName::Input {
+                    parameter: 0,
+                    payload_offsets: vec![],
+                },
+                ResourceName::Input {
+                    parameter: 0,
+                    payload_offsets: vec![0],
+                },
+                ResourceName::Input {
+                    parameter: usize::MAX,
+                    payload_offsets: vec![0],
+                },
+                ResourceName::Input {
+                    parameter: 0,
+                    payload_offsets: vec![0; 17],
+                },
+            ] {
+                let mut changed = original.clone();
+                let permission = changed
+                    .inputs
+                    .iter_mut()
+                    .find_map(|input| match &mut input.value {
+                        SummaryValue::Permission(p)
+                            if matches!(p.authority, SummaryAuthority::InputLoan(_)) =>
+                        {
+                            Some(p)
+                        }
+                        _ => None,
+                    })
+                    .unwrap();
+                permission.authority = SummaryAuthority::InputPayloadLoan(path);
+                assert!(
+                    changed
+                        .validate_structure(unit, id, CfgAnalysisConfig::default())
+                        .is_err()
+                );
+            }
+        },
+    );
+}
+
+#[test]
+fn boolean_summary_origins_are_typed_aligned_and_bound_to_checked_evidence() {
+    with_report(
+        "fn identity(flag:bool,word:u64)->bool {return flag;}",
+        |unit, report| {
+            assert!(report.is_memory_checked_core0());
+            let id = unit
+                .runtime()
+                .functions
+                .iter()
+                .find(|f| f.name == "identity")
+                .unwrap()
+                .id;
+            let original = report.functions()[&id].summary();
+            assert!(
+                alternatives(original)
+                    .iter()
+                    .flat_map(|a| &a.worlds)
+                    .any(|w| w.bool_value_origins.iter().any(Option::is_some))
+            );
+            for mutation in 0..5 {
+                let mut summary = original.clone();
+                let Knowledge::Known(alternatives) = &mut summary.normal_returns else {
+                    unreachable!()
+                };
+                let world = alternatives
+                    .iter_mut()
+                    .flat_map(|a| &mut a.worlds)
+                    .find(|w| w.bool_value_origins.iter().any(Option::is_some))
+                    .unwrap();
+                let slot = world
+                    .bool_value_origins
+                    .iter()
+                    .position(Option::is_some)
+                    .unwrap();
+                match mutation {
+                    0 => world.bool_value_origins.clear(),
+                    1 => world.bool_value_origins.push(None),
+                    2 => world.bool_value_origins[slot] = Some(SummaryScalarRoot::Parameter(1)),
+                    3 => world.bool_value_origins[slot] = Some(SummaryScalarRoot::Parameter(99)),
+                    4 => world.bool_value_origins[slot] = None,
+                    _ => unreachable!(),
+                }
+                assert!(
+                    summary
+                        .validate_structure(unit, id, Default::default())
+                        .is_err(),
+                    "mutation {mutation}"
+                );
+            }
+        },
+    );
+}
+
+#[test]
+fn boolean_field_summary_origins_reject_duplicate_and_wrong_typed_sources() {
+    with_report(
+        "struct Cell {flag:bool,} fn store(p:&mut Cell,flag:bool)->u64 {p.flag=flag; return 1;}",
+        |unit, report| {
+            assert!(report.is_memory_checked_core0());
+            let id = unit
+                .runtime()
+                .functions
+                .iter()
+                .find(|f| f.name == "store")
+                .unwrap()
+                .id;
+            let original = report.functions()[&id].summary();
+            for mutation in 0..4 {
+                let mut summary = original.clone();
+                let Knowledge::Known(alternatives) = &mut summary.normal_returns else {
+                    unreachable!()
+                };
+                let resource = alternatives
+                    .iter_mut()
+                    .flat_map(|a| &mut a.worlds)
+                    .flat_map(|w| &mut w.resources)
+                    .find(|r| !r.bool_origins.is_empty())
+                    .expect("parameter-to-field source");
+                match mutation {
+                    0 => resource.bool_origins.push(resource.bool_origins[0].clone()),
+                    1 => resource.bool_origins[0].2 = SummaryScalarRoot::Parameter(0),
+                    2 => resource.bool_origins[0].0 = nera::ByteRange::new(99, 100).unwrap(),
+                    3 => resource.bool_origins.clear(),
+                    _ => unreachable!(),
+                }
+                assert!(
+                    summary
+                        .validate_structure(unit, id, Default::default())
+                        .is_err(),
+                    "mutation {mutation}"
+                );
+            }
+        },
+    );
 }

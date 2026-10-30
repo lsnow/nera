@@ -103,6 +103,8 @@ pub enum VirValidationErrorKind {
     InvalidSpecSnapshot(VirSpecTermId),
     InvalidPredicate(super::VirPredicateId),
     PredicateBodyFeatureGated(super::VirPredicateId),
+    InvalidPredicateAction(u32),
+    InvalidPredicateInterface(u32),
     NonDensePredicateId {
         expected: super::VirPredicateId,
         found: super::VirPredicateId,
@@ -148,6 +150,11 @@ pub enum VirValidationErrorKind {
         found: VirBorrowRegionId,
     },
     InvalidBorrowRegion(VirBorrowRegionId),
+    MissingParameterFieldRegion {
+        function: VirFunctionId,
+        parameter: u32,
+        slot: u32,
+    },
     NonDenseBorrowRegionConstraintId {
         expected: VirBorrowRegionConstraintId,
         found: VirBorrowRegionConstraintId,
@@ -207,7 +214,7 @@ pub enum VirValidationErrorKind {
 }
 
 pub(super) fn validate(unit: &VirUnit) -> Result<(), VirValidationError> {
-    if unit.version != VirUnitVersion::V28 {
+    if unit.version != VirUnitVersion::V54 {
         return Err(program_error(
             VirValidationErrorKind::UnsupportedUnitVersion(unit.version),
         ));
@@ -299,6 +306,13 @@ fn additional_origins(unit: &VirUnit) -> Vec<VirOriginId> {
                         .map(|clause| clause.origin.origin()),
                 )
                 .chain(unit.specs.proves().iter().map(|prove| prove.origin))
+                .chain(
+                    unit.specs
+                        .predicate_actions()
+                        .iter()
+                        .map(|action| action.origin),
+                )
+                .chain(unit.specs.predicate_interfaces().iter().map(|i| i.origin))
                 .chain(unit.specs.trust_entries().iter().map(|entry| entry.origin))
                 .chain(
                     unit.specs
@@ -319,6 +333,7 @@ fn validate_borrow_environment(unit: &VirUnit) -> Result<(), VirValidationError>
         .map(|function| (function.id, function))
         .collect::<BTreeMap<_, _>>();
 
+    let mut parameter_regions = BTreeSet::new();
     for (index, region) in unit.borrows.regions().iter().enumerate() {
         let expected = VirBorrowRegionId::new(index as u32);
         if region.id != expected {
@@ -328,6 +343,21 @@ fn validate_borrow_environment(unit: &VirUnit) -> Result<(), VirValidationError>
                     found: region.id,
                 },
             ));
+        }
+        // A direct parameter introduces one frame-local interface loan. Two
+        // regions for the same slot would import that loan twice and replace
+        // its first authority in the interpreter.
+        let parameter_key = match region.origin {
+            VirBorrowRegionOrigin::Parameter { index } => Some((region.owner, index, None)),
+            VirBorrowRegionOrigin::ParameterField { index, slot } => {
+                Some((region.owner, index, Some(slot)))
+            }
+            _ => None,
+        };
+        if parameter_key.is_some_and(|key| !parameter_regions.insert(key)) {
+            return Err(program_error(VirValidationErrorKind::InvalidBorrowRegion(
+                region.id,
+            )));
         }
         let valid = functions
             .get(&region.owner)
@@ -341,6 +371,40 @@ fn validate_borrow_environment(unit: &VirUnit) -> Result<(), VirValidationError>
             return Err(program_error(VirValidationErrorKind::InvalidBorrowRegion(
                 region.id,
             )));
+        }
+    }
+
+    // Once an ABI admits reference-bearing buffers, every physical reference
+    // occurrence must have exactly one entry region. Missing declarations must
+    // not silently suppress loan imports.
+    for function in functions.values() {
+        let Some(abi) = unit.runtime.abis.function(function.id) else {
+            continue;
+        };
+        let Some(accesses) = abi
+            .signature
+            .parameters()
+            .iter()
+            .map(|binding| binding.value().access())
+            .collect::<Option<Vec<_>>>()
+        else {
+            continue;
+        };
+        let Some(entries) = super::plan_parameter_reference_entries(&unit.memory, &accesses) else {
+            return Err(program_error(VirValidationErrorKind::InvalidAggregateAbi(
+                super::VirAbiErrorKind::NonCanonicalSlotMap,
+            )));
+        };
+        for entry in entries {
+            if !parameter_regions.contains(&(function.id, entry.parameter, Some(entry.slot))) {
+                return Err(program_error(
+                    VirValidationErrorKind::MissingParameterFieldRegion {
+                        function: function.id,
+                        parameter: entry.parameter,
+                        slot: entry.slot,
+                    },
+                ));
+            }
         }
     }
 
@@ -396,6 +460,36 @@ fn borrow_region_origin_is_anchored(
         VirBorrowRegionOrigin::Parameter { index } => usize::try_from(index)
             .ok()
             .and_then(|index| abi.signature.parameters().get(index)),
+        VirBorrowRegionOrigin::ParameterField { index, slot } => {
+            let Some(binding) = abi.signature.parameters().get(index as usize) else {
+                return false;
+            };
+            if !matches!(
+                binding.value(),
+                super::VirAbiValue::IndirectAggregate { .. } | super::VirAbiValue::Pointer { .. }
+            ) {
+                return false;
+            }
+            let Some(accesses) = abi
+                .signature
+                .parameters()
+                .iter()
+                .map(|binding| binding.value().access())
+                .collect::<Option<Vec<_>>>()
+            else {
+                return false;
+            };
+            return super::plan_parameter_reference_entries(&unit.memory, &accesses).is_some_and(
+                |entries| {
+                    entries.iter().any(|entry| {
+                        entry.parameter == index
+                            && entry.slot == slot
+                            && binding.parameter_slots()
+                                == [entry.pointer_slot, entry.permission_slot]
+                    })
+                },
+            );
+        }
         VirBorrowRegionOrigin::Result { index } => usize::try_from(index)
             .ok()
             .and_then(|index| abi.signature.results().get(index)),
@@ -426,7 +520,9 @@ fn borrow_region_scope_is_valid(
 ) -> bool {
     match (origin, scope) {
         (
-            VirBorrowRegionOrigin::Parameter { .. } | VirBorrowRegionOrigin::Result { .. },
+            VirBorrowRegionOrigin::Parameter { .. }
+            | VirBorrowRegionOrigin::ParameterField { .. }
+            | VirBorrowRegionOrigin::Result { .. },
             VirBorrowRegionScope::Function,
         ) => true,
         (
@@ -1526,11 +1622,7 @@ fn validate_instruction(
                             crate::DropCapability::TrivialDrop | crate::DropCapability::BuiltinDrop
                         )
                 })
-                && !shape.resource_leaves().is_empty()
-                && shape
-                    .resource_leaves()
-                    .iter()
-                    .all(|leaf| leaf.kind() != VirPointerKind::Raw);
+                && !shape.resource_leaves().is_empty();
             if !supported {
                 return Err(block_error(
                     function,
@@ -2702,6 +2794,13 @@ fn expect_scalar_access(
         Some(VirMemoryTypeKind::Integer(
             super::VirIntegerType::U64 | super::VirIntegerType::Usize,
         )) => Some(VirType::U64),
+        Some(VirMemoryTypeKind::Pointer {
+            pointee,
+            kind: super::VirPointerKind::Raw,
+            ..
+        }) => memory
+            .access(*pointee)
+            .map(|access| VirType::Pointer { access }),
         _ => None,
     };
     if memory.resolves_access(access)

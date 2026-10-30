@@ -113,7 +113,7 @@ pub(in crate::regression) fn check_phase7_borrow_projection(
             "caller",
             "HirVersion::V12",
             "VirUnitVersion::V18",
-            "runtime-vir-v17",
+            "runtime-vir-v26",
             "check-phase7-borrow-projection",
             "7.8.3.6",
         ],

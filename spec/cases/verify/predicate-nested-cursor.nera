@@ -1,0 +1,75 @@
+// Observe a nested cursor without initializing unrelated inline state fields.
+struct State { unused:bool, cursor:usize, }
+opaque struct Arena { state:State, slots:[u64;8], }
+predicate Ready(p:ptr<Arena>) {
+    owns(p);
+    initialized(p.state.cursor,0usize..1usize);
+    initialized(p.slots,0usize..p.state.cursor);
+    p.state.cursor <= 8usize;
+}
+fn main()->u64 {
+    let a=make();
+    let b=append_owner(a,42);
+    return destroy(b);
+}
+fn make()->Own<Arena>
+ensures Ready(result);
+ensures result.state.cursor==0usize;
+{
+    let p=alloc<Arena>(1);
+    p.state.cursor=0usize;
+    fold Ready(p);
+    return p;
+}
+fn append_owner(p:Own<Arena>,value:u64)->Own<Arena>
+requires Ready(p);
+requires p.state.cursor<8usize;
+ensures Ready(result);
+ensures result.state.cursor==old(p.state.cursor)+1usize;
+{
+    let index=append_index(&mut *p,value);
+    assert index<8usize;
+    return p;
+}
+fn append(p:&mut Arena,value:u64)->usize
+requires Ready(p);
+requires p.state.cursor<8usize;
+ensures Ready(p);
+ensures p.state.cursor==old(p.state.cursor)+1usize;
+ensures result==old(p.state.cursor);
+{
+    unfold Ready(p);
+    let n=p.state.cursor;
+    if n<8usize {
+        p.slots[n]=value;
+        p.state.cursor=n+1usize;
+        fold Ready(p);
+        return n;
+    }
+    fold Ready(p);
+    return n;
+}
+fn append_index(p:&mut Arena,value:u64)->usize
+requires Ready(p);
+requires p.state.cursor<8usize;
+ensures Ready(p);
+ensures p.state.cursor==old(p.state.cursor)+1usize;
+ensures result==old(p.state.cursor);
+{
+    return append(p,value);
+}
+fn destroy(p:Own<Arena>)->u64
+requires Ready(p);
+{
+    unfold Ready(p);
+    let n=p.state.cursor;
+    if n>=1usize {
+        let total=p.slots[0];
+        free(p);
+        finish Ready(p);
+        return total;
+    }
+    free(p);
+    finish Ready(p);
+    return 0;
+}

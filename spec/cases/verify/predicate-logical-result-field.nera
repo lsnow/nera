@@ -1,0 +1,33 @@
+struct Cell { value:u64, }
+struct Meta { count:usize, valid:bool, }
+struct Package { owner:Own<Cell>, meta:Meta, }
+predicate Ready(p:ptr<Cell>,n:usize,valid:bool) {
+    owns(p);
+    initialized(p.value,0..1);
+    n==n;
+    valid;
+}
+fn main()->u64 {
+    let p=alloc<Cell>(1);
+    p.value=42;
+    fold Ready(p,7usize,true);
+    let meta=inspect(&mut *p,7usize);
+    let count=meta.count;
+    let package=pack(p,count);
+    let n=package.meta.count;
+    let valid=package.meta.valid;
+    let q=package.owner;
+    unfold Ready(q,n,valid);
+    let value=q.value;
+    free(q);
+    finish Ready(q,n,valid);
+    return value;
+}
+fn inspect(p:&mut Cell,n:usize)->Meta
+requires Ready(p,n,true);
+ensures Ready(p,result.count,result.valid);
+{ return Meta { count:n, valid:true }; }
+fn pack(p:Own<Cell>,n:usize)->Package
+requires Ready(p,n,true);
+ensures Ready(result.owner,result.meta.count,result.meta.valid);
+{ return Package { owner:p, meta:Meta { count:n, valid:true } }; }

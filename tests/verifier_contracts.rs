@@ -440,7 +440,8 @@ fn fresh_summary_resources_are_alpha_renamed_per_call_site() {
     let exit = analysis
         .block(VirBlockId::new(0))
         .expect("entry block")
-        .exit_state();
+        .exit_state()
+        .unwrap();
     let AbstractValue::Pointer(first) = exit.value(VirValueId::new(0)).copied().expect("first")
     else {
         panic!("first result must be a pointer")
